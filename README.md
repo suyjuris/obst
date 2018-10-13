@@ -1,12 +1,12 @@
 # Online BDD Simulation Tool (obst)
 
-Binary Decision Diagrams (BDDs, see also (Wikipedia)[https://en.wikipedia.org/wiki/Binary_decision_diagram]) are a compact way of representing sets of numbers, so that certain set operations (e.g. union, intersection, complement) can still be executed efficiently. They are used extensively in logic synthesis as well as formal verification.
+Binary Decision Diagrams (BDDs, see also [Wikipedia](https://en.wikipedia.org/wiki/Binary_decision_diagram)) are a compact way of representing sets of numbers, so that certain set operations (e.g. union, intersection, complement) can still be executed efficiently. They are used extensively in logic synthesis as well as formal verification.
 
-`obst` is a web application that shows how the algorithms for constructing and operating on BDDs work on a step-by-step basis. You can try it out (here)[https://nicze.de/philipp/bdds]. It is intended to be useful for both exploring the inner workings of BDDs interactively, as well as demonstrating the intermediate steps of a BDD computation in a classroom environment.
+obst is a web application that shows how the algorithms for constructing and operating on BDDs work on a step-by-step basis. You can try it out [here](https://nicze.de/philipp/bdds). It is intended to be useful for both exploring the inner workings of BDDs interactively, as well as demonstrating the intermediate steps of a BDD computation in a classroom environment.
 
-As `obst` is built on WebAssembly, it requires a reasonably modern browser to run. I have tested it on both Firefox 61 and Chrome 68. If you want to be able to run the website offline, either grab one of the releases from the GitHub repository, or just download `index.html`, `obst.js`, and `obst.wasm` from the live version. Currently, `obst` only runs in a website. If you are interested in running it as a native application over a CLI, e.g. to generated a pdf slideshow out of the animation, feel free to contact me.
+As obst is built on WebAssembly, it requires a reasonably modern browser to run. I have tested it on both Firefox 61 and Chrome 68. If you want to be able to run the website offline, either grab one of the releases from the GitHub repository, or just download `index.html`, `obst.js`, and `obst.wasm` from the live version. Currently, obst only runs in a website. If you are interested in running it as a native application over a CLI, e.g. to generated a pdf slideshow out of the animation, feel free to contact me.
 
-`obst` was written by Philipp Czerner in 2018. You can contact me via e-mail (contact@nicze.de) or on GitHub. Do feel free to send me any feedback, suggestions, etc., I would love to hear them!
+obst was written by Philipp Czerner in 2018. You can contact me via e-mail (contact@nicze.de) or on GitHub. Do feel free to send me any feedback, suggestions, etc., I would love to hear them!
 
 ## Usage instructions
 
@@ -15,7 +15,7 @@ I hope the website is pretty self-explanatory, but a few keyboard shortcuts are 
 * *Left, Right*: Move to the previous/next frame of the animation.
 * *Page down, Page up*: Move to the previous/next checkpoint, that is the first frame of an operation.
 * *Home, End*: Move to the first/last frame.
-* *Shift-1* (well, `!` actually): Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside `obst` and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Also, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
+* *Shift-1* (well, `!` actually): Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside obst and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Also, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
 
 When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid.
 
@@ -68,7 +68,6 @@ Some random implementation details:
 * The layout algorithm uses a clever trick to get the nodes to not overlap: As long as nodes are closer than the minimum distance, all forces except the one pushing them apart treat them as if they were glued together.
 * Layouts are computed going backwards in time, so the iterative graph layout starts with the last frame.
 * Both the ellipses and quadratic spline are drawn in the fragment shader.
-* Spline lengths are computed via numerical integration.
 * To have accurate gaps while drawing the quadratic splines, the relationship between t (the curve parameter) and the length of the curve, which is decidedly non-linear, is approximated by a third-degree polynomial for the fragment shader.
 * Text is rendered by first getting the browser to draw it in a 2D canvas environment, and then copying it onto a WebGL texture. This process is performed whenever the scale changes, in the hope of having pixel-perfect text.
 
