@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Binary Decision Diagrams</title>
+    <style>
+      html, body {
+          margin: 0;
+          width: 100%;
+          height: 100%;
+          font: 16px serif;
+      }
+      textarea {
+          font: 14px arial;
+          padding: 2px;
+      }
+      #cont-ui {
+          float: left;
+          width: 430px;
+          margin: 10px;
+      }
+      #cont-canvas {
+          position: absolute;
+          min-width: 800px;
+          top: 0;
+          left: 450px;
+          right: 0;
+          bottom: 0;
+          background-color: rgb(245,245,245);
+      }
+      #canvas, #canvas-text {
+          position: absolute;
+          width: 100%;
+          height: 100%;
+      }
+      hr {
+          border-top: 1px solid #999;
+          border-bottom-style: none;
+          margin: 12px;
+      }
+      textarea {
+          width: 100%;
+          resize: vertical;
+          margin-top: 3px;
+          margin-bottom: 6px;
+      }
+      button {
+          float: right;
+          margin-left: 5px;
+      }
+      div.init-disabled {
+          display: inline;
+          color: rgba(0,0,0,0.5);
+      }
+      div.init-enabled {
+          display: inline;
+      }
+      #error-cont {
+          color: rgb(213,23,0);
+      }
+      p.spaced {
+          margin-top: 5px;
+          margin-bottom: 5px;
+          margin-left: 20px;
+          text-indent: -20px;
+      }
+      div.fill {
+          display: flex;
+          justify-content: flex-end;
+          align-items: center;
+          position: relative;
+          width: 100%;
+          margin-top: 3px;
+          margin-bottom: 3px;
+      }
+      div.center {
+          flex-grow: 1;
+      }
+      #context-cont {
+          margin-top: 8px;
+      }
+      #cont-bddinfo {
+          background-color: white;
+          position: absolute;
+          padding-left: 8px;
+          padding-right: 8px;
+          max-width: 300px;
+      }
+      p.close {
+          margin-top: 5px;
+          margin-bottom: 5px;
+      }
+      @media screen and (-webkit-min-device-pixel-ratio:0) { 
+          body { font-size: 19px; }
+          input { font-size: 15px; padding-top: 2px }
+          button { font-size: 15px;  }
+          div.center { margin-top: 4px; }
+          #frame { margin-top: 4px; }
+          textarea { font: 14px Arial; }
+          #context-cont { margin-top: 14px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cont-ui">
+      <h4>Binary Decision Diagrams</h4>
+      <p>This is obst, a visualisation of algorithms related to <a href="https://en.wikipedia.org/wiki/Binary_decision_diagram">Binary Decision Diagrams</a> (BDDs). BDDs are a data structure one can use to represent sets of numbers in a concise and unique fashion, while still being able to efficiently execute set operations on them.</p>
+      <p>In particular, this tool shows how to create a BDD from a list of numbers, as well as compute their union, intersection and complement. <a href="https://github.com/suyjuris/obst">More...</a></p>
+      <hr></hr>
+      <textarea id="create_nums" rows="3" placeholder="Enter a list of numbers, e.g. 2,3,5,7">2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62</textarea>
+      Base: <input id="create_base" type="text" size="3" placeholder="10" value="10">
+      <span style="padding-left:10px;"></span>
+      Bit order: <input id="create_bits" type="text" size="11" placeholder="auto, or e.g. 2,1,0" value="auto">
+      <div style="padding-top:5px;"></div>
+      <div class="fill">
+        <div class="center">Adds the BDD to the graph.</div>
+        <button type="button" onclick="Module._ui_button_create()">Create and add</button>
+      </div>
+      <hr></hr>
+      <div id="op-cont" class="init-disabled">
+      Operation:
+      <input type="radio" name="operation" value="u" id="op_u" onclick="Module._ui_button_opr()" placeholder="3" disabled checked><label for="op_u">Union</label>
+      <input type="radio" name="operation" value="i" id="op_i" onclick="Module._ui_button_opr()" placeholder="3" disabled><label for="op_i">Intersection</label>
+      <input type="radio" name="operation" value="c" id="op_c" onclick="Module._ui_button_opr()" placeholder="3" disabled><label for="op_c">Complement</label>
+      <div style="padding-top:5px;"></div>
+      First node: <input id="op_node0" type="text" size="3" placeholder="e.g. 5" disabled>
+      <span style="padding-left:10px;"></span>
+      <div id="op_second" style="display: inline">
+        Second node: <input id="op_node1" type="text" size="3" placeholder="e.g. 3" disabled>
+      </div>
+      <div style="padding-top:5px;"></div>
+      <div class="fill">
+        <div class="center">Applies the operation.</div>
+        <button id="b_op" type="button" onclick="Module._ui_button_op()" disabled>Calculate union</button>
+      </div>
+      </div>
+      <hr></hr>
+      <div id="reset-cont" class="init-disabled">
+      <div class="fill">
+        <div class="center">Reset the application, delete all nodes.</div>
+        <button id="b_removeall" type="button" onclick="Module._ui_button_removeall()" disabled>Remove all</button>
+      </div>
+      </div>
+      <hr></hr>
+      <div id="error-cont"></div>
+      <hr id="error-hr" style="display: none;"></hr>
+      <div id="frame-cont" class="init-disabled">
+      <div class="fill">
+        <div class="center"><b>Step-by-step</b><span style="font: 75% serif; margin-left: 10px">(Move using arrow keys)</span></div>
+        <button id="b_prev" onclick="Module._ui_button_move(-1)" type="button" disabled>&lt;</button>
+        <div id="frame" style="margin-left:5px;">0/0</div>
+        <button id="b_next" onclick="Module._ui_button_move(1)"  type="button" disabled>&gt;</button>
+      </div>
+      
+      </div>
+      <div id="context-cont"></div>
+    </div>
+    <div id="cont-canvas">
+      <canvas class="emscripten" id="canvas"></canvas>
+      <div id="cont-bddinfo" style="display: none"></div>
+    </div>
+    <script>
+      Module = {
+        printErr: function(text) {
+          if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+          console.error(text);
+        },
+        canvas: (function() {
+          var canvas = document.getElementById('canvas');
+          canvas.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
+          return canvas;
+        })()
+      }
+    </script>
+    <script async type="text/javascript" src="obst.js"></script>
+  </body>
+</html>
+
+

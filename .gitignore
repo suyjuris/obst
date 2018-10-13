@@ -1,0 +1,11 @@
+**/*.o
+**/~*
+**/#*
+**/*~
+obst.js
+obst.wast
+obst.wasm
+obst.wasm.map
+obst.wasm.pre
+obst.html
+
