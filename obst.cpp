@@ -8,7 +8,7 @@
 // Uncomment this to show the force-based layout algorithm. Debug functionality, obviously.
 //#define DBG_SHOW_FORCE_LAYOUT 1
 
-// I usually do not pay attention to assertions with side-effects, so lets define them here to
+// I usually do not pay attention to assertions with side-effects, so let us define them here to
 // execute the expressions regardless. Also, the compiler cannot figure out that assert(false) means
 // unreachable, so just search-replace all of those with assert_false once going to release.
 #ifndef NDEBUG
@@ -51,7 +51,7 @@ struct Deferrer_helper {
 
 
 // Standard integer types
-using s64 = long long; // gcc and clang have different opinions about using long long or just long as 64-bit integer types. But for printf I just want to write one of them. Yay.
+using s64 = long long; // gcc and emcc (well, their shipped standard libraries) have different opinions about using long long or just long as 64-bit integer types. But for printf I just want to write one of them. Yay.
 using u64 = unsigned long long;
 //using s64 = std::int64_t;
 //using u64 = std::uint64_t;
@@ -405,11 +405,13 @@ struct Bdd {
     // Which flags we allow
     enum Bdd_constants: u8 {
         NONE = 0,
-        TEMPORARY = 1,   // These nodes are created during the execution of a stepwise algorithm to illustrate the current state to the puny humans watching it. They are not subject to deduplication and are either deleted or finalised using bdd_finalize.
-        CURRENT = 2,     // The active node the algorithm is considering. Drawn in red.
-        MARKED = 4,      // Some nodes are relevant to the current operation and will be marked by the algorithm. Drawn in green.
-        COSMETIC = 6,    // = CURRENT | MARKED  Used to reset the cosmetic flags after the snapshot is taken.
-        INTERMEDIATE = 8 // These nodes are used by the layout algorithm to deal with edges spanning multiple layers. They exist just in the imagination of the layout algorithm and are not drawn anywhere.
+        TEMPORARY = 1,    // These nodes are created during the execution of a stepwise algorithm to illustrate the current state to the puny humans watching it. They are not subject to deduplication and are either deleted or finalised using bdd_finalize.
+        CURRENT = 2,      // The active node the algorithm is considering. Drawn in red.
+        MARKED = 4,       // Some nodes are relevant to the current operation and will be marked by the algorithm. Drawn in green.
+        MARKED_E = 8,     // Sometimes, we need even more colours. This corresponds to the parents of marked edges
+        MARKED_E_1 = 16,  // Whether the first or the second child-edge is marked
+        COSMETIC = CURRENT | MARKED | MARKED2 | MARKED_E_1 // Used to reset the cosmetic flags which are cleared after the snapshot is taken.
+        INTERMEDIATE = 32 // These nodes are used by the layout algorithm to deal with edges spanning multiple layers. They exist just in the imagination of the layout algorithm and are not drawn anywhere.
     };
 
     u32 child0 = 0, child1 = 0; // child0 is the false-edge, child1 the true-edge.
@@ -438,6 +440,7 @@ struct Bdd_store {
     Array_dyn<u32> snapshot_parents; // What nodes to start the reachability traversal with
     Array_dyn<u32> snapshot_cur_node; // A stack of nodes, the last of which is flagged as current
     Array_dyn<u32> snapshot_marked; // A list of nodes flagged as marked. Resets when taking a snapshot!
+    Array_dyn<u32> snapshot_marked_e; // A list of edges (!) flagged as marked. Resets when taking a snapshot!
     Array_dyn<u8>  snapshot_context; // A stack of textual descriptions of the current state of the algorithm. Separated by 0.
 
     // This stores the snapshots.
@@ -464,6 +467,7 @@ void bdd_store_init(Bdd_store* store) {
     store->snapshot_parents.size = 0;
     store->snapshot_cur_node.size = 0;
     store->snapshot_marked.size = 0;
+    store->snapshot_marked_e.size = 0;
     store->snapshot_context.size = 0;
     store->snapshots.size = 0;
     store->snapshot_data_bdd.size = 0;
@@ -692,6 +696,10 @@ void take_snapshot(Bdd_store* store) {
     for (u32 i: store->snapshot_marked) {
         store->bdd_data[i].flags |= Bdd::MARKED;
     }
+    for (u32 i: store->snapshot_marked_e) {
+        store->bdd_data[i >> 1].flags |= Bdd::MARKED_E;
+        if (i & 1) store->bdd_data[i >> 1].flags |= Bdd::MARKED_E_1;
+    }
 
     // Save nodes and context into the snapshot
     for (u32 i: reachable) {
@@ -703,6 +711,7 @@ void take_snapshot(Bdd_store* store) {
 
     // Reset the marked nodes
     store->snapshot_marked.size = 0;
+    store->snapshot_marked_e.size = 0;
 }
 
 // Like context_amend, but formats the name of a bdd.
@@ -731,7 +740,7 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
 
 // Compute the union of a and b while doing all the visualisation work. The bdd argument is meant
 // for recursive calls, no need to use it.
-u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
+u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_parent = 0, u32 b_parent = 0) {
     // Duplicated code below in bdd_intersection_stepwise. Take care. Also see the note there.
     
     Bdd a_bdd = store->bdd_data[a];
@@ -765,6 +774,8 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
     // Set the current node and take snapshot
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
     array_append(&store->snapshot_marked, {a, b});
+    if (a_parent) array_push_back(&store->snapshot_marked_e, a_parent);
+    if (b_parent) array_push_back(&store->snapshot_marked_e, b_parent);
     take_snapshot(store);
 
     // Now there are a bunch of special cases. Only a few of them are actually necessary to
@@ -794,7 +805,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
         context_pop(store);
         context_append(store, "The nodes are equal, connect");
         bdd_final = a;
-    } else if (std::max(a_bdd.level, b_bdd.level) == 0) {
+    } else if (std::max(a_bdd.level, b_bdd.level) == 1) {
         // We are at the last level. This one is not necessary.
         
         context_append(store, "Both nodes (");
@@ -840,27 +851,16 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
         // The general case
         
         u8 child_level = std::max(a_bdd.level, b_bdd.level) - 1;
-        // child00 and child01 will be combined to form child0, same for child1
-        u32 child00_par, child01_par;
-        u32 child10_par, child11_par;
         if (a_bdd.level > b_bdd.level) {
             context_append(store, "First node (");
             context_amend_bdd(store, a);
             context_amend(store, ") has higher level, take its branches");
-            array_push_back(&store->snapshot_marked, a);
-            child00_par = a_bdd.child0;
-            child01_par = b;
-            child10_par = a_bdd.child1;
-            child11_par = b;
+            array_push_back(&store->snapshot_marked, a);;
         } else if (a_bdd.level < b_bdd.level) {
             context_append(store, "Second node (");
             context_amend_bdd(store, b);
             context_amend(store, ") has higher level, take its branches");
             array_push_back(&store->snapshot_marked, a);
-            child00_par = a;
-            child01_par = b_bdd.child0;
-            child10_par = a;
-            child11_par = b_bdd.child1;
         } else {
             context_append(store, "Both nodes (");
             context_amend_bdd(store, a);
@@ -868,11 +868,25 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
             context_amend_bdd(store, b);
             context_amend(store, ") at same level, take both");
             array_append(&store->snapshot_marked, {a, b});
-            child00_par = a_bdd.child0;
-            child01_par = b_bdd.child0;
-            child10_par = a_bdd.child1;
-            child11_par = b_bdd.child1;
         }
+
+        // child00 and child01 will be combined to form child0, same for child1
+        u32 child00_par = a, child01_par = b, child00_parent = 0, child01_parent = 0;
+        u32 child10_par = a, child11_par = b, child10_parent = 0, child11_parent = 0;
+        if (a_bdd.level >= b_bdd.level) {
+            // Take a's children
+            child00_par = a_bdd.child0;
+            child10_par = a_bdd.child1;
+            child00_parent = a << 1 | 0;
+            child10_parent = a << 1 | 1;
+        }
+        if (b_bdd.level >= a_bdd.level) {
+            // Take b's children
+            child01_par = b_bdd.child0;
+            child11_par = b_bdd.child1;
+            child01_parent = b << 1 | 0;
+            child11_parent = b << 1 | 1;
+        }        
 
         // Both children are created as temporary nodes, the recursive calls will populate them
         bdd_temp.child0 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
@@ -884,13 +898,13 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
 
         // Recusively fill in the children
         
-        bdd_temp.child0 = bdd_union_stepwise(store, child00_par, child01_par, bdd_temp.child0);
+        bdd_temp.child0 = bdd_union_stepwise(store, child00_par, child01_par, bdd_temp.child0, child00_parent, child01_parent);
         store->bdd_data[bdd_temp.id] = bdd_temp; // Write back changes into the store
         take_snapshot(store);
         context_pop(store);
         --store->snapshot_cur_node.size;
         
-        bdd_temp.child1 = bdd_union_stepwise(store, child10_par, child11_par, bdd_temp.child1);
+        bdd_temp.child1 = bdd_union_stepwise(store, child10_par, child11_par, bdd_temp.child1, child10_parent, child11_parent);
         store->bdd_data[bdd_temp.id] = bdd_temp; // Write back changes into the store
         take_snapshot(store);
         context_pop(store);
@@ -2267,12 +2281,17 @@ struct Draw_param {
 
 // Data needed to draw a bdd
 struct Bdd_attr {
+    enum Mark_edge_t: u8 {
+        MARK_NOTHING = 0, MARK_CHILD0, MARK_CHILD1
+    };
+    
     float x = 0.f, y = 0.f; // Position of the centre in world space
     float rx = 0.f, ry = 0.f; // Radius in x and y direction
     float font_x = 0.f, font_y = 0.f; // Position of the font centre. Not the same as x and y, but at most a pixel off.
     float border = 0.05f;
     u8 stroke[4] = {}; // Color to draw the border, in RGBA
     u8 fill[4]   = {}; // Color to fill the area, in RGBA
+    u8 mark_edge = 0; // Whether to mark a child
 };
 
 // Keeps the necessary data to manage WebGL rendering
@@ -3529,14 +3548,20 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
             color_set(a.fill,   0xf8f2f3ff);
             a.border *= 1.2f;
         } else if (bdd.flags & Bdd::MARKED) { 
-           color_set(a.stroke, 0x217516ff);
+            color_set(a.stroke, 0x217516ff);
             color_set(a.fill,   0xf3f8f3ff);
+        } else if (bdd.flags & Bdd::MARKED_E) { 
+            color_set(a.stroke, 0x884babff);
+            color_set(a.fill,   0xf9f6fbff);
         } else if (bdd.flags & Bdd::TEMPORARY) {
             color_set(a.stroke, 0x104354ff);
             color_set(a.fill,   0xf3f5f6ff);
         } else {
             color_set(a.stroke, 0x000000ff);
             color_set(a.fill,   0xffffffff);
+        }
+        if (bdd.flags & Bdd::MARKED_E) {
+            bdd.mark_edge = bdd.flags & Bdd::MARKED_E_1 ? Bdd_attr::MARK_CHILD1 : Bdd_attr::MARK_CHILD0;
         }
         return a;
     };
@@ -3872,7 +3897,14 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     for (u32 i = 2; i < 2*store.bdd_data.size; ++i) {
         float dash_length = i & 1 ? 0.f : param.dash_length;
         Bdd_attr bdd0 = attr_cur[i >> 1];
-        u8 stroke_black [] = {0, 0, 0, bdd0.stroke[3]};
+        
+        // Check whether the edge is marked
+        u8 stroke_col[] = {0};
+        if (   (not (i&2) and bdd0.mark_edge = Bdd_attr::MARK_CHILD0)
+            or (    (i&2) and bdd0.mark_edge = Bdd_attr::MARK_CHILD1)) {
+            color_set(stroke_col, 0x884babff);
+        }
+        stroke_col[3] = bdd0.stroke[3];
         
         edge_data.size = 0;
 
@@ -3892,27 +3924,27 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 Bdd_attr bdd1 = attr_cur[bdds0[edge0.to].id];
                 Pos p1, p2;
                 edge_mix_points(&edge_data, edge0_data, edge1_data, t);
-                edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_black, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_black);
+                edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
+                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             } else {
                 // We are not. This is the same as both destroying and creating an edge at the same
                 // time, so do both animations.
                 
                 Bdd_attr bdd10 = attr_cur[bdds0[edge0.to].id];
                 Pos p1, p2;
-                u8 stroke_black2[] = {stroke_black[0], stroke_black[1], stroke_black[2], stroke_black[3]};
-                stroke_black2[3] = (u8)(((u64)stroke_black2[3] * (u64)bdd10.stroke[3]) / 255);
+                u8 stroke_col2[] = {stroke_col[0], stroke_col[1], stroke_col[2], stroke_col[3]};
+                stroke_col2[3] = (u8)(((u64)stroke_col2[3] * (u64)bdd10.stroke[3]) / 255);
                 array_append(&edge_data, edge0_data);
-                edge_draw_array(edge_data, bdd0, bdd10, dash_length, 1.f, stroke_black2, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_black2);
+                edge_draw_array(edge_data, bdd0, bdd10, dash_length, 1.f, stroke_col2, &p1, &p2);
+                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col2);
 
                 float length;
                 edge_data.size = 0;
                 array_append(&edge_data, edge1_data);
                 Pos p = edge_data[edge_data.size-1];
                 Bdd_attr bdd11 = {p.x, p.y, param.node_radius, param.node_radius*param.squish_fac};
-                edge_draw_array(edge_data, bdd0, bdd11, dash_length, t, stroke_black, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_black);
+                edge_draw_array(edge_data, bdd0, bdd11, dash_length, t, stroke_col, &p1, &p2);
+                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             }
         } else if (edge_map0[i] == -1 and edge_map1[i] != -1) {
             // The edge was created
@@ -3929,15 +3961,15 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 float length;
                 Pos p = edge_data[edge_data.size-1];
                 bdd1 = {p.x, p.y, param.node_radius, param.node_radius*param.squish_fac};
-                edge_draw_array(edge_data, bdd0, bdd1, dash_length, t, stroke_black, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_black);
+                edge_draw_array(edge_data, bdd0, bdd1, dash_length, t, stroke_col, &p1, &p2);
+                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             } else {
                 // Somewhat hacky way to detect that the child is being created in the way where it
                 // pops out of the parent (you know, the natural way) instead of just appearing out
                 // of thin air; which happens when a child already has children at creation.
-                stroke_black[3] = (u8)(((u64)stroke_black[3] * (u64)bdd1.stroke[3]) / 255);
-                edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_black, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_black);
+                stroke_col[3] = (u8)(((u64)stroke_col[3] * (u64)bdd1.stroke[3]) / 255);
+                edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
+                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             }
         } else if (edge_map0[i] != -1 and edge_map1[i] == -1) {
             // Edge is destroyed. Fade it out.
@@ -3948,8 +3980,8 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
             array_append(&edge_data, edge0_data);
             
             Pos p1, p2;
-            edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_black, &p1, &p2);
-            webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_black);
+            edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
+            webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
         } else {
             // Edge exists in neither frame, so do nothing
         }
@@ -4066,27 +4098,54 @@ EM_JS(void, ui_bddinfo_show_js, (float x, float y, char* text, int right, int bo
 })
 
 // Get all numbers stored by a node
-void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<Bdd> bdds, u32 bdd, u32 prefix) {
+void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<Bdd> bdds, u32 bdd) {
     if (bdd == 1) {
-        array_push_back(children, prefix >> 1);
+        // This is the empty bitstring
+        array_push_back(children, 0);
     } else if (bdd == 0) {
         // nothing
     } else {
         Bdd i = bdds[id_map[bdd]];
-        Bdd child0;
+        {Bdd child0;
         if (id_map[i.child0] != (u32)-1) {
             child0 = bdds[id_map[i.child0]];
         } else {
             child0 = global_store.bdd_data[i.child0];
         }
-        Bdd child1;
+
+        s64 index = children->size;
+
+        _collect_children(children, id_map, bdds, i.child0);
+        
+        // Add any levels the edges skips back in
+        for (u32 level = child0.level+1; level < i.level; ++level) {
+            s64 size = children->size;
+            for (s64 i = index; i < size; ++i) {
+                array_push_back(children, ((u32)1 << level-1) | (*children)[i])
+            }
+        }}
+
+        // Same for child1
+        {Bdd child1;
         if (id_map[i.child1] != (u32)-1) {
             child1 = bdds[id_map[i.child1]];
         } else {
             child1 = global_store.bdd_data[i.child1];
         }
-        _collect_children(children, id_map, bdds, i.child0, prefix);
-        _collect_children(children, id_map, bdds, i.child1, prefix | 1 << i.level);
+
+        s64 index = children->size;
+
+        _collect_children(children, id_map, bdds, i.child1);
+        
+        for (u32 level = child1.level+1; level < i.level; ++level) {
+            s64 size = children->size;
+            for (s64 i = index; i < size; ++i) {
+                array_push_back(children, ((u32)1 << level-1) | (*children)[i])
+            }
+        }
+        for (s64 i = index; i < children->size; ++i) {
+            (*children)[i] |= ((u32)1 << i.level-1)
+        }}
     }
 };
 
