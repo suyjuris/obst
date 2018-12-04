@@ -10,11 +10,12 @@ obst was written by Philipp Czerner in 2018. You can contact me via e-mail (cont
 
 ## Usage instructions
 
-I hope the website is pretty self-explanatory, but a few keyboard shortcuts are not documented there. So, here is the full list of keybindings:
+I hope the website is pretty self-explanatory, but a few details are not documented there. So, here is the full list of keybindings:
 
 * *Left, Right*: Move to the previous/next frame of the animation.
 * *Page down, Page up*: Move to the previous/next checkpoint, that is the first frame of an operation.
 * *Home, End*: Move to the first/last frame.
+* *F1*: Show/hide the help.
 * *Shift-1* (well, `!` actually): Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside obst and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Finally, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
 
 When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid.

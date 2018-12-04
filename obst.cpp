@@ -893,6 +893,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         take_snapshot(store);
         context_pop(store);
 
+        context_pop(store);
         bdd_final = bdd_finalize(store, bdd_temp);
     } else {
         // The general case
@@ -902,7 +903,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
             context_append(store, "First node (");
             context_amend_bdd(store, a);
             context_amend(store, ") has higher level, take its branches");
-            array_push_back(&store->snapshot_marked, a);;
+            array_push_back(&store->snapshot_marked, a);
         } else if (a_bdd.level < b_bdd.level) {
             context_append(store, "Second node (");
             context_amend_bdd(store, b);
@@ -941,7 +942,6 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         store->bdd_data[bdd_temp.id] = bdd_temp; // Write back changes into the store
 
         take_snapshot(store);
-        context_pop(store);
 
         // Recusively fill in the children
         
@@ -957,6 +957,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         context_pop(store);
         --store->snapshot_cur_node.size;
 
+        context_pop(store);
         context_pop(store);
         bdd_final = bdd_finalize(store, bdd_temp);
     }
@@ -976,7 +977,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
 }
 
 // See note on stepwise functions above.
-u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
+u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_parent = -1, u32 b_parent = -1) {
     // This is the same code as in bdd_union_stepwise. Could be somewhat easily merged into a single
     // function, though readability will suffer.
     
@@ -987,25 +988,35 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
     if (bdd == (u32)-1) {
         bdd_temp = {0, 0, std::max(a_bdd.level, b_bdd.level), Bdd::TEMPORARY};
         bdd_temp.id = bdd_create(store, bdd_temp);
-        context_append(store, "Calculating intersection of ");
-        context_amend_bdd(store, a);
-        context_amend(store, " and ");
-        context_amend_bdd(store, b);
-        context_amend(store, " as node ");
-        context_amend_bdd(store, bdd_temp.id);
         array_push_back(&store->snapshot_parents, bdd_temp.id);
+
+        context_append(store, "Calculating intersection of ");
     } else {
         bdd_temp = store->bdd_data[bdd];
+        
         context_append(store, "Doing intersection of ");
-        context_amend_bdd(store, a);
-        context_amend(store, " and ");
-        context_amend_bdd(store, b);
-        context_amend(store, " for node ");
-        context_amend_bdd(store, bdd_temp.id);
     }
+    
+    context_amend_bdd(store, a);
+    if (a == 0 and a_parent != -1) {
+        context_amend(store, " (node ");
+        context_amend_bdd(store, a_parent >> 1);
+        context_amend(store, a_parent & 1 ? " has no child 1)" : " has no child 0)");
+    }
+    context_amend(store, " and ");
+    context_amend_bdd(store, b);
+    if (b == 0 and b_parent != -1) {
+        context_amend(store, " (node ");
+        context_amend_bdd(store, b_parent >> 1);
+        context_amend(store, b_parent & 1 ? " has no child 1)" : " has no child 0)");
+    }
+    context_amend(store, " for node ");
+    context_amend_bdd(store, bdd_temp.id);
 
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
     array_append(&store->snapshot_marked, {a, b});
+    if (a_parent != -1) array_push_back(&store->snapshot_marked_e, a_parent);
+    if (b_parent != -1) array_push_back(&store->snapshot_marked_e, b_parent);
     take_snapshot(store);
 
     u32 bdd_final;
@@ -1028,7 +1039,7 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
         context_pop(store);
         context_append(store, "The nodes are equal, connect");
         bdd_final = a;
-    } else if (std::max(a_bdd.level, b_bdd.level) == 0) {
+    } else if (std::max(a_bdd.level, b_bdd.level) == 1) {
         context_append(store, "Both nodes (");
         context_amend_bdd(store, a);
         context_amend(store, " and ");
@@ -1041,7 +1052,7 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
         bdd_temp.child0 = a_bdd.child0 & b_bdd.child0;
         store->bdd_data[bdd_temp.id] = bdd_temp;
 
-        context_append(store, "First child is ");
+        context_append(store, "Child 0 is ");
         context_amend_bdd(store, bdd_temp.child0);
         context_amend(store, ", intersection of ");
         context_amend_bdd(store, a_bdd.child0);
@@ -1054,7 +1065,7 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
         bdd_temp.child1 = a_bdd.child1 & b_bdd.child1;
         store->bdd_data[bdd_temp.id] = bdd_temp;
         
-        context_append(store, "Second child is ");
+        context_append(store, "Child 1 is ");
         context_amend_bdd(store, bdd_temp.child1);
         context_amend(store, ", intersection of ");
         context_amend_bdd(store, a_bdd.child1);
@@ -1064,62 +1075,63 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1) {
         take_snapshot(store);
         context_pop(store);
 
+        context_pop(store);
         bdd_final = bdd_finalize(store, bdd_temp);
     } else {
         u8 child_level = std::max(a_bdd.level, b_bdd.level) - 1;
-        u32 child00_par, child01_par;
-        u32 child10_par, child11_par;
         if (a_bdd.level > b_bdd.level) {
             context_append(store, "First node (");
             context_amend_bdd(store, a);
             context_amend(store, ") has higher level, take its branches");
             array_push_back(&store->snapshot_marked, a);
-            child00_par = a_bdd.child0;
-            child01_par = b;
-            child10_par = a_bdd.child1;
-            child11_par = b;
         } else if (a_bdd.level < b_bdd.level) {
             context_append(store, "Second node (");
             context_amend_bdd(store, b);
             context_amend(store, ") has higher level, take its branches");
             array_push_back(&store->snapshot_marked, a);
-            child00_par = a;
-            child01_par = b_bdd.child0;
-            child10_par = a;
-            child11_par = b_bdd.child1;
         } else {
             context_append(store, "Both nodes (");
             context_amend_bdd(store, a);
             context_amend(store, " and ");
             context_amend_bdd(store, b);
-            context_amend(store, ") at same level, take both");
+            context_amend(store, ") at same level, take children of both");
             array_append(&store->snapshot_marked, {a, b});
-            child00_par = a_bdd.child0;
-            child01_par = b_bdd.child0;
-            child10_par = a_bdd.child1;
-            child11_par = b_bdd.child1;
         }
+
+        u32 child00_par = a, child01_par = b, child00_parent = 0, child01_parent = 0;
+        u32 child10_par = a, child11_par = b, child10_parent = 0, child11_parent = 0;
+        if (a_bdd.level >= b_bdd.level) {
+            child00_par = a_bdd.child0;
+            child10_par = a_bdd.child1;
+            child00_parent = a << 1 | 0;
+            child10_parent = a << 1 | 1;
+        }
+        if (b_bdd.level >= a_bdd.level) {
+            child01_par = b_bdd.child0;
+            child11_par = b_bdd.child1;
+            child01_parent = b << 1 | 0;
+            child11_parent = b << 1 | 1;
+        }        
 
         bdd_temp.child0 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
         bdd_temp.child1 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
         store->bdd_data[bdd_temp.id] = bdd_temp;
 
         take_snapshot(store);
-        context_pop(store);
 
-        bdd_temp.child0 = bdd_intersection_stepwise(store, child00_par, child01_par, bdd_temp.child0);
+        bdd_temp.child0 = bdd_intersection_stepwise(store, child00_par, child01_par, bdd_temp.child0, child00_parent, child01_parent);
         store->bdd_data[bdd_temp.id] = bdd_temp;
         take_snapshot(store);
         context_pop(store);
         --store->snapshot_cur_node.size;
 
-        
-        bdd_temp.child1 = bdd_intersection_stepwise(store, child10_par, child11_par, bdd_temp.child1);
+        bdd_temp.child1 = bdd_intersection_stepwise(store, child10_par, child11_par, bdd_temp.child1, child10_parent, child11_parent);
         store->bdd_data[bdd_temp.id] = bdd_temp;
         take_snapshot(store);
         context_pop(store);
         --store->snapshot_cur_node.size;
 
+        context_pop(store);
         context_pop(store);
         bdd_final = bdd_finalize(store, bdd_temp);
     }
@@ -1290,11 +1302,11 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         context_append(store, "Splitting at bit %hhd (last level). The child 0 sublist is ", level);
         if (base != 2) {
             context_amend_list_base(store, lst0, 2, levels_total, level);
-            context_amend(store, " (e.g. ");
+            context_amend(store, " (i.e. ");
             context_amend_list_base(store, lst0, base);
             context_amend(store, "), the child 1 sublist is ");
             context_amend_list_base(store, lst1, 2, levels_total, level);
-            context_amend(store, " (e.g. ");
+            context_amend(store, " (i.e. ");
             context_amend_list_base(store, lst1, base);
             context_amend(store, ")");
         } else {
@@ -1344,11 +1356,11 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         context_append(store, "Splitting at bit %hhd into sublists of length %lld and %lld. The child 0 sublist is ", level, lst0.size, lst1.size);
         if (base != 2) {
             context_amend_list_base(store, lst0, 2, levels_total, level);
-            context_amend(store, " (e.g. ");
+            context_amend(store, " (i.e. ");
             context_amend_list_base(store, lst0, base);
             context_amend(store, "), the child 1 sublist is ");
             context_amend_list_base(store, lst1, 2, levels_total, level);
-            context_amend(store, " (e.g. ");
+            context_amend(store, " (i.e. ");
             context_amend_list_base(store, lst1, base);
             context_amend(store, ")");
         } else {
@@ -2520,11 +2532,16 @@ EM_JS(int, webgl_text_prepare_js, (int size, int w, float* offsets), {
     ctx.fillText("0", 0.5, 0.5);
     var i;
     var data = ctx.getImageData(0, 0, m.width, size);
-    var actualHeight = 0;
-    var greater_zero = /** @type {function(number):boolean} */ function(x) { return x > 0; };
+    var actualTop = 0;
+    var actualBot = 0;
+    var greater_zero = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
     for (i = 0; i < size; i++) {
-        if (data.data.slice(i*4*m.width, (i+1)*4*m.width).some(greater_zero)) {
-            actualHeight = i+1;
+        var flag = data.data.slice(i*4*m.width, (i+1)*4*m.width).some(greater_zero);
+        if (flag) {
+            actualTop = i+2;
+        }
+        if (!flag && actualBot == i) {
+            actualBot = i+1;
         }
     }
 
@@ -2539,18 +2556,18 @@ EM_JS(int, webgl_text_prepare_js, (int size, int w, float* offsets), {
         var m = ctx.measureText(s);
         ctx.fillText(s, x+0.5, y+0.5);
         setValue(offsets+i*16,    x/w,           "float");
-        setValue(offsets+i*16+4,  y/w,           "float");
+        setValue(offsets+i*16+4,  (y+actualBot)/w,           "float");
         setValue(offsets+i*16+8,  (x+m.width)/w, "float");
-        setValue(offsets+i*16+12, (y+size)/w,     "float");
+        setValue(offsets+i*16+12, (y+actualTop)/w,    "float");
         x = x + m.width + 1;
         if (x + size >= w) {
-            x = 0;
+            x = 1;
             y = y + size + 1;
         }
     }
     var gl = document.getElementById("canvas").getContext("webgl");
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    return size;
+    return actualTop - actualBot;
 });
 
 // (Re-)initialise the text glyph texture.
@@ -4097,6 +4114,7 @@ Array_t<u8> ui_get_radio_value(char const* element) {
 struct Ui_context {
     Array_dyn<u8> ui_buf;
     Array_dyn<u32> buf_id_map;
+    Array_dyn<u32> buf_id_map_end;
     Array_dyn<u32> buf_children;
     
     Array_dyn<s64> frame_section; // Stores the frames between algorithms
@@ -4251,15 +4269,28 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     array_resize(&global_ui.buf_id_map, global_store.bdd_data.size);
     Array_dyn<u32> id_map = global_ui.buf_id_map;
     memset(id_map.data, -1, id_map.size * sizeof(id_map[0]));
+    
+    array_resize(&global_ui.buf_id_map_end, global_store.bdd_data.size);
+    Array_dyn<u32> id_map_end = global_ui.buf_id_map_end;
+    memset(id_map_end.data, -1, id_map_end.size * sizeof(id_map_end[0]));
 
     auto bdds = array_subarray(
         global_store.snapshot_data_bdd,
         global_store.snapshots[frame].offset_bdd,
         global_store.snapshots[frame+1].offset_bdd
     );
+    
+    auto bdds_end = array_subarray(
+        global_store.snapshot_data_bdd,
+        global_store.snapshots[global_store.snapshots.size-2].offset_bdd,
+        global_store.snapshots[global_store.snapshots.size-1].offset_bdd
+    );
 
     for (s64 i = 0; i < bdds.size; ++i) {
         id_map[bdds[i].id] = i;
+    }
+    for (s64 i = 0; i < bdds_end.size; ++i) {
+        id_map_end[bdds_end[i].id] = i;
     }
 
     if (id_map[bdd] == (u32)-1) {
@@ -4276,10 +4307,34 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     
     Array_dyn<u8> buf = global_ui.ui_buf;
     defer { global_ui.ui_buf = buf; };
-    array_reserve(&buf, 128 + children.size * (2*bdd_bdd.level+4));
+    array_reserve(&buf, 1024 + children.size * (2*bdd_bdd.level+4));
     buf.size = buf.capacity;
     char* p = (char*)buf.data;
 
+    auto print_children = [&]() {
+        bool first = true;
+        for (u32 child: children) {
+            if (not first) {
+                p += snprintf(p, buf.end() - (u8*)p, ", ");
+            }
+            first = false;
+
+            for (s64 i = bdd_bdd.level-1; i >= 0; --i) {
+                *p++ = child >> i & 1 ? '1' : '0';
+            }
+        }
+        p += snprintf(p, buf.end() - (u8*)p, "</p><p class=\"close\">(Decimal: ");
+        first = true;
+        for (u32 child: children) {
+            if (not first) {
+                p += snprintf(p, buf.end() - (u8*)p, ", ");
+            }
+            first = false;
+            p += snprintf(p, buf.end() - (u8*)p, "%d", child);
+        }
+        p += snprintf(p, buf.end() - (u8*)p, ")");
+    };
+    
     // Generate the info text
     if (bdd == 1) {
         p += snprintf(p, buf.end() - (u8*)p, "<p class=\"close\"><b>Node T</b></p>\n<p>This node is special. It represents "
@@ -4295,27 +4350,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
             p += snprintf(p, buf.end() - (u8*)p, "%s number%s ",
                 bdd_bdd.flags & Bdd::TEMPORARY ? "Currently represents" : "Represents",
                 children.size > 1 ? "s" : "");
-            bool first = true;
-            for (u32 child: children) {
-                if (not first) {
-                    p += snprintf(p, buf.end() - (u8*)p, ", ");
-                }
-                first = false;
-
-                for (s64 i = bdd_bdd.level-1; i >= 0; --i) {
-                    *p++ = child >> i & 1 ? '1' : '0';
-                }
-            }
-            p += snprintf(p, buf.end() - (u8*)p, "</p><p class=\"close\">(Decimal: ");
-            first = true;
-            for (u32 child: children) {
-                if (not first) {
-                    p += snprintf(p, buf.end() - (u8*)p, ", ");
-                }
-                first = false;
-                p += snprintf(p, buf.end() - (u8*)p, "%d", child);
-            }
-            p += snprintf(p, buf.end() - (u8*)p, ")");
+            print_children();
         } else {
             if (bdd_bdd.flags & Bdd::TEMPORARY) {
                 p += snprintf(p, buf.end() - (u8*)p, "Does not represent any numbers (yet)");
@@ -4323,6 +4358,17 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
                 p += snprintf(p, buf.end() - (u8*)p, "Empty set");
             }
         }
+        if (bdd_bdd.flags & Bdd::TEMPORARY and id_map_end[bdd] != -1) {
+            // The node is still there in the end, so thell the user what it will contain later
+            
+            children.size = 0;
+            _collect_children(&children, id_map_end, bdds_end, bdd);
+            
+            p += snprintf(p, buf.end() - (u8*)p, "</p>\n<p class=\"close\">Eventually, it will represent number%s ",
+                children.size != 1 ? "s" : "");
+            print_children();
+        }
+
     }
     p += snprintf(p, buf.end() - (u8*)p, "</p>\n");
 
