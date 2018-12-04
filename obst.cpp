@@ -88,7 +88,6 @@ struct Array_t {
     //    }
 	//	return data[pos];
 	//}
-    
 
     T* begin() { return data; }
 	T* end()   { return data + size; }
@@ -408,9 +407,9 @@ struct Bdd {
         TEMPORARY = 1,    // These nodes are created during the execution of a stepwise algorithm to illustrate the current state to the puny humans watching it. They are not subject to deduplication and are either deleted or finalised using bdd_finalize.
         CURRENT = 2,      // The active node the algorithm is considering. Drawn in red.
         MARKED = 4,       // Some nodes are relevant to the current operation and will be marked by the algorithm. Drawn in green.
-        MARKED_E = 8,     // Sometimes, we need even more colours. This corresponds to the parents of marked edges
-        MARKED_E_1 = 16,  // Whether the first or the second child-edge is marked
-        COSMETIC = CURRENT | MARKED | MARKED2 | MARKED_E_1 // Used to reset the cosmetic flags which are cleared after the snapshot is taken.
+        MARKED_E0 = 8,    // Sometimes, we need even more colours. This corresponds to whether the edge to child0 is marked.
+        MARKED_E1 = 16,   // Same, but for child1.
+        COSMETIC = CURRENT | MARKED | MARKED_E0 | MARKED_E1, // Used to reset the cosmetic flags which are cleared after the snapshot is taken.
         INTERMEDIATE = 32 // These nodes are used by the layout algorithm to deal with edges spanning multiple layers. They exist just in the imagination of the layout algorithm and are not drawn anywhere.
     };
 
@@ -697,8 +696,7 @@ void take_snapshot(Bdd_store* store) {
         store->bdd_data[i].flags |= Bdd::MARKED;
     }
     for (u32 i: store->snapshot_marked_e) {
-        store->bdd_data[i >> 1].flags |= Bdd::MARKED_E;
-        if (i & 1) store->bdd_data[i >> 1].flags |= Bdd::MARKED_E_1;
+        store->bdd_data[i >> 1].flags |= i & 1 ? Bdd::MARKED_E1 : Bdd::MARKED_E0;
     }
 
     // Save nodes and context into the snapshot
@@ -2281,9 +2279,6 @@ struct Draw_param {
 
 // Data needed to draw a bdd
 struct Bdd_attr {
-    enum Mark_edge_t: u8 {
-        MARK_NOTHING = 0, MARK_CHILD0, MARK_CHILD1
-    };
     
     float x = 0.f, y = 0.f; // Position of the centre in world space
     float rx = 0.f, ry = 0.f; // Radius in x and y direction
@@ -2291,7 +2286,8 @@ struct Bdd_attr {
     float border = 0.05f;
     u8 stroke[4] = {}; // Color to draw the border, in RGBA
     u8 fill[4]   = {}; // Color to fill the area, in RGBA
-    u8 mark_edge = 0; // Whether to mark a child
+    float mark_child0 = 0.f; // How much the child0 edge is marked
+    float mark_child1 = 0.f; // How much the child1 edge is marked
 };
 
 // Keeps the necessary data to manage WebGL rendering
@@ -3550,7 +3546,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         } else if (bdd.flags & Bdd::MARKED) { 
             color_set(a.stroke, 0x217516ff);
             color_set(a.fill,   0xf3f8f3ff);
-        } else if (bdd.flags & Bdd::MARKED_E) { 
+        } else if (bdd.flags & (Bdd::MARKED_E0 | Bdd::MARKED_E1)) { 
             color_set(a.stroke, 0x884babff);
             color_set(a.fill,   0xf9f6fbff);
         } else if (bdd.flags & Bdd::TEMPORARY) {
@@ -3560,8 +3556,11 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
             color_set(a.stroke, 0x000000ff);
             color_set(a.fill,   0xffffffff);
         }
-        if (bdd.flags & Bdd::MARKED_E) {
-            bdd.mark_edge = bdd.flags & Bdd::MARKED_E_1 ? Bdd_attr::MARK_CHILD1 : Bdd_attr::MARK_CHILD0;
+        if (bdd.flags & Bdd::MARKED_E0) {
+            a.mark_child0 = 1.f;
+        }
+        if (bdd.flags & Bdd::MARKED_E1) {
+            a.mark_child1 = 1.f;
         }
         return a;
     };
@@ -3576,6 +3575,8 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         a0->border = (1.f-t) * a0->border + t * a1.border;
         color_inter(a0->stroke, a1.stroke, t);
         color_inter(a0->fill,   a1.fill,   t);
+        a0->mark_child0 = (1.f-t) * a0->mark_child0 + t * a1.mark_child0;
+        a0->mark_child1 = (1.f-t) * a0->mark_child1 + t * a1.mark_child1;
     };
     // Draw the bdds with the given attributes
     auto bdd_attr_apply = [param, context, &attr_cur](Bdd_attr a, u32 id) {
@@ -3899,11 +3900,12 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         Bdd_attr bdd0 = attr_cur[i >> 1];
         
         // Check whether the edge is marked
-        u8 stroke_col[] = {0};
-        if (   (not (i&2) and bdd0.mark_edge = Bdd_attr::MARK_CHILD0)
-            or (    (i&2) and bdd0.mark_edge = Bdd_attr::MARK_CHILD1)) {
-            color_set(stroke_col, 0x884babff);
-        }
+        u8 stroke_col[] = {0, 0, 0, 0};
+        
+        u8 stroke_marked[] = {0, 0, 0, 0};
+        color_set(stroke_marked, 0x884babff);
+        color_inter(stroke_col, stroke_marked, i&1 ? bdd0.mark_child1 : bdd0.mark_child0);
+        
         stroke_col[3] = bdd0.stroke[3];
         
         edge_data.size = 0;
@@ -4101,7 +4103,7 @@ EM_JS(void, ui_bddinfo_show_js, (float x, float y, char* text, int right, int bo
 void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<Bdd> bdds, u32 bdd) {
     if (bdd == 1) {
         // This is the empty bitstring
-        array_push_back(children, 0);
+        array_push_back(children, (u32)0);
     } else if (bdd == 0) {
         // nothing
     } else {
@@ -4121,7 +4123,7 @@ void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<
         for (u32 level = child0.level+1; level < i.level; ++level) {
             s64 size = children->size;
             for (s64 i = index; i < size; ++i) {
-                array_push_back(children, ((u32)1 << level-1) | (*children)[i])
+                array_push_back(children, ((u32)1 << (level-1)) | (*children)[i]);
             }
         }}
 
@@ -4140,11 +4142,11 @@ void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<
         for (u32 level = child1.level+1; level < i.level; ++level) {
             s64 size = children->size;
             for (s64 i = index; i < size; ++i) {
-                array_push_back(children, ((u32)1 << level-1) | (*children)[i])
+                array_push_back(children, ((u32)1 << (level-1)) | (*children)[i]);
             }
         }
-        for (s64 i = index; i < children->size; ++i) {
-            (*children)[i] |= ((u32)1 << i.level-1)
+        for (s64 j = index; j < children->size; ++j) {
+            (*children)[j] |= ((u32)1 << (i.level-1));
         }}
     }
 };
@@ -4188,7 +4190,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     defer { global_ui.buf_children = children; };
     children.size = 0;
 
-    _collect_children(&children, id_map, bdds, bdd, 0);
+    _collect_children(&children, id_map, bdds, bdd);
 
     Bdd bdd_bdd = bdds[id_map[bdd]];
     
