@@ -624,6 +624,48 @@ void context_amend_list(Bdd_store* store, Array_t<T> list, char const* fmt) {
     context_amend(store, "]");
 }
 
+void context_amend_number_base(Bdd_store* store, u64 number, s64 base, s64 digit_count = -1, s64 digit_mark = -1) {
+    char const* fmt = "<b>%</b>";
+    
+    // If there is no fixed count, determine the actual amount here
+    if (digit_count == -1) {
+        digit_count = 0;
+        for (u64 ii = number; ii or digit_count == 0; ii /= base) ++digit_count;
+    }
+
+    s64 buf_size = digit_count + strlen(fmt) + 1;
+    Array_t<char> buf = {(char*)alloca(buf_size), buf_size};
+
+    s64 j = buf.size;
+    buf[--j] = 0;
+    for (s64 j_it = 0; j_it < digit_count; ++j_it) {
+        s64 digit = number % base;
+        number /= base;
+            
+        char c = (char)(digit < 10 ? '0' + digit : 'a' + digit - 10);
+        if (j_it == digit_mark) {
+            j -= strlen(fmt);
+            for (s64 k = 0; fmt[k]; ++k)
+                buf[j+k] = fmt[k] != '%' ? fmt[k] : c;
+        } else {
+            buf[--j] = c;
+        }
+    }
+    context_amend(store, &buf[j]);
+}
+
+void context_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base, s64 digit_count = -1, s64 digit_mark = -1) {
+    context_amend(store, "[");
+    bool first = true;
+    
+    for (u64 i: list) {
+        if (not first) context_amend(store, ", ");
+        first = false;
+        context_amend_number_base(store, i, base, digit_count, digit_mark);
+    }
+    context_amend(store, "]");
+}
+
 // Pop the last element of the context stack. This will assert if it is empty.
 void context_pop(Bdd_store* store) {
     --store->snapshot_context.size;
@@ -738,7 +780,7 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
 
 // Compute the union of a and b while doing all the visualisation work. The bdd argument is meant
 // for recursive calls, no need to use it.
-u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_parent = 0, u32 b_parent = 0) {
+u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_parent = -1, u32 b_parent = -1) {
     // Duplicated code below in bdd_intersection_stepwise. Take care. Also see the note there.
     
     Bdd a_bdd = store->bdd_data[a];
@@ -750,30 +792,37 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         // Create a new node for the union
         bdd_temp = {0, 0, std::max(a_bdd.level, b_bdd.level), Bdd::TEMPORARY};
         bdd_temp.id = bdd_create(store, bdd_temp);
+        array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
         
         context_append(store, "Calculating union of ");
-        context_amend_bdd(store, a);
-        context_amend(store, " and ");
-        context_amend_bdd(store, b);
-        context_amend(store, " as node ");
-        context_amend_bdd(store, bdd_temp.id);
-        array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
     } else {
         // In a recursive call, we get passed a node into which we construct the result
         bdd_temp = store->bdd_data[bdd];
+        
         context_append(store, "Doing union of ");
-        context_amend_bdd(store, a);
-        context_amend(store, " and ");
-        context_amend_bdd(store, b);
-        context_amend(store, " for node ");
-        context_amend_bdd(store, bdd_temp.id);
     }
+    
+    context_amend_bdd(store, a);
+    if (a == 0 and a_parent != -1) {
+        context_amend(store, " (node ");
+        context_amend_bdd(store, a_parent >> 1);
+        context_amend(store, a_parent & 1 ? " has no child 1)" : " has no child 0)");
+    }
+    context_amend(store, " and ");
+    context_amend_bdd(store, b);
+    if (b == 0 and b_parent != -1) {
+        context_amend(store, " (node ");
+        context_amend_bdd(store, b_parent >> 1);
+        context_amend(store, b_parent & 1 ? " has no child 1)" : " has no child 0)");
+    }
+    context_amend(store, " for node ");
+    context_amend_bdd(store, bdd_temp.id);
 
     // Set the current node and take snapshot
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
     array_append(&store->snapshot_marked, {a, b});
-    if (a_parent) array_push_back(&store->snapshot_marked_e, a_parent);
-    if (b_parent) array_push_back(&store->snapshot_marked_e, b_parent);
+    if (a_parent != -1) array_push_back(&store->snapshot_marked_e, a_parent);
+    if (b_parent != -1) array_push_back(&store->snapshot_marked_e, b_parent);
     take_snapshot(store);
 
     // Now there are a bunch of special cases. Only a few of them are actually necessary to
@@ -820,7 +869,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         bdd_temp.child0 = a_bdd.child0 | b_bdd.child0;
         store->bdd_data[bdd_temp.id] = bdd_temp; // Write back changes into the store
 
-        context_append(store, "First child is ");
+        context_append(store, "Child 0 is ");
         context_amend_bdd(store, bdd_temp.child0);
         context_amend(store, ", union of ");
         context_amend_bdd(store, a_bdd.child0);
@@ -834,7 +883,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         bdd_temp.child1 = a_bdd.child1 | b_bdd.child1;
         store->bdd_data[bdd_temp.id] = bdd_temp; // Write back changes into the store
         
-        context_append(store, "Second child is ");
+        context_append(store, "Child 1 is ");
         context_amend_bdd(store, bdd_temp.child1);
         context_amend(store, ", union of ");
         context_amend_bdd(store, a_bdd.child1);
@@ -864,7 +913,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
             context_amend_bdd(store, a);
             context_amend(store, " and ");
             context_amend_bdd(store, b);
-            context_amend(store, ") at same level, take both");
+            context_amend(store, ") at same level, take children of both");
             array_append(&store->snapshot_marked, {a, b});
         }
 
@@ -1180,24 +1229,26 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
 }
 
 // See note on stepwise functions above.
-u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> levels, u32 bdd = -1) {
+u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> levels, s64 base, u32 bdd = -1, s64 levels_total = -1) {
     assert(levels.size < 32);
     u8 level = levels[0];
 
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
         context_append(store, "Creating BDD from list ");
-        context_amend_list(store, numbers, "%lld");
+        context_amend_list_base(store, numbers, base);
         context_amend(store, " using levels ");
         context_amend_list(store, levels, "%hhd");
 
         bdd_temp = {0, 0, (u8)levels.size, Bdd::TEMPORARY};
         bdd_temp.id = bdd_create(store, bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id);
+
+        levels_total = levels.size;
     } else {
         bdd_temp = store->bdd_data[bdd];
         context_append(store, "Processing sublist ");
-        context_amend_list(store, numbers, "%lld");
+        context_amend_list_base(store, numbers, base);
         context_amend(store, " for node %d", bdd_temp.id);
     }
 
@@ -1233,11 +1284,24 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         // Handle the last level specially, as I do not want to create temporary nodes on the last
         // level.
         s64 index = _partition_along_bit(&numbers, level);
-
-        context_append(store, "Splitting at level %hhd (last level) into sublists ", level);
-        context_amend_list(store, array_subarray(numbers, 0, index), "%lld");
-        context_amend(store, " and ");
-        context_amend_list(store, array_subarray(numbers, index, numbers.size), "%lld");
+        auto lst0 = array_subarray(numbers, 0, index);
+        auto lst1 = array_subarray(numbers, index, numbers.size);
+        
+        context_append(store, "Splitting at bit %hhd (last level). The child 0 sublist is ", level);
+        if (base != 2) {
+            context_amend_list_base(store, lst0, 2, levels_total, level);
+            context_amend(store, " (e.g. ");
+            context_amend_list_base(store, lst0, base);
+            context_amend(store, "), the child 1 sublist is ");
+            context_amend_list_base(store, lst1, 2, levels_total, level);
+            context_amend(store, " (e.g. ");
+            context_amend_list_base(store, lst1, base);
+            context_amend(store, ")");
+        } else {
+            context_amend_list_base(store, lst0, 2, levels_total, level);
+            context_amend(store, ", the child 1 sublist is ");
+            context_amend_list_base(store, lst1, 2, levels_total, level);
+        }
         take_snapshot(store);
         context_pop(store);
 
@@ -1277,7 +1341,21 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         auto lst1 = array_subarray(numbers, index, numbers.size);
         auto levels_sub = array_subarray(levels, 1, levels.size);
 
-        context_append(store, "Splitting at level %hhd into sublists of length %lld and %lld", level, lst0.size, lst1.size);
+        context_append(store, "Splitting at bit %hhd into sublists of length %lld and %lld. The child 0 sublist is ", level, lst0.size, lst1.size);
+        if (base != 2) {
+            context_amend_list_base(store, lst0, 2, levels_total, level);
+            context_amend(store, " (e.g. ");
+            context_amend_list_base(store, lst0, base);
+            context_amend(store, "), the child 1 sublist is ");
+            context_amend_list_base(store, lst1, 2, levels_total, level);
+            context_amend(store, " (e.g. ");
+            context_amend_list_base(store, lst1, base);
+            context_amend(store, ")");
+        } else {
+            context_amend_list_base(store, lst0, 2, levels_total, level);
+            context_amend(store, ", the child 1 sublist is ");
+            context_amend_list_base(store, lst1, 2, levels_total, level);
+        }
 
         if (lst0.size and lst1.size) {
             bdd_temp.child0 = bdd_create(store, {0, 0, (u8)(levels.size-1), Bdd::TEMPORARY});
@@ -1287,13 +1365,13 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
             take_snapshot(store);
             context_pop(store);
         
-            bdd_temp.child0 = bdd_from_list_stepwise(store, lst0, levels_sub, bdd_temp.child0);
+            bdd_temp.child0 = bdd_from_list_stepwise(store, lst0, levels_sub, base, bdd_temp.child0, levels_total);
             store->bdd_data[bdd_temp.id] = bdd_temp;
             take_snapshot(store);
             context_pop(store);
             --store->snapshot_cur_node.size;
 
-            bdd_temp.child1 = bdd_from_list_stepwise(store, lst1, levels_sub, bdd_temp.child1);
+            bdd_temp.child1 = bdd_from_list_stepwise(store, lst1, levels_sub, base, bdd_temp.child1, levels_total);
             store->bdd_data[bdd_temp.id] = bdd_temp;
             take_snapshot(store);
             context_pop(store);
@@ -1308,7 +1386,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
             context_pop(store);
             context_pop(store);
 
-            bdd_temp.child0 = bdd_from_list_stepwise(store, lst0, levels_sub, bdd_temp.child0);
+            bdd_temp.child0 = bdd_from_list_stepwise(store, lst0, levels_sub, base, bdd_temp.child0, levels_total);
             store->bdd_data[bdd_temp.id] = bdd_temp;
             take_snapshot(store);
             context_pop(store);
@@ -1323,7 +1401,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
             context_pop(store);
             context_pop(store);
 
-            bdd_temp.child1 = bdd_from_list_stepwise(store, lst1, levels_sub, bdd_temp.child1);
+            bdd_temp.child1 = bdd_from_list_stepwise(store, lst1, levels_sub, base, bdd_temp.child1, levels_total);
             store->bdd_data[bdd_temp.id] = bdd_temp;
             take_snapshot(store);
             context_pop(store);
@@ -4037,6 +4115,8 @@ struct Ui_context {
     s64 time_diff_index = 0;
 
     u64 focus_flags; // Bitset of the input elements that are focused
+
+    bool is_helptext_visible = false; // You can probably guess what this flag is referring to.
 };
 
 Ui_context global_ui;
@@ -4203,7 +4283,8 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     // Generate the info text
     if (bdd == 1) {
         p += snprintf(p, buf.end() - (u8*)p, "<p class=\"close\"><b>Node T</b></p>\n<p>This node is special. It represents "
-            "the set containing only the number 0 (or, more precisely, the empty bitstring)</p>");
+            "the set containing only the number 0 (or, more precisely, the empty bitstring). Its sibling, F, is the empty "
+            "set and is omitted from the drawing.</p>");
     } else {
         p += snprintf(p, buf.end() - (u8*)p, "<p class=\"close\"><b>Node %d", bdd);
         if (bdd_bdd.flags & Bdd::TEMPORARY) {
@@ -4385,6 +4466,21 @@ extern "C" void ui_button_opr() {
     }
 }
 
+extern "C" void ui_button_help() {
+    global_ui.is_helptext_visible ^= 1;
+    if (global_ui.is_helptext_visible) {
+        EM_ASM(
+            document.getElementById("cont-overlay").style.display = "";
+            document.getElementById("b_help").textContent = "Hide help";
+        );
+    } else {
+        EM_ASM(
+            document.getElementById("cont-overlay").style.display = "none";
+            document.getElementById("b_help").textContent = "Show help";
+        );
+    }
+}
+
 // Called when the user presses the button responsible for union, intersection and negation.
 extern "C" void ui_button_op() {
     if (not global_context.not_completely_empty) return;
@@ -4491,7 +4587,7 @@ extern "C" void ui_button_create() {
         array_push_back(&bits_u8, (u8)i);
     }
 
-    u32 bdd = bdd_from_list_stepwise(&global_store, {(u64*)nums.data, nums.size}, bits_u8);
+    u32 bdd = bdd_from_list_stepwise(&global_store, {(u64*)nums.data, nums.size}, bits_u8, base);
     if (bdd > 1) {
         EM_ASM({
             document.getElementById("op_node0").value = $0 > 1 ? $0 : "T";
@@ -4548,8 +4644,13 @@ extern "C" void ui_button_removeall() {
         document.getElementById("b_removeall").disabled = true;
         document.getElementById("b_prev").disabled = true;
         document.getElementById("b_next").disabled = true;
+        document.getElementById("loadtext").style.display = "none";
+        document.getElementById("helptext").style.display = "";
     );
 
+    global_ui.is_helptext_visible = true;
+    ui_button_help();
+    
     ui_frame_draw();
     ui_context_set((char*)"", 0, 0);
     ui_error_clear();
@@ -4573,7 +4674,6 @@ void em_main_loop() {
     }
 
     // Smoothstep nonlinearity. Make the transitions a tiny bit more seamless.
-    time_t = (3.f-2.f*time_t)*time_t*time_t;
     
     global_ui.frame_cur = (1.f-time_t) * global_ui.frame_begin + time_t * global_ui.frame_end;
 
@@ -4651,7 +4751,6 @@ EM_BOOL ui_key_press(int, EmscriptenKeyboardEvent const* event, void*) {
     // This is a bit hacky. If an input element is selected, we ignore keypresses to avoid doing
     // frames of the animation if the user just wants to move the cursor in a text entry.
     if (global_ui.focus_flags) return false;
-    
     if (strncmp(event->key, "ArrowRight", 32) == 0) {
         ui_button_move(1.f);
         return true;
@@ -4669,6 +4768,9 @@ EM_BOOL ui_key_press(int, EmscriptenKeyboardEvent const* event, void*) {
         return true;
     } else if (strncmp(event->key, "End", 32) == 0) {
         ui_set_frame(0x7fffffffffffffffull);
+        return true;
+    } else if (strncmp(event->key, "F1", 32) == 0) {
+        ui_button_help();
         return true;
     } else if (strncmp(event->key, "!", 32) == 0) {
         global_ui.debug_info_enabled = not global_ui.debug_info_enabled;

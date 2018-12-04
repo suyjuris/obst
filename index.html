@@ -16,13 +16,13 @@
           padding: 2px;
       }
       #cont-ui {
-          float: left;
+          position: absolute;
           width: 430px;
-      margin: 10px;
-      top: 0;
-      bottom: 0;
-      overflow-y: auto;
-      overflow-x: hidden;
+          margin: 10px;
+          top: 0;
+          bottom: 0;
+          overflow-y: auto;
+          overflow-x: hidden;
       }
       #cont-canvas {
           position: absolute;
@@ -91,17 +91,48 @@
           padding-right: 8px;
           max-width: 300px;
       }
+      #cont-overlay {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center
+      }
+      #loadtext {
+      font-size: 200%;
+      }
+      #helptext {
+      background-color: white;
+      max-width: 700px;
+      max-height: 80%;
+      overflow: auto;
+      padding: 8px;
+      padding-left: 24px;
+      padding-right: 24px;
+      }
       p.close {
           margin-top: 5px;
           margin-bottom: 5px;
+      }
+      button.topright {
+      position: relative;
+      right: 0px;
+      top: 10px;
+      margin: 0;
+      width: 30px;
+      padding: 0;
       }
     </style>
   </head>
   <body>
     <div id="cont-ui">
       <h4>Binary Decision Diagrams</h4>
-      <p>This is obst, a visualisation of algorithms related to <a href="https://en.wikipedia.org/wiki/Binary_decision_diagram">Binary Decision Diagrams</a> (BDDs). BDDs are a data structure one can use to represent sets of numbers in a concise and unique fashion, while still being able to efficiently execute set operations on them.</p>
-      <p>In particular, this tool shows how to create a BDD from a list of numbers, as well as compute their union, intersection and complement. <a href="https://github.com/suyjuris/obst">More...</a></p>
+      <p>This is <a href="https://github.com/suyjuris/obst">obst</a>, a visualisation of algorithms related to <a href="https://en.wikipedia.org/wiki/Binary_decision_diagram">Binary Decision Diagrams</a>, written by Philipp Czerner in 2018.</p>
+      <p>Read to the help for more information, or get started right away by pressing "Create and add".</p>
+      <p><i>Hint:</i> You can hover over nodes using your cursor, showing additional details.
       <hr></hr>
       <textarea id="create_nums" rows="3" placeholder="Enter a list of numbers, e.g. 2,3,5,7">2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62</textarea>
       Base: <input id="create_base" type="text" size="3" placeholder="10" value="10">
@@ -138,6 +169,11 @@
       </div>
       </div>
       <hr></hr>
+      <div class="fill">
+        <div class="center">Display usage instructions.</div>
+        <button id="b_help" type="button" onclick="Module._ui_button_help()">Show help</button>
+      </div>
+      <hr></hr>
       <div id="error-cont"></div>
       <hr id="error-hr" style="display: none;"></hr>
       <div id="frame-cont" class="init-disabled">
@@ -154,6 +190,25 @@
     <div id="cont-canvas">
       <canvas class="emscripten" id="canvas"></canvas>
       <div id="cont-bddinfo" style="display: none"></div>
+      <div id="cont-overlay">
+        <span id="loadtext">Loading...</span>
+        <div id="helptext" style="display: none">
+          <button class="topright" type="button" onclick="Module._ui_button_help()">×</button>
+          <h3>About</h3>
+          <p>obst visualises algorithms related to <a href="https://en.wikipedia.org/wiki/Binary_decision_diagram">Binary Decision Diagrams</a> (BDDs). BDDs are a data structure one can use to represent sets of numbers in a concise and unique fashion, while still being able to efficiently execute set operations on them.</p>
+          <p>In particular, this tool shows how to create a BDD from a list of numbers, as well as compute their union, intersection and complement. The source is publicly available on <a href="https://github.com/suyjuris/obst">GitHub</a>. Feel free to write me an <a href="mailto:contact@nicze.de">email</a> for any feedback, suggestions, etc.!</p>
+          <h3>Usage instructions</h3>
+          <p>Press “Create and add” to get started. This will add a BDD to the graph representing the set of numbers you specified. Afterwards you can step through the frames of the animation (using arrow keys, or the buttons labelled “<” and “>”). </p>
+          <p>Once the graph contains some nodes, you can start doing set operations. Simply enter the names of the nodes and press the “Calculate” button. Once again, you can go through the frames of the animation to find out how exactly the result was computed.</p>
+          <h3>Keybindings</h3>
+          <ul>
+            <li><i>Left, Right</i>: Move to the previous/next frame of the animation.</li>
+            <li><i>Page down, Page up</i>: Move to the previous/next checkpoint, that is the first frame of an operation.</li>
+            <li><i>Home, End</i>: Move to the first/last frame.</li>
+            <li><i>F1</i>: Show/hide help.</li>
+          </ul>
+        </div>
+      </div>
     </div>
     <script>
       Module = {
