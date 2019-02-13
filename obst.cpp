@@ -3242,11 +3242,12 @@ void webgl_draw_edge(
     //       = z - (y - z**2) w / dot(dg, dg)
     // Note that all the constants I introduced are linear functions of p and can thus be calculated
     // in the vertex shader and then linearly interpolated. So the last line really is the only
-    // thing the fragment shader has to do to get t;
+    // thing the fragment shader has to do to get t.
     //
     //  One small wrinkle of this technique (also present in the original version): If p0, p1, p2 are
     // colinear, things are not well-defined. As a small exercise, you may want to look at the
-    // description above and find out where exactly things break down, as it is a bit implicit.
+    // description above and find out where exactly things break down, as it is a bit implicit. I'll
+    // wait.
     //  Back again? Great. As you no doubt noticed, the A is not well-defined in that case. Fixing
     // the problem is easy, however, it suffices to add a small perturbation to p1 so that the
     // points are not colinear anymore. (Also, move it to the middle of p0, p2 beforehand, the
@@ -3290,8 +3291,8 @@ void webgl_draw_edge(
     float vx = (p2.x - p0.x) * f * 2.f/context->scale;
     float vy = (p2.y - p0.y) * f * 2.f/context->scale;
 
-    // We want a enclosing the curve on all sides. I am going to be lazy here and assume the curve
-    // is 'nice', i.e. p1 is 'between' p0 and p2.
+    // We want a triangle enclosing the curve on all sides. I am going to be lazy here and assume
+    // the curve is 'nice', i.e. p1 is 'between' p0 and p2.
     
     array_append(&context->buf_edge_pos, {
         p1.x + ux     , p1.y + uy,
@@ -4100,7 +4101,7 @@ EM_JS(char*, ui_get_radio_value_js, (char* element), {
     var s_ = _malloc(l);
     stringToUTF8(s, s_, l+1);
     return s_;
-});
+})
 Array_t<u8> ui_get_value(char const* element) {
     char* s = ui_get_value_js((char*)element);
     return {(u8*)s, strlen(s)};
