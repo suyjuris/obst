@@ -11,197 +11,6 @@
 #include <time.h>
 #include <locale.h>
 
-//#include "obst.cpp"
-
-#include <unistd.h>
-#include <algorithm>
-#include <cerrno>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <cstring>
-#include <cstdio>
-#include <initializer_list>
-
-#ifndef NDEBUG
-#include <cassert>
-#define assert_false assert(false)
-#else
-#define assert(x) (void)__builtin_expect(not (expr), 0)
-#define assert_false __builtin_unreachable()
-#endif
-
-// Defer macro. Based on Jonathan Blow's code at https://pastebin.com/3YvWQa5c, although rewritten
-// from scratch.
-template <typename T>
-struct Deferrer {
-    T t;
-    Deferrer(T const& t): t{t} {}
-    ~Deferrer() { t(); }
-};
-struct Deferrer_helper {
-    template <typename T>
-    auto operator+ (T const& t) { return Deferrer<T> {t}; }
-};
-#define DEFER_NAME1(x, y) x##y
-#define DEFER_NAME(x) DEFER_NAME1(_defer, x)
-#define defer auto DEFER_NAME(__LINE__) = Deferrer_helper{} + [&]
-
-// Standard integer types
-using s64 = long long; // gcc and emcc (well, their shipped standard libraries) have different opinions about using long long or just long as 64-bit integer types. But for printf I just want to write one of them. Yay.
-using u64 = unsigned long long;
-//using s64 = std::int64_t;
-//using u64 = std::uint64_t;
-using s32 = std::int32_t;
-using u32 = std::uint32_t;
-using s16 = std::int16_t;
-using u16 = std::uint16_t;
-using s8 = std::int8_t;
-using u8 = std::uint8_t;
-
-
-template <typename T_>
-struct Array_t {
-    using T = T_;
-    T* data = nullptr;
-    s64 size = 0;
-
-    T& operator[] (int pos) {
-		assert(0 <= pos and pos < size);
-		return data[pos];
-	}
-
-    // See the E macro below.
-    //T& dbg(int pos, int line) {
-    //    if (not (0 <= pos and pos < size)) {
-    //        printf("line: %d\n", line);
-    //        abort();
-    //    }
-	//	return data[pos];
-	//}
-
-    T* begin() { return data; }
-	T* end()   { return data + size; }
-};
-template <typename T_>
-struct Array_dyn: public Array_t<T_> {
-    using T = T_;
-    s64 capacity;
-
-    Array_dyn(T* data = nullptr, s64 size = 0, s64 capacity = 0):
-        Array_t<T>::Array_t{data, size},
-        capacity{capacity} {}
-    
-    explicit Array_dyn(Array_t<T> arr) :
-        Array_t<T>::Array_t{arr.data, 0},
-        capacity{arr.size} {}
-    
-    T& operator[] (int pos) {
-		assert(0 <= pos and pos < Array_t<T>::size);
-		return Array_t<T>::data[pos];
-	}
-
-    // See the E macro below.
-    //T& dbg (int pos, int line) {
-    //    if (0 <= pos and pos < Array_t<T>::size) {
-    //        return Array_t<T>::data[pos];
-    //    } else {
-    //        printf("out of bounds, index %d size %lld, line %d\n", pos, Array_t<T>::size, line);
-    //        abort();
-    //    }
-    //}
-
-    T* begin() const { return (T*)Array_t<T>::data; }
-	T* end()   const { return (T*)(Array_t<T>::data + Array_t<T>::size); }
-};
-
-// Allocation. Returns zeroed memory.
-template <typename T>
-Array_t<T> array_create(s64 size) {
-    return {(T*)calloc(sizeof(T), size), size};
-}
-
-// Take some bytes from an already existing memory location. Advance p by the number of bytes used.
-template <typename T>
-Array_t<T> array_create_from(u8** p, s64 size) {
-    Array_t<T> result = {(T*)*p, size};
-    *p += sizeof(T) * size;
-    return result;
-}
-
-// Free the memory, re-initialise the array.
-template <typename T>
-void array_free(Array_t<T>* arr) {
-    assert(arr);
-    free(arr->data);
-    arr->data = nullptr;
-    arr->size = 0;
-}
-template <typename T>
-void array_free(Array_dyn<T>* arr) {
-    assert(arr);
-    free(arr->data);
-    arr->data = nullptr;
-    arr->size = 0;
-    arr->capacity = 0;
-}
-
-// Ensure that there is space for at least count elements.
-template <typename T>
-void array_reserve(Array_dyn<T>* into, s64 count) {
-    if (count > into->capacity) {
-        s64 capacity_new = 2 * into->capacity;
-        if (capacity_new < count) {
-            capacity_new = count;
-        }
-        if (into->data) {
-            into->data = (T*)std::realloc(into->data, capacity_new * sizeof(T));
-        } else {
-            into->data = (T*)std::malloc(capacity_new * sizeof(T));
-        }
-        assert(into->data);
-        into->capacity = capacity_new;
-        assert(into->data);
-    }
-}
-
-// Set the array's size to count, reallocate if necessary.
-template <typename T>
-void array_resize(Array_t<T>* arr, s64 count) {
-    arr->data = (T*)realloc(arr->data, count * sizeof(T));
-    if (arr->size < count) {
-        memset(arr->data + arr->size, 0, (count - arr->size) * sizeof(T));
-    }
-    arr->size = count;
-}
-template <typename T>
-void array_resize(Array_dyn<T>* arr, s64 count) {
-    array_reserve(arr, count);
-    arr->size = count;
-}
-
-// Add element to the end of an array, reallocate if necessary.
-template <typename T>
-void array_push_back(Array_dyn<T>* into, T elem) {
-    array_reserve(into, into->size + 1);
-    ++into->size;
-    into->data[into->size-1] = elem;
-}
-
-// Return an array that represents the sub-range [start, end). start == end is fine (but the result
-// will use a nullptr).
-template <typename T>
-Array_t<T> array_subarray(Array_t<T> arr, s64 start, s64 end) {
-    assert(0 <= start and start <= arr.size);
-    assert(0 <= end   and end   <= arr.size);
-    assert(start <= end);
-    if (start == end)
-        return {nullptr, 0};
-    else
-        return {arr.data + start, end - start};
-}
-
-
 #ifndef X_HAVE_UTF8_STRING
 #error "There is no Xutf8LookupString! You are on an old version of X."
 #endif
@@ -214,62 +23,6 @@ double platform_now() {
     timespec t;
     clock_gettime(CLOCK_MONOTONIC_RAW, &t);
     return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
-}
-
-struct Key {
-    enum Key_type: u8 {
-        NONE, TEXT, SPECIAL
-    };
-    enum Key_special: u8 {
-        INVALID, ESCAPE, ARROW_L, ARROW_R, ARROW_D, ARROW_U,
-        HOME, END, PAGE_U, PAGE_D,
-        C_COPY, C_PASTE, C_SELECTALL, C_UNDO, C_REDO, C_QUIT, C_SAVE,
-        F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-        SPECIAL_COUNT
-    };
-    static constexpr char const* key_special_names[] = {
-        "invalid", "escape", "arrow_l", "arrow_r", "arrow_d", "arrow_u",
-        "home", "end", "page_u", "page_d",
-        "c_copy", "c_paste", "c_selectall", "c_undo", "c_redo", "c_quit", "c_save",
-        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"
-    };
-
-    u8 type = Key::NONE;
-    union {
-        u8 text[15];
-        u8 special;
-    };
-
-    static Key create_text(Array_t<char> text_) {
-        assert(text_.size+1 < (s64)sizeof(Key::text));
-        Key result;
-        result.type = Key::TEXT;
-        memcpy(result.text, text_.data, text_.size);
-        result.text[text_.size] = 0;
-        return result;
-    }
-    static Key create_special(u8 special) {
-        assert(special != INVALID and special < SPECIAL_COUNT);
-        Key result;
-        result.type = Key::SPECIAL;
-        result.special = special;
-        return result;
-    }
-};
-
-constexpr char const* Key::key_special_names[];
-
-void print_key(Key key) {
-    if (key.type == Key::NONE) {
-        printf("{NONE}");
-    } else if (key.type == Key::TEXT) {
-        printf("{\"%s\" %02x}", key.text, (u8)key.text[0]);
-    } else if (key.type == Key::SPECIAL) {
-        assert(0 <= key.special and key.special < Key::SPECIAL_COUNT);
-        printf("{%s}", Key::key_special_names[key.special]);
-    } else {
-        assert(false);
-    }
 }
 
 struct Platform_state {
@@ -383,7 +136,12 @@ void linux_set_wm_class(Display* display, Window window, int argc, char** argv) 
         instance = (char*)"obst";
     }
 
-    linux_set_wm_prop(display, window, "WM_CLASS", instance);
+    char* cls = (char*)"obst";
+    s64 buf_size = strlen(instance) + strlen(cls) + 2;
+    char* buf = (char*)alloca(buf_size);
+    assert( snprintf(buf, buf_size, "%s %s", instance, cls) < buf_size );
+    
+    linux_set_wm_prop(display, window, "WM_CLASS", buf);
 }
 
 int main(int argc, char** argv) {
@@ -396,7 +154,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Warning: Could not set default locale.\n");
     }
     
-    // Create the display
+    // Create the display, connect to the X server
     Display* display = XOpenDisplay(nullptr);
     if (not display) {
         fprintf(stderr, "Error: could not open display (is the DISPLAY environment variable set correctly?)\n");
@@ -473,7 +231,13 @@ int main(int argc, char** argv) {
     linux_set_wm_prop(display, window, "WM_NAME", "obst - Binary Decision Diagrams");
     linux_set_wm_prop(display, window, "WM_ICON_NAME", "obst");
     linux_set_wm_class(display, window, argc, argv);
-    
+
+    // Set WM_PROTOCOLS
+    Atom wm_protocols = XInternAtom(display, "WM_PROTOCOLS", true);
+    Atom wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", true);
+    Atom type_atom = XInternAtom(display, "ATOM", true);
+    assert(wm_protocols != None and wm_delete_window != None and type_atom != None);
+    XChangeProperty(display, window, wm_protocols, type_atom, 32, PropModeReplace, (u8*)&wm_delete_window, 1);
     
     GLXWindow window_glx = glXCreateWindow(display, *config, window, nullptr);
 
@@ -502,6 +266,13 @@ int main(int argc, char** argv) {
             if (event.xmapping.request == MappingModifier or event.xmapping.request == MappingKeyboard) {
                 XRefreshKeyboardMapping(&event.xmapping);
             }
+            break;
+        case ClientMessage:
+            if (event.xclient.message_type == wm_protocols and event.xclient.data.l[0] - wm_delete_window == 0) {
+                array_push_back(&state.input_queue, Key::create_special(Key::C_QUIT));
+                application_update(&state);
+            }
+            break;
         default:
             break;
         }

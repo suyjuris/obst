@@ -4,268 +4,12 @@
 
 // The README contains some high-level remarks about the code, you might want to take a look.
 
-
 // Uncomment this to show the force-based layout algorithm. Debug functionality, obviously.
 //#define DBG_SHOW_FORCE_LAYOUT 1
 
-// I usually do not pay attention to assertions with side-effects, so let us define them here to
-// execute the expressions regardless. Also, the compiler cannot figure out that assert(false) means
-// unreachable, so just search-replace all of those with assert_false once going to release.
-#ifndef NDEBUG
-#include <cassert>
-#define assert_false assert(false)
-#else
-#define assert(x) (void)__builtin_expect(not (expr), 0)
-#define assert_false __builtin_unreachable()
-#endif
-
-#include <algorithm>
-#include <cerrno>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <cstring>
-#include <cstdio>
-#include <initializer_list>
-
-// Emscripten headers
-#include <emscripten/emscripten.h>
-#include <emscripten/html5.h>
-#include <GLES2/gl2.h>
-
-// Defer macro. Based on Jonathan Blow's code at https://pastebin.com/3YvWQa5c, although rewritten
-// from scratch.
-template <typename T>
-struct Deferrer {
-    T t;
-    Deferrer(T const& t): t{t} {}
-    ~Deferrer() { t(); }
-};
-struct Deferrer_helper {
-    template <typename T>
-    auto operator+ (T const& t) { return Deferrer<T> {t}; }
-};
-#define DEFER_NAME1(x, y) x##y
-#define DEFER_NAME(x) DEFER_NAME1(_defer, x)
-#define defer auto DEFER_NAME(__LINE__) = Deferrer_helper{} + [&]
-
-
-// Standard integer types
-using s64 = long long; // gcc and emcc (well, their shipped standard libraries) have different opinions about using long long or just long as 64-bit integer types. But for printf I just want to write one of them. Yay.
-using u64 = unsigned long long;
-//using s64 = std::int64_t;
-//using u64 = std::uint64_t;
-using s32 = std::int32_t;
-using u32 = std::uint32_t;
-using s16 = std::int16_t;
-using u16 = std::uint16_t;
-using s8 = std::int8_t;
-using u8 = std::uint8_t;
-
-// General data structures
-
-// Array_t is just a pointer with a size, and Array_dyn a pointer with a size and capacity. They
-// conform to my personal data structure invariants: Can be initialised by zeroing the memory, can
-// be copied using memcpy. Obviously, this means that there is no hidden allocation happening in
-// here, that is all done by the call-site. Also, no const.
-
-template <typename T_>
-struct Array_t {
-    using T = T_;
-    T* data = nullptr;
-    s64 size = 0;
-
-    T& operator[] (int pos) {
-		assert(0 <= pos and pos < size);
-		return data[pos];
-	}
-
-    // See the E macro below.
-    //T& dbg(int pos, int line) {
-    //    if (not (0 <= pos and pos < size)) {
-    //        printf("line: %d\n", line);
-    //        abort();
-    //    }
-	//	return data[pos];
-	//}
-
-    T* begin() { return data; }
-	T* end()   { return data + size; }
-};
-
-template <typename T_>
-struct Array_dyn: public Array_t<T_> {
-    using T = T_;
-    s64 capacity;
-
-    Array_dyn(T* data = nullptr, s64 size = 0, s64 capacity = 0):
-        Array_t<T>::Array_t{data, size},
-        capacity{capacity} {}
-    
-    explicit Array_dyn(Array_t<T> arr) :
-        Array_t<T>::Array_t{arr.data, 0},
-        capacity{arr.size} {}
-    
-    T& operator[] (int pos) {
-		assert(0 <= pos and pos < Array_t<T>::size);
-		return Array_t<T>::data[pos];
-	}
-
-    // See the E macro below.
-    //T& dbg (int pos, int line) {
-    //    if (0 <= pos and pos < Array_t<T>::size) {
-    //        return Array_t<T>::data[pos];
-    //    } else {
-    //        printf("out of bounds, index %d size %lld, line %d\n", pos, Array_t<T>::size, line);
-    //        abort();
-    //    }
-    //}
-
-    T* begin() const { return (T*)Array_t<T>::data; }
-	T* end()   const { return (T*)(Array_t<T>::data + Array_t<T>::size); }
-};
-
-// This is to help debugging if the stacktraces stop working. (Which, for some reason, they do.) As
-// ~90% of runtime errors are out-of-bounds accesses, I often want to know precisely which one. To
-// this end, replace arr[pos] by E(arr,pos) in the places you want to monitor.
-//#define E(x, y) ((x).dbg((y), __LINE__))
-
-// Allocation. Returns zeroed memory.
-template <typename T>
-Array_t<T> array_create(s64 size) {
-    return {(T*)calloc(sizeof(T), size), size};
-}
-
-// Take some bytes from an already existing memory location. Advance p by the number of bytes used.
-template <typename T>
-Array_t<T> array_create_from(u8** p, s64 size) {
-    Array_t<T> result = {(T*)*p, size};
-    *p += sizeof(T) * size;
-    return result;
-}
-
-// Free the memory, re-initialise the array.
-template <typename T>
-void array_free(Array_t<T>* arr) {
-    assert(arr);
-    free(arr->data);
-    arr->data = nullptr;
-    arr->size = 0;
-}
-template <typename T>
-void array_free(Array_dyn<T>* arr) {
-    assert(arr);
-    free(arr->data);
-    arr->data = nullptr;
-    arr->size = 0;
-    arr->capacity = 0;
-}
-
-// Ensure that there is space for at least count elements.
-template <typename T>
-void array_reserve(Array_dyn<T>* into, s64 count) {
-    if (count > into->capacity) {
-        s64 capacity_new = 2 * into->capacity;
-        if (capacity_new < count) {
-            capacity_new = count;
-        }
-        if (into->data) {
-            into->data = (T*)std::realloc(into->data, capacity_new * sizeof(T));
-        } else {
-            into->data = (T*)std::malloc(capacity_new * sizeof(T));
-        }
-        assert(into->data);
-        into->capacity = capacity_new;
-        assert(into->data);
-    }
-}
-
-// Set the array's size to count, reallocate if necessary.
-template <typename T>
-void array_resize(Array_t<T>* arr, s64 count) {
-    arr->data = (T*)realloc(arr->data, count * sizeof(T));
-    if (arr->size < count) {
-        memset(arr->data + arr->size, 0, (count - arr->size) * sizeof(T));
-    }
-    arr->size = count;
-}
-template <typename T>
-void array_resize(Array_dyn<T>* arr, s64 count) {
-    array_reserve(arr, count);
-    arr->size = count;
-}
-
-// Add element to the end of an array, reallocate if necessary.
-template <typename T>
-void array_push_back(Array_dyn<T>* into, T elem) {
-    array_reserve(into, into->size + 1);
-    ++into->size;
-    into->data[into->size-1] = elem;
-}
-
-// Insert an element into the array, such that its position is index. Reallocate if necessary.
-template <typename T>
-void array_insert(Array_dyn<T>* into, s64 index, T elem) {
-    assert(into and 0 <= index and index <= into->size);
-    array_reserve(into, into->size + 1);
-    memmove(into->data + (index+1), into->data + index, (into->size - index) * sizeof(T));
-    ++into->size;
-    into->data[index] = elem;
-}
-
-// Append a number of elements to the array.
-template <typename T>
-void array_append(Array_dyn<T>* into, Array_t<T> data) {
-    array_reserve(into, into->size + data.size);
-    memcpy(into->end(), data.data, data.size * sizeof(T));
-    into->size += data.size;
-}
-template <typename T>
-void array_append(Array_dyn<T>* into, std::initializer_list<T> data) {
-    array_reserve(into, into->size + data.size());
-    memcpy(into->end(), data.begin(), data.size() * sizeof(T));
-    into->size += data.size();
-}
-
-// Append a number of zero-initialised elements to the array.
-template <typename T>
-void array_append_zero(Array_dyn<T>* into, s64 size) {
-    array_reserve(into, into->size + size);
-    memset(into->end(), 0, size * sizeof(T));
-    into->size += size;
-}
-
-// Return an array that represents the sub-range [start, end). start == end is fine (but the result
-// will use a nullptr).
-template <typename T>
-Array_t<T> array_subarray(Array_t<T> arr, s64 start, s64 end) {
-    assert(0 <= start and start <= arr.size);
-    assert(0 <= end   and end   <= arr.size);
-    assert(start <= end);
-    if (start == end)
-        return {nullptr, 0};
-    else
-        return {arr.data + start, end - start};
-}
-
-// These two functions implement a bitset.
-void bitset_set(Array_t<u64>* bitset, u64 bit, u8 val) {
-    u64 index  = bit / 64;
-    u64 offset = bit % 64;
-    (*bitset)[index] ^= (((*bitset)[index] >> offset & 1) ^ val) << offset;
-}
-bool bitset_get(Array_t<u64> bitset, u64 bit) {
-    u64 index  = bit / 64;
-    u64 offset = bit % 64;
-    return bitset[index] >> offset & 1;
-}
-
-// Display an error in the HTML page. ui_error_report is a printf-like function.
-
-EM_JS(void, ui_error_report_js, (char* msg), {
-    document.getElementById("error-cont").textContent = UTF8ToString(msg);
-    document.getElementById("error-hr").style.display = "block";
-});
+// Display an error somewhere, somehow. This is not for critical errors where we exit the program,
+// just to tell the user that the did something we do not like. ui_error_report is a printf-like
+// function.
 
 Array_dyn<u8> ui_error_buf;
 
@@ -281,19 +25,11 @@ void ui_error_report(char const* msg, Args... args) {
     );
     ui_error_buf.size += len+1;
 
-    ui_error_report_js((char*)ui_error_buf.data);
+    platform_ui_error_report(ui_error_buf);
 }
-
 void ui_error_report(char const* msg) {
-    ui_error_report_js((char*)msg);
+    platform_ui_error_report({(u8*)msg, strlen(msg)});
 }
-
-// Reset the error display.
-EM_JS(void, ui_error_clear, (), {
-    document.getElementById("error-cont").textContent = "";
-    document.getElementById("error-hr").style.display = "none";
-});
-
 
 // These are used for the parser.
 namespace errorcodes {
@@ -2410,7 +2146,7 @@ struct Webgl_context {
 
     bool not_completely_empty; // This is set if some graph is currently shown
 
-    // Lots of WebGL boilerplate incoming...
+    // Lots of GL boilerplate incoming...
 
     // Ids of the shader programs
     GLuint program_bdd;
@@ -2502,74 +2238,6 @@ void webgl_program_link(GLuint program, char* program_name) {
     }
 }
 
-// Called whenever the canvas resizes. This causes the internal viewport to adopt the new
-// dimensions, regenerates the font to properly align the pixels, and redraws.
-int webgl_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
-    Webgl_context* context = (Webgl_context*)user_data;
-    emscripten_get_element_css_size("canvas", &context->width, &context->height);
-    emscripten_set_canvas_element_size("canvas", (int)context->width, (int)context->height);
-    emscripten_resume_main_loop();
-    context->font_regenerate = 10; // Font regeneration scheduled in 10 frames. I do not want to do this every frame while the user changes window size.
-    return true;
-}
-
-// Tell the browser to render some text into a texture
-EM_JS(int, webgl_text_prepare_js, (int size, int w, float* offsets), {
-    var canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = w;
-    var ctx = canvas.getContext("2d");
-    ctx.fillStyle = "black";
-    ctx.font = size + "px sans-serif";
-    ctx.textAlign = "start";
-    ctx.textBaseline = "top";
-    
-    // I would really like to use the advanced text measurement options here, but they are not yet
-    // made available by Firefox and Chrome. This measures how high the 0 is, which I found better
-    // for cross-browser consistency than just trusting the fonts to have similar offsets.
-    ctx.clearRect(0, 0, size, size);
-    var m = ctx.measureText("0");
-    ctx.fillText("0", 0.5, 0.5);
-    var i;
-    var data = ctx.getImageData(0, 0, m.width, size);
-    var actualTop = 0;
-    var actualBot = 0;
-    var greater_zero = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
-    for (i = 0; i < size; i++) {
-        var flag = data.data.slice(i*4*m.width, (i+1)*4*m.width).some(greater_zero);
-        if (flag) {
-            actualTop = i+2;
-        }
-        if (!flag && actualBot == i) {
-            actualBot = i+1;
-        }
-    }
-
-    ctx.clearRect(0, 0, w, w);
-    
-    var i;
-    var x = 1;
-    var y = 1;
-    for (i = 0; i < 12; i++) {
-        // We just need the digits, T and F as glyphs
-        var s = i < 10 ? ""+i : i == 10 ? "F" : "T";
-        var m = ctx.measureText(s);
-        ctx.fillText(s, x+0.5, y+0.5);
-        setValue(offsets+i*16,    x/w,           "float");
-        setValue(offsets+i*16+4,  (y+actualBot)/w,           "float");
-        setValue(offsets+i*16+8,  (x+m.width)/w, "float");
-        setValue(offsets+i*16+12, (y+actualTop)/w,    "float");
-        x = x + m.width + 1;
-        if (x + size >= w) {
-            x = 1;
-            y = y + size + 1;
-        }
-    }
-    var gl = document.getElementById("canvas").getContext("webgl");
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    return actualTop - actualBot;
-});
-
 // (Re-)initialise the text glyph texture.
 void webgl_text_prepare(Webgl_context* context) {
     if (context->text_tex != 0) {
@@ -2581,13 +2249,15 @@ void webgl_text_prepare(Webgl_context* context) {
     array_free(&context->text_pos);
     context->text_pos = array_create<float>(12*4);
 
+    // @Cleanup: Texture size should not be computed here, also we need to have a more general way
+    // to specify font mapping, and the platform_text_prepare interface should be more c-like
     int font_size = (int)std::round(
         context->draw_param.node_radius * context->draw_param.squish_fac * context->draw_param.font_frac * context->scale
     );
     int texture_size = 1;
     while (texture_size < 4*font_size+4) texture_size *= 2;
     
-    int font_size_real = webgl_text_prepare_js(font_size, texture_size, context->text_pos.data);
+    int font_size_real = platform_text_prepare(font_size, texture_size, context->text_pos.data);
     
     context->font_size_max = (float)font_size_real / context->scale;
 
@@ -2596,25 +2266,8 @@ void webgl_text_prepare(Webgl_context* context) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 }
 
-// Initialised the WebGL context
+// Initialised the OpenGL context
 void webgl_init(Webgl_context* context) {
-    EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx;
-    EmscriptenWebGLContextAttributes attrs;
-    emscripten_webgl_init_context_attributes(&attrs);
-    attrs.alpha = false;
-    attrs.depth = true;
-    attrs.antialias = true; // BDDs and edges do their own AA, but for arrows this still is convenient
-    attrs.majorVersion = 1;
-    
-    ctx = emscripten_webgl_create_context(0, &attrs);
-    if (not ctx) {
-        ui_error_report("Error while creating WebGL context.");
-        abort();
-    }
-    emscripten_webgl_make_context_current(ctx);
-    emscripten_set_resize_callback(nullptr, context, false, webgl_resize_callback);
-    webgl_resize_callback(0, 0, context); // Easy way to set the initial values correctly
-
     // The shaders. Generally speaking, the vertex shader just maps into device coordinates while
     // passing on the relevant attributes, and the fragment shader then does all the calculations.
 
@@ -2799,6 +2452,8 @@ void webgl_init(Webgl_context* context) {
         "    gl_FragColor = col;\n"
         "}\n";
 
+    // Yeah, sorry about the macros, but I do not think this code would be more readable without them.
+
 #define LOAD_SHADER(x, y) \
     GLuint x##_id = webgl_shader_load(y, {(u8*)x, sizeof(x)}, (char*)#x); \
     glAttachShader(program, x##_id)
@@ -2879,7 +2534,7 @@ void webgl_init(Webgl_context* context) {
     glViewport(0.0, 0.0, (double)context->width, (double)context->height);
 }
 
-// Those exist only once. Some of the lower functions do not assume that, but many ui functions do.
+// These exist only once. Some of the lower functions do not assume that, but many UI functions do.
 Webgl_context global_context;
 Bdd_store global_store;
 Array_t<Bdd_layout> global_layouts;
@@ -2901,12 +2556,6 @@ void webgl_draw_bdd(Webgl_context* context, Bdd_attr a) {
         array_append(&context->buf_bdd_fill, {a.fill, 4});
     }
 }
-
-// Update the HTML displaying the context
-EM_JS(void, ui_context_set, (char* s, int frame, int frame_max), {
-    document.getElementById("context-cont").innerHTML = UTF8ToString(s);
-    document.getElementById("frame").textContent = frame + "/" + frame_max;
-});
 
 // Return the index of the character in the texture
 s64 _char_index(u8 c) {
@@ -3073,7 +2722,7 @@ float _spline_length_quadrature(Pos p0, Pos p1, Pos p2, s64 n = 50) {
 
 // Calculates the length of the quadratic spline with control points p0, p1 and p2.
 float spline_length(Pos p0, Pos p1, Pos p2) {
-    // In _spline_length_quadrature I mentioned that the terms was difficult to simplify. Still, you
+    // In _spline_length_quadrature I mentioned that the term was difficult to simplify. Still, you
     // can solve it analytically and derive a closed form solution, see e.g. [1] for the formula, or
     // [2] for a derivation.
     //
@@ -3142,7 +2791,8 @@ void spline_length_approx(Pos p0, Pos p1, Pos p2, float* f1, float* f2) {
 }
 
 // A variant on the numerical integration. This one find the t s.t. the spline has the specified
-// length at that point. Could use the closed form one with binary search, but I think this is more efficient.
+// length at that point. Could use the closed form one with binary search, but I think this is more
+// efficient. (But did not measure! Beware! Mostly this code is older than the closed form code.)
 float spline_find_offset(Pos p0, Pos p1, Pos p2, float length, s64 n = 50) {
     assert(n % 2 == 0);
     float a1 = 2.f * (p1.x - p0.x);
@@ -4086,29 +3736,17 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     }
 }
 
+namespace Ui_elem {
 
-// Query the value of an input element
-EM_JS(char*, ui_get_value_js, (char* element), {
-    var s = document.getElementById(UTF8ToString(element)).value;
-    var l = lengthBytesUTF8(s)+1;
-    var s_ = _malloc(l);
-    stringToUTF8(s, s_, l+1);
-    return s_;
-});
-EM_JS(char*, ui_get_radio_value_js, (char* element), {
-    var s = document.querySelector('input[name=' + UTF8ToString(element) + ']:checked').value;
-    var l = lengthBytesUTF8(s)+1;
-    var s_ = _malloc(l);
-    stringToUTF8(s, s_, l+1);
-    return s_;
-})
-Array_t<u8> ui_get_value(char const* element) {
-    char* s = ui_get_value_js((char*)element);
-    return {(u8*)s, strlen(s)};
-}
-Array_t<u8> ui_get_radio_value(char const* element) {
-    char* s = ui_get_radio_value_js((char*)element);
-    return {(u8*)s, strlen(s)};
+enum Name: u8 {
+    INVALID, OP_NODE0, OP_NODE1, CREATE_NUMS, CREATE_BASE, CREATE_BITS, OPERATION,
+    NAME_COUNT
+};
+
+char* name[] = {
+    nullptr, "op_node0", "op_node1", "create_nums", "create_base", "create_bits", "operation", nullptr
+};
+
 }
 
 // Data for the UI
@@ -4140,12 +3778,13 @@ struct Ui_context {
 
 Ui_context global_ui;
 
-// Update the HTML context display
+// Update the context display, i.e. the step-by-step feature
 void ui_context_refresh() {
 #ifdef DBG_SHOW_FORCE_LAYOUT
     // Context could be out of bounds here, is not useful anyway
     return;
 #endif
+    // @Cleanup: Need to adjust the way of handling context messages
 
     if (not global_context.not_completely_empty) return;
     
@@ -4166,37 +3805,13 @@ void ui_context_refresh() {
             array_push_back(&global_ui.ui_buf, c);
         }
     }
-    array_append(&global_ui.ui_buf, {(u8*)"</p>", 5});
+    array_append(&global_ui.ui_buf, {(u8*)"</p>", 4});
 
-    ui_context_set((char*)global_ui.ui_buf.data, frame, global_layouts.size-1);
+    array_reserve(&global_ui.ui_buf, 1);
+    *global_ui.ui_buf.end() = 0;
+
+    platform_ui_context_set(global_ui.ui_buf, frame, global_layouts.size-1);
 }
-
-// bddinfo is the hover text telling you what a node is about
-
-EM_JS(void, ui_bddinfo_hide, (), {
-    document.getElementById('cont-bddinfo').style.display = "none";
-})
-
-EM_JS(void, ui_bddinfo_show_js, (float x, float y, char* text, int right, int bottom), {
-    var s = UTF8ToString(text);
-    var e = document.getElementById('cont-bddinfo');
-    e.style.display = "";
-    if (right) {
-        e.style.right = x + "px";
-        e.style.left = "";
-    } else {
-        e.style.right = "";
-        e.style.left = x + "px";
-    }
-    if (bottom) {
-        e.style.bottom = y + "px";
-        e.style.top = "";
-    } else {
-        e.style.bottom = "";
-        e.style.top = y + "px";
-    }
-    e.innerHTML = s;
-})
 
 // Get all numbers stored by a node
 void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<Bdd> bdds, u32 bdd) {
@@ -4312,6 +3927,8 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     buf.size = buf.capacity;
     char* p = (char*)buf.data;
 
+    //@Cleanup: Have to rework handling of formatted text
+
     auto print_children = [&]() {
         bool first = true;
         for (u32 child: children) {
@@ -4360,7 +3977,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
             }
         }
         if (bdd_bdd.flags & Bdd::TEMPORARY and id_map_end[bdd] != -1) {
-            // The node is still there in the end, so thell the user what it will contain later
+            // The node is still there in the end, so tell the user what it will contain later
             
             children.size = 0;
             _collect_children(&children, id_map_end, bdds_end, bdd);
@@ -4373,44 +3990,31 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     }
     p += snprintf(p, buf.end() - (u8*)p, "</p>\n");
 
-    float pd = global_context.draw_param.node_radius * global_context.scale * 1.35;
-    float px = (x - global_context.origin_x) * global_context.scale;
-    float py = (y - global_context.origin_y) * global_context.scale;
-    int right = 0;
-    int bottom = 1;
+    // Have the platform layer do the rest of the work.
+    platform_ui_bddinfo_show(x, y, buf);
     
-    // Try to draw the box inside the canvas
-    if (px + pd + 300.f >= global_context.width) {
-        px = global_context.width - px;
-        right = 1;
-    }
-    if (py + 200.f >= global_context.height) {
-        py = global_context.height - py;
-        bottom = 0;
-    }
-    ui_bddinfo_show_js(px + pd, py, (char*)buf.data, right, bottom);
     return true;
 }
 
 // Deal with mouse motion events. Shows and hides the bddinfo hover text.
-EM_BOOL ui_mouse_move(int, EmscriptenMouseEvent const* event, void*) {
-    float x = (float)event->canvasX / global_context.scale + global_context.origin_x;
-    float y = (global_context.height - (float)event->canvasY) / global_context.scale + global_context.origin_y;
-
+//  IMPORTANT: The arguments are NOT in pixels, but in world coordinates. So this is only useful for
+// canvas stuff.
+void ui_mouse_move(float world_x, float world_y) {    
     for (s64 i = 0; i < global_context.buf_attr_cur.size; ++i) {
         Bdd_attr bdd = global_context.buf_attr_cur[i];
-        float d = (x-bdd.x)/bdd.rx*(x-bdd.x)/bdd.rx + (y-bdd.y)/bdd.ry*(y-bdd.y)/bdd.ry;
+        float dx = (world_x - bdd.x) / bdd.rx;
+        float dy = (world_y - bdd.y) / bdd.ry;
+        float d = dx * dx + dy * dy;
         if (d <= 1.f) {
             // Important: Do not break the loop if the bdd was not valid and no hover text was generated.
-            if (ui_bddinfo_show(bdd.x, bdd.y, i)) return false;
+            if (ui_bddinfo_show(bdd.x, bdd.y, i)) return;
         }
     }
-    ui_bddinfo_hide();
-    return false;
+    platform_ui_bddinfo_hide();
 }
 
 void ui_frame_draw() {
-    float then = (float)emscripten_get_now()*0.001f;
+    float then = (float)platform_now(); //@Cleanup: Move times to double
     webgl_frame_init(&global_context);
     layout_frame_draw(&global_context, global_layouts, global_store, global_ui.frame_cur);
 
@@ -4456,18 +4060,18 @@ void ui_frame_draw() {
     webgl_frame_draw(&global_context);
 
     // Pretend we moved the mouse to update the bddinfo hover text
-    EmscriptenMouseEvent event;
-    emscripten_get_mouse_status(&event);
-    ui_mouse_move(EMSCRIPTEN_EVENT_MOUSEMOVE, &event, nullptr);
-    
-    float now = (float)emscripten_get_now()*0.001f;
+    {float x, y;
+    platform_mouse_position(&x, &y);
+    ui_mouse_move(x, y);}
+
+    // Register the time this took so that we can draw it for the debugging code.
+    {float now = (float)platform_now();
     global_ui.time_diff_index = (global_ui.time_diff_index + 1) % global_ui.time_diff_num;
-    global_ui.time_diff[global_ui.time_diff_index] = now - then;
+    global_ui.time_diff[global_ui.time_diff_index] = now - then;}
 }
 
 // After updating the store, this re-renders the layouts and shows the results in the UI.
 void ui_commit_store() {
-    float t = emscripten_get_now();
     layout_render(&global_layouts, &global_context.layout_max_x, &global_context.layout_max_y,
         &global_context.layout_max_points, global_store);
     global_context.font_regenerate = 1;
@@ -4482,59 +4086,16 @@ void ui_commit_store() {
     ui_frame_draw();
     
     ui_context_refresh();
-    ui_error_clear();
-}
-
-// Enable the right elements depending on the operation selected.
-extern "C" void ui_button_opr() {
-    Array_t<u8> op_str = ui_get_radio_value("operation");
-    assert(op_str.size == 1);
-
-    if (op_str[0] == 'u') {
-        EM_ASM(
-            document.getElementById("b_op").textContent = "Calculate union";
-            document.getElementById("op_second").className = "init-enabled";
-            document.getElementById("op_node1").disabled = false;
-        );
-    } else if (op_str[0] == 'i') {
-        EM_ASM(
-            document.getElementById("b_op").textContent = "Calculate intersection";
-            document.getElementById("op_second").className = "init-enabled";
-            document.getElementById("op_node1").disabled = false;
-        );
-    } else if (op_str[0] == 'c') {
-        EM_ASM(
-            document.getElementById("b_op").textContent = "Calculate complement";
-            document.getElementById("op_second").className = "init-disabled";
-            document.getElementById("op_node1").disabled = true;
-        );
-    } else {
-        assert_false;
-    }
-}
-
-extern "C" void ui_button_help() {
-    global_ui.is_helptext_visible ^= 1;
-    if (global_ui.is_helptext_visible) {
-        EM_ASM(
-            document.getElementById("cont-overlay").style.display = "";
-            document.getElementById("b_help").textContent = "Hide help";
-        );
-    } else {
-        EM_ASM(
-            document.getElementById("cont-overlay").style.display = "none";
-            document.getElementById("b_help").textContent = "Show help";
-        );
-    }
+    platform_ui_error_clear();
 }
 
 // Called when the user presses the button responsible for union, intersection and negation.
-extern "C" void ui_button_op() {
+void ui_button_op() {
     if (not global_context.not_completely_empty) return;
 
-    Array_t<u8> op_str = ui_get_radio_value("operation");
-    Array_t<u8> arg0_str = ui_get_value("op_node0");
-    Array_t<u8> arg1_str = ui_get_value("op_node1");
+    Array_t<u8> op_str = platform_ui_get_value(Ui_elem::OPERATION);
+    Array_t<u8> arg0_str = platform_ui_get_value(Ui_elem::OP_NODE0);
+    Array_t<u8> arg1_str = platform_ui_get_value(Ui_elem::OP_NODE1);
     
     assert(op_str.size == 1);
 
@@ -4578,10 +4139,10 @@ extern "C" void ui_button_op() {
 }
 
 // Callback for the 'Create and add' button
-extern "C" void ui_button_create() {
-    Array_t<u8> nums_str = ui_get_value("create_nums");
-    Array_t<u8> base_str = ui_get_value("create_base");
-    Array_t<u8> bits_str = ui_get_value("create_bits");
+void ui_button_create() {
+    Array_t<u8> nums_str = platform_ui_get_value(Ui_elem::CREATE_NUMS);
+    Array_t<u8> base_str = platform_ui_get_value(Ui_elem::CREATE_BASE);
+    Array_t<u8> bits_str = platform_ui_get_value(Ui_elem::CREATE_BITS);
 
     defer { array_free(&nums_str); };
     defer { array_free(&base_str); };
@@ -4634,36 +4195,15 @@ extern "C" void ui_button_create() {
         array_push_back(&bits_u8, (u8)i);
     }
 
+    // This performs the actual algorithm
     u32 bdd = bdd_from_list_stepwise(&global_store, {(u64*)nums.data, nums.size}, bits_u8, base);
-    if (bdd > 1) {
-        EM_ASM({
-            document.getElementById("op_node0").value = $0 > 1 ? $0 : "T";
-            document.getElementById("op_node1").value = $1 > 1 ? $1 : "T";
-        }, global_store.bdd_data[bdd].child0, global_store.bdd_data[bdd].child1);
-    }
 
-    EM_ASM(
-        document.getElementById("op-cont"   ).className = "init-enabled";
-        document.getElementById("reset-cont").className = "init-enabled";
-        document.getElementById("frame-cont").className = "init-enabled";
-        document.getElementById("b_op").disabled = false;
-        document.getElementById("op_u").disabled = false;
-        document.getElementById("op_i").disabled = false;
-        document.getElementById("op_c").disabled = false;
-        document.getElementById("op_node0").disabled = false;
-        document.getElementById("op_node1").disabled = false;
-        document.getElementById("b_removeall").disabled = false;
-        document.getElementById("b_prev").disabled = false;
-        document.getElementById("b_next").disabled = false;
-    );
-    ui_button_opr();
-
+    platform_operations_enable(bdd);
     ui_commit_store();
 }
 
 // Called when the 'Remove all' button is pressed. Also used to initialise the UI.
-extern "C" void ui_button_removeall() {
-    
+void ui_button_removeall() {
     bdd_store_init(&global_store);
     global_layouts.size = 0;
 
@@ -4677,35 +4217,23 @@ extern "C" void ui_button_removeall() {
     global_ui.frame_cur = 0.f;
     global_ui.frame_end = 0.f;
 
-    EM_ASM(
-        document.getElementById("op-cont"   ).className = "init-disabled";
-        document.getElementById("reset-cont").className = "init-disabled";
-        document.getElementById("frame-cont").className = "init-disabled";
-        document.getElementById("b_op").disabled = true;
-        document.getElementById("b_op").textContent = "Calculate union";
-        document.getElementById("op_u").disabled = true;
-        document.getElementById("op_i").disabled = true;
-        document.getElementById("op_c").disabled = true;
-        document.getElementById("op_node0").disabled = true;
-        document.getElementById("op_node1").disabled = true;
-        document.getElementById("b_removeall").disabled = true;
-        document.getElementById("b_prev").disabled = true;
-        document.getElementById("b_next").disabled = true;
-        document.getElementById("loadtext").style.display = "none";
-        document.getElementById("helptext").style.display = "";
-    );
+    platform_operations_disable();
 
-    global_ui.is_helptext_visible = true;
-    ui_button_help();
-    
     ui_frame_draw();
-    ui_context_set((char*)"", 0, 0);
-    ui_error_clear();
+    platform_ui_context_set({(u8*)"", 0}, 0, 0);
+    platform_ui_error_clear();
 }
 
+// This is called whenever the canvas/window resizes. The new dimensions are already applied in
+// global_context.
+void application_handle_resize() {
+    // Font regeneration scheduled in 10 frames. I do not want to do this every frame while the user
+    // changes window size.
+    global_context.font_regenerate = 10;
+}
 
-void em_main_loop() {
-    float time = (float)emscripten_get_now()*0.001f;
+void application_render() {
+    float time = (float)platform_now();
     float time_t = (time - global_ui.time_begin) / (global_ui.time_end - global_ui.time_begin);
     assert(time_t >= 0.f);
 
@@ -4716,20 +4244,19 @@ void em_main_loop() {
         // If the font is due to regenerate, i.e. we are resizing, we actually do want to draw, so
         // check that. Else, we will come back to this.
         if (global_context.font_regenerate == 0) {
-            emscripten_pause_main_loop();
+            platform_main_loop_active(false);
         }
     }
 
     // Smoothstep nonlinearity. Make the transitions a tiny bit more seamless.
-    
     global_ui.frame_cur = (1.f-time_t) * global_ui.frame_begin + time_t * global_ui.frame_end;
 
     ui_frame_draw();
 }
 
 // Moving in animation frames
-extern "C" void ui_button_move(float diff) {
-    float now = (float)emscripten_get_now()*0.001f;
+void ui_button_move(float diff) {
+    float now = platform_now();
     if (global_ui.frame_end + diff < 0.f) {
         global_ui.frame_end = 0.f;
     } else if (global_ui.frame_end + diff > global_layouts.size-1) {
@@ -4751,7 +4278,7 @@ extern "C" void ui_button_move(float diff) {
         global_ui.frame_end += diff;
     }
     ui_context_refresh();
-    emscripten_resume_main_loop();
+    platform_main_loop_active(true);
 }
 
 void ui_set_frame(s64 frame) {
@@ -4764,7 +4291,7 @@ void ui_set_frame(s64 frame) {
     global_ui.frame_end   = (float)frame;
     global_ui.frame_cur   = (float)frame;
     ui_context_refresh();
-    emscripten_resume_main_loop();
+    platform_main_loop_active(false);
 }
 
 // Used to jump to the next/last point where an algorithm started.
@@ -4794,83 +4321,40 @@ void ui_page(s64 diff) {
     ui_set_frame(frame_target);
 }
 
-EM_BOOL ui_key_press(int, EmscriptenKeyboardEvent const* event, void*) {
-    // This is a bit hacky. If an input element is selected, we ignore keypresses to avoid doing
-    // frames of the animation if the user just wants to move the cursor in a text entry.
-    if (global_ui.focus_flags) return false;
-    if (strncmp(event->key, "ArrowRight", 32) == 0) {
+// Handle a single keypress. Return whether the event was consumed.
+bool ui_key_press(Key key) {
+    if (key.type != Key::SPECIAL) return false;
+
+    if (key.special == Key::ARROW_R) {
         ui_button_move(1.f);
-        return true;
-    } else if (strncmp(event->key, "ArrowLeft", 32) == 0) {
+    } else if (key.special == Key::ARROW_L) {
         ui_button_move(-1.f);
-        return true;
-    } else if (strncmp(event->key, "PageUp", 32) == 0) {
+        
+    } else if (key.special == Key::PAGE_U) {
         ui_page(1);
-        return true;
-    } else if (strncmp(event->key, "PageDown", 32) == 0) {
+    } else if (key.special == Key::PAGE_D) {
         ui_page(-1);
-        return true;
-    } else if (strncmp(event->key, "Home", 32) == 0) {
+        
+    } else if (key.special == Key::HOME) {
         ui_set_frame(0);
-        return true;
-    } else if (strncmp(event->key, "End", 32) == 0) {
+    } else if (key.special == Key::END) {
         ui_set_frame(0x7fffffffffffffffull);
-        return true;
-    } else if (strncmp(event->key, "F1", 32) == 0) {
-        ui_button_help();
-        return true;
-    } else if (strncmp(event->key, "!", 32) == 0) {
+        
+    } else if (key.special == Key::F1) {
+        platform_ui_button_help();
+    } else if (key.special == Key::F2) {
         global_ui.debug_info_enabled = not global_ui.debug_info_enabled;
-        return true;
+        
     } else {
         return false;
     }
+    return true;
 }
 
-// We want to collect information on whether the following elements are focused or not. If any of
-// them are, we ignore keypresses.
-char const* focusable_ids[] = {"create_nums", "create_base", "create_bits", "op_node0", "op_node1", 0};
-EM_BOOL ui_focus(int event_type, EmscriptenFocusEvent const* event, void*) {
-    u64 id;
-    for (id = 0; focusable_ids[id]; ++id) {
-        if (strncmp(event->id, focusable_ids[id], 32) == 0) break;
-    }
-    if (not focusable_ids[id]) return false;
-    
-    u64 focused;
-    if (event_type == EMSCRIPTEN_EVENT_BLUR) {
-        focused = 0;
-    } else if (event_type == EMSCRIPTEN_EVENT_FOCUS) {
-        focused = 1;
-    } else {
-        return false;
-    }
-    global_ui.focus_flags ^= (global_ui.focus_flags ^ (focused << id)) & 1ull << id;
-    return false;
-}
-
-// Entry point. Set up the callbacks and do initialisation.
-int main() {
+// This is the entry point for platform-independent initialisation.
+void application_main() {
     bdd_store_init(&global_store);
-    
-    emscripten_set_main_loop(&em_main_loop, 0, false);
-    emscripten_pause_main_loop();
-
-    webgl_init(&global_context);
-
-    // Chrome does not issue keypress events for navigation keys (e.g. arrow keys, page up). So we
-    // use keydown instead, which works basically the same.
-    emscripten_set_keydown_callback(nullptr, nullptr, false, &ui_key_press);
-
-    for (u64 id = 0; focusable_ids[id]; ++id) {
-        emscripten_set_blur_callback (focusable_ids[id], nullptr, false, &ui_focus);
-        emscripten_set_focus_callback(focusable_ids[id], nullptr, false, &ui_focus);
-    }
-
-    emscripten_set_mousemove_callback("canvas", nullptr, false, &ui_mouse_move);
-    
     ui_button_removeall();
-    return 0;
 }
 
 // # License information

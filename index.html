@@ -141,14 +141,14 @@
       <div style="padding-top:5px;"></div>
       <div class="fill">
         <div class="center">Adds the BDD to the graph.</div>
-        <button type="button" onclick="Module._ui_button_create()">Create and add</button>
+        <button type="button" onclick="Module.__platform_ui_button_create()">Create and add</button>
       </div>
       <hr></hr>
       <div id="op-cont" class="init-disabled">
       Operation:
-      <input type="radio" name="operation" value="u" id="op_u" onclick="Module._ui_button_opr()" placeholder="3" disabled checked><label for="op_u">Union</label>
-      <input type="radio" name="operation" value="i" id="op_i" onclick="Module._ui_button_opr()" placeholder="3" disabled><label for="op_i">Intersection</label>
-      <input type="radio" name="operation" value="c" id="op_c" onclick="Module._ui_button_opr()" placeholder="3" disabled><label for="op_c">Complement</label>
+      <input type="radio" name="operation" value="u" id="op_u" onclick="Module.__platform_ui_button_opr()" placeholder="3" disabled checked><label for="op_u">Union</label>
+      <input type="radio" name="operation" value="i" id="op_i" onclick="Module.__platform_ui_button_opr()" placeholder="3" disabled><label for="op_i">Intersection</label>
+      <input type="radio" name="operation" value="c" id="op_c" onclick="Module.__platform_ui_button_opr()" placeholder="3" disabled><label for="op_c">Complement</label>
       <div style="padding-top:5px;"></div>
       First node: <input id="op_node0" type="text" size="3" placeholder="e.g. 5" disabled>
       <span style="padding-left:10px;"></span>
@@ -158,20 +158,20 @@
       <div style="padding-top:5px;"></div>
       <div class="fill">
         <div class="center">Applies the operation.</div>
-        <button id="b_op" type="button" onclick="Module._ui_button_op()" disabled>Calculate union</button>
+        <button id="b_op" type="button" onclick="Module.__platform_ui_button_op()" disabled>Calculate union</button>
       </div>
       </div>
       <hr></hr>
       <div id="reset-cont" class="init-disabled">
       <div class="fill">
         <div class="center">Reset the application, delete all nodes.</div>
-        <button id="b_removeall" type="button" onclick="Module._ui_button_removeall()" disabled>Remove all</button>
+        <button id="b_removeall" type="button" onclick="Module.__platform_ui_button_removeall()" disabled>Remove all</button>
       </div>
       </div>
       <hr></hr>
       <div class="fill">
         <div class="center">Display usage instructions.</div>
-        <button id="b_help" type="button" onclick="Module._ui_button_help()">Show help</button>
+        <button id="b_help" type="button" onclick="Module.__platform_ui_button_help()">Show help</button>
       </div>
       <hr></hr>
       <div id="error-cont"></div>
@@ -179,9 +179,9 @@
       <div id="frame-cont" class="init-disabled">
       <div class="fill">
         <div class="center"><b>Step-by-step</b><span style="font: 75% serif; margin-left: 5px">(Move using arrow keys)</span></div>
-        <button id="b_prev" onclick="Module._ui_button_move(-1)" type="button" disabled>&lt;</button>
+        <button id="b_prev" onclick="Module.__platform_ui_button_move(-1)" type="button" disabled>&lt;</button>
         <div id="frame" style="margin-left:5px;">0/0</div>
-        <button id="b_next" onclick="Module._ui_button_move(1)"  type="button" disabled>&gt;</button>
+        <button id="b_next" onclick="Module.__platform_ui_button_move(1)"  type="button" disabled>&gt;</button>
       </div>
       
       </div>
@@ -193,7 +193,7 @@
       <div id="cont-overlay">
         <span id="loadtext">Loading...</span>
         <div id="helptext" style="display: none">
-          <button class="topright" type="button" onclick="Module._ui_button_help()">×</button>
+          <button class="topright" type="button" onclick="Module.__platform_ui_button_help()">×</button>
           <h3>About</h3>
           <p>obst visualises algorithms related to <a href="https://en.wikipedia.org/wiki/Binary_decision_diagram">Binary Decision Diagrams</a> (BDDs). BDDs are a data structure one can use to represent sets of numbers in a concise and unique fashion, while still being able to efficiently execute set operations on them.</p>
           <p>In particular, this tool shows how to create a BDD from a list of numbers, as well as compute their union, intersection and complement. The source is publicly available on <a href="https://github.com/suyjuris/obst">GitHub</a>. Feel free to write me an <a href="mailto:contact@nicze.de">email</a> for any feedback, suggestions, etc.!</p>
