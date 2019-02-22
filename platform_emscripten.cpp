@@ -3,13 +3,15 @@
 #include <emscripten/html5.h>
 #include <GLES2/gl2.h>
 
+#define OBST_PLATFORM_EMSCRIPTEN
+
 #include "global.hpp"
 #include "platform.hpp"
 #include "obst.cpp"
 
-// This is a dummy, so that our buildscript can grep for it and add the functions to the emcc
+// This is a dummy, so that our build script can grep for it and add the functions to the emcc
 // command-line parameters
-#define EM_EXPORT(x) x
+#define OBST_EM_EXPORT(x) x
 
 // Display this text as an error message somewhere
 EM_JS(void, _platform_ui_error_report, (char* msg), {
@@ -36,6 +38,9 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     Webgl_context* context = (Webgl_context*)user_data;
     emscripten_get_element_css_size("canvas", &context->width, &context->height);
     emscripten_set_canvas_element_size("canvas", (int)context->width, (int)context->height);
+    context->canvas_x = 0; // In the emscripten environment there is only the canvas to draw on
+    context->canvas_y = 0;
+    glViewport(0.0, 0.0, context->width, context->height);
     application_handle_resize();
     emscripten_resume_main_loop();
     return true;
@@ -211,7 +216,7 @@ void platform_mouse_position(float* out_x, float* out_y) {
 }
 
 // Enable the right elements depending on the operation selected.
-extern "C" void EM_EXPORT(_platform_ui_button_opr) () {
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_opr) () {
     Array_t<u8> op_str = platform_ui_get_value(Ui_elem::OPERATION);
     assert(op_str.size == 1);
 
@@ -256,19 +261,19 @@ void platform_ui_button_help () {
 
 // Simply dispatch to the respective ui_button_* procedures. Why? The extern "C" declaration is
 // emscripten-specific and does not belong in obst.cpp .
-extern "C" void EM_EXPORT(_platform_ui_button_help) () {
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_help) () {
     platform_ui_button_help();
 }
-extern "C" void EM_EXPORT(_platform_ui_button_op) () {
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_op) () {
     ui_button_op();
 }
-extern "C" void EM_EXPORT(_platform_ui_button_create) () {
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_create) () {
     ui_button_create();
 }
-extern "C" void EM_EXPORT(_platform_ui_button_removeall) () {
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_removeall) () {
     ui_button_removeall();
 }
-extern "C" void EM_EXPORT(_platform_ui_button_move) (float diff) {
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_move) (float diff) {
     ui_button_move(diff);
 }
 
@@ -416,7 +421,7 @@ void _platform_init_context(Webgl_context* context) {
 }
 
 // Entry point. Set up the callbacks and do initialisation.
-int EM_EXPORT(main) () {
+int OBST_EM_EXPORT(main) () {
     emscripten_set_main_loop(&application_render, 0, false);
     emscripten_pause_main_loop();
 

@@ -4,8 +4,13 @@
 
 // The README contains some high-level remarks about the code, you might want to take a look.
 
+
 // Uncomment this to show the force-based layout algorithm. Debug functionality, obviously.
-//#define DBG_SHOW_FORCE_LAYOUT 1
+//#define OBST_DBG_SHOW_FORCE_LAYOUT 1
+
+
+//@Cleanup: Rename webgl to opengl
+
 
 // Display an error somewhere, somehow. This is not for critical errors where we exit the program,
 // just to tell the user that the did something we do not like. ui_error_report is a printf-like
@@ -28,7 +33,7 @@ void ui_error_report(char const* msg, Args... args) {
     platform_ui_error_report(ui_error_buf);
 }
 void ui_error_report(char const* msg) {
-    platform_ui_error_report({(u8*)msg, strlen(msg)});
+    platform_ui_error_report({(u8*)msg, (s64)strlen(msg)});
 }
 
 // These are used for the parser.
@@ -1698,7 +1703,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
     
     // See note on node separation below
     auto dist_sticking_fac = [pos, pos_inter_flag](u32 i) mutable {
-        assert(0 <= i and i+1 < pos.size);
+        assert(i+1 < pos.size);
         float d = pos[i+1].x - pos[i].x;
         // See note on node distances above.
         if (bitset_get(pos_inter_flag, i  )) d *= 2.f;
@@ -2123,7 +2128,8 @@ struct Webgl_context {
         BDD_POS = 0, BDD_X, BDD_R, BDD_STROKE, BDD_FILL, BDD_BORDER, BDD_ATTR_COUNT,
         EDGE_POS = 0, EDGE_P0, EDGE_P1, EDGE_P2, EDGE_A, EDGE_DASH, EDGE_STROKE, EDGE_ATTR_COUNT,
         ARROW_POS = 0, ARROW_FILL, ARROW_ATTR_COUNT,
-        TEXT_POS = 0, TEXT_TPOS, TEXT_ALPHA, TEXT_ATTR_COUNT
+        TEXT_POS = 0, TEXT_TPOS, TEXT_ALPHA, TEXT_ATTR_COUNT,
+        UI_POS = 0, UI_FILL, UI_ATTR_COUNT,
     };
     // Names for all uniforms
     enum Uniforms: int {
@@ -2131,6 +2137,7 @@ struct Webgl_context {
         EDGE_ORIGIN, EDGE_SCALE, EDGE_SCALE_P,
         ARROW_ORIGIN, ARROW_SCALE,
         TEXT_ORIGIN, TEXT_SCALE, TEXT_SAMPLER,
+        UI_ORIGIN, UI_SCALE,
         UNIFORMS_COUNT
     };
     
@@ -2139,6 +2146,9 @@ struct Webgl_context {
     float scale; // Ratio of world-coordinates and pixels (world * scale = pixels)
     float layout_max_x, layout_max_y; // Position of the top-right corner of the screen in world-coordinates
     s64 layout_max_points; // Maximum number of points needed to be stored for edge data
+
+    s64 canvas_x, canvas_y; // The offset of the canvas in pixels. Used by native UI, 0 for emscripten
+    s64 screen_w, screen_h; // The dimensions of the screen in pixels. Used by native UI, for emscripten same as canvas
     
     Draw_param draw_param;
     float font_size_max; // Font size of a fully-sized node (i.e. rx == draw_param.node_radius)
@@ -2153,6 +2163,7 @@ struct Webgl_context {
     GLuint program_edge;
     GLuint program_arrow;
     GLuint program_text;
+    GLuint program_ui;
     // Ids of the uniforms
     Array_t<GLint> uniforms;
 
@@ -2182,11 +2193,15 @@ struct Webgl_context {
     Array_dyn<float> buf_text_tpos;
     Array_dyn<float> buf_text_alpha;
 
+    Array_dyn<float> buf_ui_pos;
+    Array_dyn<u8>    buf_ui_fill;
+
     // Names of the buffers for the vertex attributes of each shader
     Array_t<GLuint> buffers_bdd;
     Array_t<GLuint> buffers_edge;
     Array_t<GLuint> buffers_arrow;
     Array_t<GLuint> buffers_text;
+    Array_t<GLuint> buffers_ui;
 
     Array_t<u8> buf_render; // Memory used during rendering
     Array_dyn<Bdd_attr> buf_attr_cur; // Current attributes used for the bdds. Mostly stored as convenience, the data is also stored in the vertex attribute buffers in some form.
@@ -2244,6 +2259,7 @@ void webgl_text_prepare(Webgl_context* context) {
         glDeleteTextures(1, &context->text_tex);
     }
     glGenTextures(1, &context->text_tex);
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, context->text_tex);
 
     array_free(&context->text_pos);
@@ -2292,7 +2308,7 @@ void webgl_init(Webgl_context* context) {
         "varying vec4 v_fill;\n"
         "\n"
         "void main() {\n"
-        "    gl_Position = vec4((pos - origin)*scale, vec2(0.7 - stroke.a*0.5, 1));\n"
+        "    gl_Position = vec4((pos - origin)*scale, vec2(0.7 - stroke.a*0.1, 1));\n"
         "    v_pos = pos;\n"
         "    v_x = x;\n"
         "    v_r = r;\n"
@@ -2352,7 +2368,7 @@ void webgl_init(Webgl_context* context) {
         "varying vec2 v_dg;\n"
         "\n"
         "void main() {\n"
-        "    gl_Position = vec4((pos - origin)*scale, vec2(0.6 - stroke.a*0.5, 1));\n"
+        "    gl_Position = vec4((pos - origin)*scale, vec2(0.6 - stroke.a*0.1, 1));\n"
         "    v_pos = pos-p0;\n"
         "    v_p1 = p1-p0;\n"
         "    v_p2 = p2-p0;\n"
@@ -2416,7 +2432,7 @@ void webgl_init(Webgl_context* context) {
         "uniform vec2 origin;\n"
         "uniform vec2 scale;\n"
         "void main() {\n"
-        "    gl_Position = vec4((pos - origin)*scale, vec2(0.5 - fill.a*0.5, 1));\n"
+        "    gl_Position = vec4((pos - origin)*scale, vec2(0.6 - fill.a*0.1, 1));\n"
         "    v_fill = fill;\n"
         "}\n";
 
@@ -2436,7 +2452,7 @@ void webgl_init(Webgl_context* context) {
         "uniform vec2 origin;\n"
         "uniform vec2 scale;\n"
         "void main() {\n"
-        "    gl_Position = vec4((pos - origin)*scale, 0, 1);\n"
+        "    gl_Position = vec4((pos - origin)*scale, 0.5, 1);\n"
         "    v_tpos = tpos;\n"
         "    v_alpha = alpha;\n"
         "}\n";
@@ -2454,87 +2470,86 @@ void webgl_init(Webgl_context* context) {
 
     // Yeah, sorry about the macros, but I do not think this code would be more readable without them.
 
-#define LOAD_SHADER(x, y) \
+#define OBST_LOAD_SHADER(x, y) \
     GLuint x##_id = webgl_shader_load(y, {(u8*)x, sizeof(x)}, (char*)#x); \
     glAttachShader(program, x##_id)
 
-#define PROGRAM_INIT(x) \
+#define OBST_PROGRAM_INIT(x) \
     program = glCreateProgram(); \
     context->program_##x = program; \
     assert(program); \
-    LOAD_SHADER(shader_v_##x, GL_VERTEX_SHADER); \
-    LOAD_SHADER(shader_f_##x, GL_FRAGMENT_SHADER)
+    OBST_LOAD_SHADER(shader_v_##x, GL_VERTEX_SHADER); \
+    OBST_LOAD_SHADER(shader_f_##x, GL_FRAGMENT_SHADER)
 
-#define PROGRAM_LINK(x) \
+#define OBST_PROGRAM_LINK(x) \
     webgl_program_link(program, (char*)#x)
 
-#define UNIFORM(x, y) \
-    context->uniforms[Webgl_context::x] = glGetUniformLocation(program, #y); \
-    assert(context->uniforms[Webgl_context::x])
+#define OBST_ATTRIB(x, y) \
+    glBindAttribLocation(program, context->x, #y);
+    
+#define OBST_UNIFORM(x, y) \
+    context->uniforms[context->x] = glGetUniformLocation(program, #y); \
+    assert(context->uniforms[context->x] != -1)
 
-#define GEN_BUFFERS(x, y) \
-    context->buffers_##x = array_create<GLuint>(Webgl_context::y##_ATTR_COUNT); \
-    glGenBuffers(Webgl_context::y##_ATTR_COUNT, context->buffers_##x.data)
-
-    context->uniforms = array_create<GLint>(Webgl_context::UNIFORMS_COUNT);
+#define OBST_GEN_BUFFERS(x, y) \
+    context->buffers_##x = array_create<GLuint>(context->y##_ATTR_COUNT); \
+    glGenBuffers(context->y##_ATTR_COUNT, context->buffers_##x.data)
+    
     GLuint program;
+    context->uniforms = array_create<GLint>(Webgl_context::UNIFORMS_COUNT);
     
-    PROGRAM_INIT(bdd);
-    glBindAttribLocation(program, Webgl_context::BDD_POS, "pos");
-    glBindAttribLocation(program, Webgl_context::BDD_X, "x");
-    glBindAttribLocation(program, Webgl_context::BDD_R, "r");
-    glBindAttribLocation(program, Webgl_context::BDD_STROKE, "stroke");
-    glBindAttribLocation(program, Webgl_context::BDD_BORDER, "border");
-    glBindAttribLocation(program, Webgl_context::BDD_FILL, "fill");
-    PROGRAM_LINK(bdd);
-    UNIFORM(BDD_ORIGIN, origin);
-    UNIFORM(BDD_SCALE, scale);
-    UNIFORM(BDD_SCALE_P, scale_p);
+    OBST_PROGRAM_INIT(bdd);
+    OBST_ATTRIB(BDD_POS, pos);
+    OBST_ATTRIB(BDD_X, x);
+    OBST_ATTRIB(BDD_R, r);
+    OBST_ATTRIB(BDD_STROKE, stroke);
+    OBST_ATTRIB(BDD_BORDER, border);
+    OBST_ATTRIB(BDD_FILL, fill);
+    OBST_PROGRAM_LINK(bdd);
+    OBST_UNIFORM(BDD_ORIGIN, origin);
+    OBST_UNIFORM(BDD_SCALE, scale);
+    OBST_UNIFORM(BDD_SCALE_P, scale_p);
 
-    PROGRAM_INIT(edge);
-    glBindAttribLocation(program, Webgl_context::EDGE_POS, "pos");
-    glBindAttribLocation(program, Webgl_context::EDGE_P0, "p0");
-    glBindAttribLocation(program, Webgl_context::EDGE_P1, "p1");
-    glBindAttribLocation(program, Webgl_context::EDGE_P2, "p2");
-    glBindAttribLocation(program, Webgl_context::EDGE_A, "a");
-    glBindAttribLocation(program, Webgl_context::EDGE_DASH, "dash");
-    glBindAttribLocation(program, Webgl_context::EDGE_STROKE, "stroke");
-    PROGRAM_LINK(edge);
-    UNIFORM(EDGE_ORIGIN, origin);
-    UNIFORM(EDGE_SCALE, scale);
-    UNIFORM(EDGE_SCALE_P, scale_p);
+    OBST_PROGRAM_INIT(edge);
+    OBST_ATTRIB(EDGE_POS, pos);
+    OBST_ATTRIB(EDGE_P0, p0);
+    OBST_ATTRIB(EDGE_P1, p1);
+    OBST_ATTRIB(EDGE_P2, p2);
+    OBST_ATTRIB(EDGE_A, a);
+    OBST_ATTRIB(EDGE_DASH, dash);
+    OBST_ATTRIB(EDGE_STROKE, stroke);
+    OBST_PROGRAM_LINK(edge);
+    OBST_UNIFORM(EDGE_ORIGIN, origin);
+    OBST_UNIFORM(EDGE_SCALE, scale);
+    OBST_UNIFORM(EDGE_SCALE_P, scale_p);
     
-    PROGRAM_INIT(arrow);
-    glBindAttribLocation(program, Webgl_context::ARROW_POS, "pos");
-    glBindAttribLocation(program, Webgl_context::ARROW_FILL, "fill");
-    PROGRAM_LINK(arrow);
-    UNIFORM(ARROW_ORIGIN, origin);
-    UNIFORM(ARROW_SCALE, scale);
+    OBST_PROGRAM_INIT(arrow);
+    OBST_ATTRIB(ARROW_POS, pos);
+    OBST_ATTRIB(ARROW_FILL, fill);
+    OBST_PROGRAM_LINK(arrow);
+    OBST_UNIFORM(ARROW_ORIGIN, origin);
+    OBST_UNIFORM(ARROW_SCALE, scale);
 
-    PROGRAM_INIT(text);
-    glBindAttribLocation(program, Webgl_context::TEXT_POS, "pos");
-    glBindAttribLocation(program, Webgl_context::TEXT_TPOS, "tpos");
-    glBindAttribLocation(program, Webgl_context::TEXT_ALPHA, "alpha");
-    PROGRAM_LINK(text);
-    UNIFORM(TEXT_ORIGIN, origin);
-    UNIFORM(TEXT_SCALE, scale);
-    UNIFORM(TEXT_SAMPLER, sampler);
+    OBST_PROGRAM_INIT(text);
+    OBST_ATTRIB(TEXT_POS, pos);
+    OBST_ATTRIB(TEXT_TPOS, tpos);
+    OBST_ATTRIB(TEXT_ALPHA, alpha);
+    OBST_PROGRAM_LINK(text);
+    OBST_UNIFORM(TEXT_ORIGIN, origin);
+    OBST_UNIFORM(TEXT_SCALE, scale);
+    OBST_UNIFORM(TEXT_SAMPLER, sampler);
 
-    GEN_BUFFERS(bdd, BDD);
-    GEN_BUFFERS(edge, EDGE);
-    GEN_BUFFERS(arrow, ARROW);
-    GEN_BUFFERS(text, TEXT);
+    OBST_GEN_BUFFERS(bdd, BDD);
+    OBST_GEN_BUFFERS(edge, EDGE);
+    OBST_GEN_BUFFERS(arrow, ARROW);
+    OBST_GEN_BUFFERS(text, TEXT);
+    OBST_GEN_BUFFERS(ui, UI);
     
-#undef LOAD_SHADER
-#undef PROGRAM_INIT
-#undef PROGRAM_LINK
-#undef GEN_BUFFERS
-
     glClearColor(0.96f, 0.96f, 0.96f, 1.f);
-    glViewport(0.0, 0.0, (double)context->width, (double)context->height);
 }
 
 // These exist only once. Some of the lower functions do not assume that, but many UI functions do.
+// @Cleanup: Maybe refactor a few functions to not use these
 Webgl_context global_context;
 Bdd_store global_store;
 Array_t<Bdd_layout> global_layouts;
@@ -2570,6 +2585,7 @@ s64 _char_index(u8 c) {
     }
 }
 
+//@Cleanup: This probably needs to be moved into emscripten
 void webgl_draw_text(
     Webgl_context* context,
     float x, float y,
@@ -2990,7 +3006,8 @@ void webgl_draw_arrow(Webgl_context* context, Pos p0, Pos p1, float size, u8* fi
 // Resets the buffers, initialises WebGL state
 void webgl_frame_init(Webgl_context* context) {
     glClear(GL_COLOR_BUFFER_BIT);
-    glViewport(0, 0, context->width, context->height);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -3039,19 +3056,19 @@ void webgl_frame_init(Webgl_context* context) {
 // Draws the content of all the buffers onto the screen.
 void webgl_frame_draw(Webgl_context* context) {
 
-#define DO_BUFFER(x, name, member, siz, type, norm)                      \
-    glBindBuffer(GL_ARRAY_BUFFER, context->buffers_##x[Webgl_context::name]); \
+#define OBST_DO_BUFFER(x, name, member, siz, type, norm)                      \
+    glBindBuffer(GL_ARRAY_BUFFER, context->buffers_##x[context->name]); \
     glBufferData(GL_ARRAY_BUFFER, context->member.size * sizeof(context->member[0]), context->member.data, GL_STREAM_DRAW); \
-    glVertexAttribPointer(Webgl_context::name, siz, type, norm, 0, 0); \
-    glEnableVertexAttribArray(Webgl_context::name)
+    glVertexAttribPointer(context->name, siz, type, norm, 0, 0); \
+    glEnableVertexAttribArray(context->name)
 
-#define DO_UNIFORM(name, type, ...) \
-    glUniform##type(context->uniforms[Webgl_context::name], __VA_ARGS__)
+#define OBST_DO_UNIFORM(name, type, ...) \
+    glUniform##type(context->uniforms[context->name], __VA_ARGS__)
 
-    float ox = context->origin_x + context->width  / 2.f / context->scale;
-    float oy = context->origin_y + context->height / 2.f / context->scale;
-    float sx = context->scale * 2.f / context->width;
-    float sy = context->scale * 2.f / context->height;
+    float ox = context->origin_x + (context->canvas_x + context->width /2.f) / context->scale;
+    float oy = context->origin_y + (context->canvas_y + context->height/2.f) / context->scale;
+    float sx = context->scale * 2.f / context->screen_w;
+    float sy = context->scale * 2.f / context->screen_h;
 
     // There is some juggling involved with the depth buffer and drawing order.
     
@@ -3059,27 +3076,27 @@ void webgl_frame_draw(Webgl_context* context) {
 
     glUseProgram(context->program_edge);
 
-    DO_UNIFORM(EDGE_ORIGIN, 2f, ox, oy);
-    DO_UNIFORM(EDGE_SCALE, 2f, sx, sy);
-    DO_UNIFORM(EDGE_SCALE_P, 1f, context->scale);
+    OBST_DO_UNIFORM(EDGE_ORIGIN, 2f, ox, oy);
+    OBST_DO_UNIFORM(EDGE_SCALE, 2f, sx, sy);
+    OBST_DO_UNIFORM(EDGE_SCALE_P, 1f, context->scale);
 
-    DO_BUFFER(edge, EDGE_POS,    buf_edge_pos,    2, GL_FLOAT, 0);
-    DO_BUFFER(edge, EDGE_P0,     buf_edge_p0,     2, GL_FLOAT, 0);
-    DO_BUFFER(edge, EDGE_P1,     buf_edge_p1,     2, GL_FLOAT, 0);
-    DO_BUFFER(edge, EDGE_P2,     buf_edge_p2,     2, GL_FLOAT, 0);
-    DO_BUFFER(edge, EDGE_A,      buf_edge_a,      2, GL_FLOAT, 0);
-    DO_BUFFER(edge, EDGE_DASH,   buf_edge_dash,   3, GL_FLOAT, 0);
-    DO_BUFFER(edge, EDGE_STROKE, buf_edge_stroke, 4, GL_UNSIGNED_BYTE, 1);
+    OBST_DO_BUFFER(edge, EDGE_POS,    buf_edge_pos,    2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(edge, EDGE_P0,     buf_edge_p0,     2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(edge, EDGE_P1,     buf_edge_p1,     2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(edge, EDGE_P2,     buf_edge_p2,     2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(edge, EDGE_A,      buf_edge_a,      2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(edge, EDGE_DASH,   buf_edge_dash,   3, GL_FLOAT, 0);
+    OBST_DO_BUFFER(edge, EDGE_STROKE, buf_edge_stroke, 4, GL_UNSIGNED_BYTE, 1);
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, context->buf_edge_pos.size / 2);
 
     glUseProgram(context->program_arrow);
 
-    DO_UNIFORM(ARROW_ORIGIN, 2f, ox, oy);
-    DO_UNIFORM(ARROW_SCALE, 2f, sx, sy);
+    OBST_DO_UNIFORM(ARROW_ORIGIN, 2f, ox, oy);
+    OBST_DO_UNIFORM(ARROW_SCALE, 2f, sx, sy);
 
-    DO_BUFFER(arrow, ARROW_POS,  buf_arrow_pos,  2, GL_FLOAT, 0);
-    DO_BUFFER(arrow, ARROW_FILL, buf_arrow_fill, 4, GL_UNSIGNED_BYTE, 1);
+    OBST_DO_BUFFER(arrow, ARROW_POS,  buf_arrow_pos,  2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(arrow, ARROW_FILL, buf_arrow_fill, 4, GL_UNSIGNED_BYTE, 1);
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_arrow_pos.size / 2);
     
@@ -3087,34 +3104,33 @@ void webgl_frame_draw(Webgl_context* context) {
     
     glUseProgram(context->program_bdd);
 
-    DO_UNIFORM(BDD_ORIGIN, 2f, ox, oy);
-    DO_UNIFORM(BDD_SCALE, 2f, sx, sy);
-    DO_UNIFORM(BDD_SCALE_P, 1f, context->scale);
+    OBST_DO_UNIFORM(BDD_ORIGIN, 2f, ox, oy);
+    OBST_DO_UNIFORM(BDD_SCALE, 2f, sx, sy);
+    OBST_DO_UNIFORM(BDD_SCALE_P, 1f, context->scale);
 
-    DO_BUFFER(bdd, BDD_POS,    buf_bdd_pos,    2, GL_FLOAT, 0);
-    DO_BUFFER(bdd, BDD_X,      buf_bdd_x,      2, GL_FLOAT, 0);
-    DO_BUFFER(bdd, BDD_R,      buf_bdd_r,      2, GL_FLOAT, 0);
-    DO_BUFFER(bdd, BDD_STROKE, buf_bdd_stroke, 4, GL_UNSIGNED_BYTE, 1);
-    DO_BUFFER(bdd, BDD_BORDER, buf_bdd_border, 1, GL_FLOAT, 0);
-    DO_BUFFER(bdd, BDD_FILL,   buf_bdd_fill,   4, GL_UNSIGNED_BYTE, 1);
+    OBST_DO_BUFFER(bdd, BDD_POS,    buf_bdd_pos,    2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(bdd, BDD_X,      buf_bdd_x,      2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(bdd, BDD_R,      buf_bdd_r,      2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(bdd, BDD_STROKE, buf_bdd_stroke, 4, GL_UNSIGNED_BYTE, 1);
+    OBST_DO_BUFFER(bdd, BDD_BORDER, buf_bdd_border, 1, GL_FLOAT, 0);
+    OBST_DO_BUFFER(bdd, BDD_FILL,   buf_bdd_fill,   4, GL_UNSIGNED_BYTE, 1);
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_bdd_pos.size / 2);
 
     glUseProgram(context->program_text);
+    glActiveTexture(GL_TEXTURE0);
 
-    DO_UNIFORM(TEXT_ORIGIN, 2f, ox, oy);
-    DO_UNIFORM(TEXT_SCALE, 2f, sx, sy);
-    DO_UNIFORM(TEXT_SAMPLER, 1i, 0);
+    OBST_DO_UNIFORM(TEXT_ORIGIN, 2f, ox, oy);
+    OBST_DO_UNIFORM(TEXT_SCALE, 2f, sx, sy);
+    OBST_DO_UNIFORM(TEXT_SAMPLER, 1i, 0);
 
-    DO_BUFFER(text, TEXT_POS,     buf_text_pos,     2, GL_FLOAT, 0);
-    DO_BUFFER(text, TEXT_TPOS,    buf_text_tpos,    2, GL_FLOAT, 0);
-    DO_BUFFER(text, TEXT_ALPHA,   buf_text_alpha,   1, GL_FLOAT, 0);
+    OBST_DO_BUFFER(text, TEXT_POS,     buf_text_pos,     2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(text, TEXT_TPOS,    buf_text_tpos,    2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(text, TEXT_ALPHA,   buf_text_alpha,   1, GL_FLOAT, 0);
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_text_pos.size / 2);
 
-#undef DO_BUFFER
-#undef DO_UNIFORM
-
+    // OBST_DO_BUFFER and OBST_DO_UNIFORM purposely left defined for the platform layer
 }
 
 Layout_memory global_layout_memory;
@@ -3123,7 +3139,7 @@ Layout_memory global_layout_memory;
 void layout_render(Array_t<Bdd_layout>* layouts, float* max_x, float* max_y, s64* max_points, Bdd_store store) {
     constexpr s64 iter_max = 500;
     
-#ifndef DBG_SHOW_FORCE_LAYOUT
+#ifndef OBST_DBG_SHOW_FORCE_LAYOUT
     s64 num_frames = store.snapshots.size-1;
     s64 first_new = layouts->size;
     array_resize(layouts, num_frames);
@@ -3241,7 +3257,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     array_resize(&context->buf_attr_cur, store.bdd_data.size);
     Array_t<Bdd_attr> attr_cur = context->buf_attr_cur;
 
-#ifndef DBG_SHOW_FORCE_LAYOUT
+#ifndef OBST_DBG_SHOW_FORCE_LAYOUT
     auto bdds0 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame  ].offset_bdd, store.snapshots[frame+1].offset_bdd);
     auto bdds1 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame+1].offset_bdd, store.snapshots[frame+2].offset_bdd);
 #else
@@ -3410,12 +3426,12 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     // Edge ids are just the parent and then one bit of edge type.
     for (s64 i = 0; i+1 < layouts[frame].edges.size; ++i) {
         Edge edge = layouts[frame].edges[i];
-        u32 edge_id = bdds0[edge.from].id << 1 | edge.type-1;
+        u32 edge_id = bdds0[edge.from].id << 1 | (edge.type-1);
         edge_map0[edge_id] = i;
     }
     for (s64 i = 0; i+1 < layouts[frame+1].edges.size; ++i) {
         Edge edge = layouts[frame+1].edges[i];
-        u32 edge_id = bdds1[edge.from].id << 1 | edge.type-1;
+        u32 edge_id = bdds1[edge.from].id << 1 | (edge.type-1);
         edge_map1[edge_id] = i;
     }
     
@@ -3780,7 +3796,7 @@ Ui_context global_ui;
 
 // Update the context display, i.e. the step-by-step feature
 void ui_context_refresh() {
-#ifdef DBG_SHOW_FORCE_LAYOUT
+#ifdef OBST_DBG_SHOW_FORCE_LAYOUT
     // Context could be out of bounds here, is not useful anyway
     return;
 #endif
@@ -4035,13 +4051,13 @@ void ui_frame_draw() {
         float y = global_context.layout_max_y + 0.9f;
         float fs = 12.f / global_context.scale;
         snprintf((char*)buf, sizeof(buf), "%.0f", last * 1e4);
-        webgl_draw_text(&global_context, x, y, {buf, strlen((char*)buf)}, fs, 1.f, 1.f);
+        webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);
         y -= fs;
         snprintf((char*)buf, sizeof(buf), "%.0f", max * 1e4);
-        webgl_draw_text(&global_context, x, y, {buf, strlen((char*)buf)}, fs, 1.f, 1.f);
+        webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);
         y -= fs;
         snprintf((char*)buf, sizeof(buf), "%.0f", avg * 1e4);
-        webgl_draw_text(&global_context, x, y, {buf, strlen((char*)buf)}, fs, 1.f, 1.f);}
+        webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);}
 
         float x = -0.8f + 5.f / global_context.scale;
         float y = global_context.layout_max_y + 0.9f - 30.f / global_context.scale;
