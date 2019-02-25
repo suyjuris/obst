@@ -88,19 +88,33 @@ Array_t<u8> array_load_from_file(char const* path) {
     return array_load_from_file({(u8*)path, (s64)strlen(path)});
 }
 
+namespace Text_fmt {
+
+enum Flags: u64 {
+    PARAGRAPH = 1, // Indicates a paragraph break at the end of the item
+    NEWLINE = 2,
+    HEADER = 4, // Corresponds to <h4>, draw text as title
+    BOLD = 8,
+    ITALICS = 16,
+    GROUP_SPACING = PARAGRAPH | NEWLINE,
+};
+enum Slots: s64 {
+    SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_PLATFORM_FIRST
+};
+
+};
+
 struct Text_box {
-    enum Flags: u8 {
-        NEWLINE = 1, NEWPAR = 2, NEWTEXT = 4
-    };
-    
     float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
     float s0 = 0.f, t0 = 0.f, s1 = 0.f, t1 = 0.f;
-    float advance = 0.f;
-    u8 flags = 0;
+    float advance = 0.f, space = 0.f, newline = 0.f, ascent = 0.f;
+    u32 flags = 0; // Same as the spacing flags in Text_fmt::Flags
+    
+    static_assert(Text_fmt::GROUP_SPACING >> 32 == 0, "32-bit not sufficient or Text_box flags");
 }; //@Cleanup: Move
 
-// Keeps the necessary data to manage OpenGL data for the platform layer
-struct Platform_gl_context {
+// Keeps the necessary data to manage OpenGL and other data for the uil layer
+struct Lui_context {
     // Indices for all the vertex attributes
     enum Attributes: GLuint {
         UIRECT_POS = 0, UIRECT_FILL, UIRECT_ATTR_COUNT,
@@ -134,10 +148,32 @@ struct Platform_gl_context {
     Array_t<GLuint> buffers_uirect;
     Array_t<GLuint> buffers_uitext;
 
-    // Font data
-    Array_t<u8> font_ui_data;
-    stbtt_fontinfo font_ui;
-    float font_ui_scale;
+    // Date for font rendering
+    struct Font_instance {
+        s64 info_index;
+        float scale;
+    };
+    enum Font_instance_id: u8 {
+        FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL, FONT_LUI_SANS, FONT_BDD_LABEL,
+        FONT_COUNT
+    };
+
+    Array_t<stbtt_fontinfo> font_info;
+    Array_t<Font_instance> fonts;
+
+    // Data for generating the texture containing the text (the text preparation)
+    Array_t<u8> prep_image; // The current content of the font texture
+    s64 prep_size = 0; // Size of the font texture
+    s64 prep_x = 0, prep_y = 0; // The next rectangle begins here (+1 padding)
+    s64 prep_y_incr = 0; // How far to move y when moving into the next line
+    Array_dyn<int> prep_glyph_buf; // Temporary storage to hold the glyphs
+    Array_dyn<u8>  prep_image_buf; // Temporary storage to hold pixel data
+    bool prep_dirty = false; // Whether we need to re-send the texture to the GPU
+
+    // Data for formatted text display
+    u64 fmt_flags;
+    Array_dyn<Text_box> fmt_boxes;
+    Array_dyn<Array_dyn<Text_box>> fmt_slots;
 };
 
 struct Platform_state {
@@ -149,7 +185,7 @@ struct Platform_state {
     Display* display = nullptr;
     GLXWindow window_glx;
 
-    Platform_gl_context gl_context;
+    Lui_context gl_context;
 };
 Platform_state global_platform;
 
@@ -175,14 +211,6 @@ double platform_now() {
     return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
 }
 
-//int platform_text_prepare(int size_pixel, Array_t<u8> chars, Array_t<Rect>* out_positions) {
-//    if (global_platform.font_labels_size != size_pixel) {
-//        
-//    }
-//    
-//    return 0;
-//}
-
 void _platform_handle_resize(s64 width, s64 height) {
     global_context.screen_w = width;
     global_context.screen_h = height;
@@ -197,8 +225,7 @@ void _platform_handle_resize(s64 width, s64 height) {
     application_handle_resize();
 }
 
-
-void uil_text_prepare(Platform_gl_context* context, Array_t<u8> s, Array_dyn<Text_box>* boxes); //@Cleanup: Remove
+void test_init();
 
 void _platform_init(Platform_state* platform) {
     assert(platform);
@@ -284,22 +311,54 @@ void _platform_init(Platform_state* platform) {
     OBST_GEN_BUFFERS(uitext, UITEXT);
 
     // Font stuff
-    //context->font_ui_data = array_load_from_file("OpenSans-Regular.ttf");
-    context->font_ui_data = array_load_from_file("DejaVuSerif.ttf");
-    int code = stbtt_InitFont(&context->font_ui, context->font_ui_data.data, 0);
-    if (code == 0) {
-        fprintf(stderr, "Error: Could not parse font data\n");
-        exit(101);
-    }
+    
+    // @Leak: We do not store a pointer to the font data directly. However, this data is freed
+    // precisely when we exit anyway.
+    Array_t<u8> font_data_lui_n = array_load_from_file("DejaVuSerif.ttf");
+    Array_t<u8> font_data_lui_i = array_load_from_file("DejaVuSerif-Italic.ttf");
+    Array_t<u8> font_data_lui_b = array_load_from_file("DejaVuSerif-Bold.ttf");
+    Array_t<u8> font_data_bdd_n = array_load_from_file("DejaVuSans.ttf");
 
-    context->font_ui_scale = stbtt_ScaleForPixelHeight(&context->font_ui, 20); //@Cleanup: Choose font size so that borders of x are pixels
-    char const* s = "This is a test. Please stand by. I am not sure this will work. Paragraph wrapping is a hard problem,";
-    uil_text_prepare(context, {(u8*)s, (s64)strlen(s)}, &context->uitext_boxes);
+    context->font_info = array_create<stbtt_fontinfo>(4);
+    {int code = stbtt_InitFont(&context->font_info[0], font_data_lui_n.data, 0);
+    if (code == 0) {
+        fprintf(stderr, "Error: Could not parse font data (1)\n"); exit(101);
+    }}
+    {int code = stbtt_InitFont(&context->font_info[1], font_data_lui_i.data, 0);
+    if (code == 0) {
+        fprintf(stderr, "Error: Could not parse font data (2)\n"); exit(102);
+    }}
+    {int code = stbtt_InitFont(&context->font_info[2], font_data_lui_b.data, 0);
+    if (code == 0) {
+        fprintf(stderr, "Error: Could not parse font data (3)\n"); exit(103);
+    }}
+    {int code = stbtt_InitFont(&context->font_info[3], font_data_bdd_n.data, 0);
+    if (code == 0) {
+        fprintf(stderr, "Error: Could not parse font data (4)\n"); exit(104);
+    }}
+
+    context->fonts = array_create<Lui_context::Font_instance>(Lui_context::FONT_COUNT);
+    auto set_font = [context](s64 font_style, s64 index, float size) {
+        context->fonts[font_style] = {index, stbtt_ScaleForPixelHeight(&context->font_info[index], size)};
+    };
+    set_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
+    set_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
+    set_font(Lui_context::FONT_LUI_BOLD, 2, 20);
+    set_font(Lui_context::FONT_LUI_HEADER, 2, 26);
+    set_font(Lui_context::FONT_LUI_SMALL, 0, 15);
+    set_font(Lui_context::FONT_LUI_SANS, 3, 20);
+    set_font(Lui_context::FONT_BDD_LABEL, 3, 20);
+
+    // Initialise font preparation
+    context->prep_size = 512;
+    context->prep_image = array_create<u8>(context->prep_size * context->prep_size);
+
+    test_init();
     
     //@Cleanup: Check max size using RECTANGLE_TEXTURE_SIZE
 }
 
-void uil_draw_rect(Platform_gl_context* context, s64 x, s64 y, s64 w, s64 h, s64 layer, u8* fill) {
+void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, s64 layer, u8* fill) {
     float x1 = x,   y1 = y;
     float x2 = x+w, y2 = y+h;
     float z = 0.1f + (float)layer * 0.01f;
@@ -312,188 +371,164 @@ void uil_draw_rect(Platform_gl_context* context, s64 x, s64 y, s64 w, s64 h, s64
     }
 }
 
-void uil_text_prepare(Platform_gl_context* context, Array_t<u8> s, Array_dyn<Text_box>* boxes) {
-    assert(context and boxes);
-    boxes->size = 0;
+void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text_box* box) {
+    assert(box);
 
-    // I expect the text that comes in here to only contain zeros, printables, spaces and newlines.
-
-    s64 i = 0;
-    while (s[i] == '\n' or s[i] == ' ') ++i;
-
-    s64 size = 512;
-    Array_t<u8> image = array_create<u8>(size * size);
-    s64 x = 0, y = 0, y_incr = 0;
+    Array_dyn<int> glyphs = context->prep_glyph_buf;
+    defer { context->prep_glyph_buf = glyphs; };
+    glyphs.size = 0;
     
-    Array_dyn<s32> glyphs;
-    Array_dyn<u8> buf;
-    defer { array_free(&glyphs); };
-    defer { array_free(&buf); };
-
-    float f = context->font_ui_scale;
+    float f = context->fonts[font].scale;
+    stbtt_fontinfo* fontinfo = &context->font_info[context->fonts[font].info_index];
     
-    while (i < s.size) {
-        Text_box box;
+    for (s64 i = 0; i < word.size;) {
+        // Decode utf-8
+        u32 c = word[i];
+        s64 c_bytes = c&128 ? c&64 ? c&32 ? c&16 ? 4 : 3 : 2 : -1 : 1;
+        if (c_bytes == 1) {
+            // nothing
+        } else if (c_bytes == 2) {
+            c = (word[i]&0x1f) << 6 | (word[i+1]&0x3f);
+        } else if (c_bytes == 3) {
+            c = (word[i]&0xf) << 12 | (word[i+1]&0x3f) << 6 | (word[i+2]&0x3f);
+        } else if (c_bytes == 4) {
+            c = (word[i]&0x7) << 18 | (word[i+1]&0x3f) << 12 | (word[i+2]&0x3f) << 6 | (word[i+3]&0x3f);
+        } else {
+            assert(false);
+        }
         
-        s64 j;
-        for (j = i; j < s.size; ++j) {
-            if (s[j] == ' ' or s[j] == '\n' or s[j] == 0) break;
-        }
-        s64 next;
-        for (next = j; next < s.size and (s[next] == ' ' or s[next] == '\n'); ++next) {
-            if (s[next] == '\n') {
-                box.flags = box.flags & Text_box::NEWLINE ? Text_box::NEWPAR : Text_box::NEWLINE;
-            }
-        }
-
-        if (next < s.size and s[next] == 0) box.flags |= Text_box::NEWTEXT;
-
-        glyphs.size = 0;
-        while (i < j) {
-            // Decode utf-8
-            u32 c = s[i];
-            s64 c_bytes = c&128 ? c&64 ? c&32 ? c&16 ? 4 : -1 : 3 : 2 : 1;
-            if (c_bytes == 1) {
-                // nothing
-            } else if (c_bytes == 2) {
-                c = (s[i]&0x1f) << 6 | (s[i+1]&0x3f);
-            } else if (c_bytes == 3) {
-                c = (s[i]&0xf) << 12 | (s[i+1]&0x3f) << 6 | (s[i+2]&0x3f);
-            } else if (c_bytes == 4) {
-                c = (s[i]&0x7) << 18 | (s[i+1]&0x3f) << 12 | (s[i+2]&0x3f) << 6 | (s[i+3]&0x3f);
-            } else {
-                assert(false);
-            }
-            
-            s32 glyph = stbtt_FindGlyphIndex(&context->font_ui, c);
-            if (glyph) array_push_back(&glyphs, glyph);
-            
-            i += c_bytes;
-        }
-        i = next;
-
-        float shift = 0.f;
-        bool draw = false;
-        s64 x_orig = x;
-        s64 y_orig = y;
-        s64 x_init_off = 0;
-        s64 y_incr_new = 0;
+        s32 glyph = stbtt_FindGlyphIndex(fontinfo, c);
+        if (glyph) array_push_back(&glyphs, glyph);
         
-        for (s64 k = 0; k < glyphs.size; ++k) {
-            int ix0, iy0, ix1, iy1;
-            stbtt_GetGlyphBitmapBoxSubpixel(&context->font_ui, glyphs[k], f, f, shift, 0.f, &ix0, &iy0, &ix1, &iy1);
-
-            s64 w = ix1 - ix0;
-            s64 h = iy1 - iy0;
-
-            int adv, lsb;
-            stbtt_GetGlyphHMetrics(&context->font_ui, glyphs[k], &adv, &lsb);
-
-            s64 x0 = x + (s64)std::round(shift + lsb*f);
-            s64 y0 = y + iy0;
-
-            if (not draw) {
-                if (x0 < x_orig+1) {
-                    x_init_off += x_orig - x0;
-                    x += x_orig - x0;
-                    x0 = x_orig;
-                }
-                if (y0 < y_orig+1) {
-                    y += y_orig+1 - y0;
-                    y0 = y_orig+1;
-                }
-                if (y_incr_new < y0+h - y_orig) y_incr_new = y0+h - y_orig;
-            } else {
-                array_resize(&buf, w * h);
-                stbtt_MakeGlyphBitmapSubpixel(&context->font_ui, buf.data, w, h, w, f, f, shift, 0.f, glyphs[k]);
-
-                for (s64 row = 0; row < h; ++row) {
-                    for (s64 col = 0; col < w; ++col) {
-                        u8* p = &image[(x0 + col) + (y0 + row) * size];
-                        *p = (u8)std::min(255, *p + buf[col + row*w]);
-                    }
-                }
-            }
-
-            if (k+1 < glyphs.size) {
-                int kern = stbtt_GetGlyphKernAdvance(&context->font_ui, glyphs[k], glyphs[k+1]);
-                shift += (adv + kern) * f;
-                float shift_f = std::floor(shift);
-                x += (s64)shift_f;
-                shift -= shift_f;
-            } else if (not draw) {
-                // Execute the loop another time, but now we draw the glyphs
-                draw = true;
-                k = -1;
-                shift = 0.f;
-                box.x0 = (float)(-x_init_off);
-                box.y0 = (float)(y_orig+1 - y);
-                box.x1 = (float)(x0 + w - x_orig - x_init_off);
-                box.y1 = (float)(y_incr_new - y + y_orig+1);
-                box.advance = (float)(x - x_orig - x_init_off) + adv*f;
-                
-                if (x0 + w < size) {
-                    x = x_orig + x_init_off;
-                    if (y_incr < y_incr_new) y_incr = y_incr_new;
-                } else {
-                    x = x_init_off;
-                    y += y_incr;
-                    y_orig += y_incr;
-                    y_incr = y_incr_new;
-                }
-                
-                box.s0 = (float)(box.x0 + x) / (float)size;
-                box.t0 = (float)(box.y0 + y) / (float)size;
-                box.s1 = (float)(box.x1 + x) / (float)size;
-                box.t1 = (float)(box.y1 + y) / (float)size;
-            } else {
-                x = x0 + w;
-                y = y_orig;
-            }
-        }
-
-        array_push_back(boxes, box);
+        i += c_bytes;
     }
 
-    if (context->uitext_tex != 0) glDeleteTextures(1, &context->uitext_tex);
-    glGenTextures(1, &context->uitext_tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, context->uitext_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, size, size, 0, GL_RED, GL_UNSIGNED_BYTE, image.data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    s64 x = context->prep_x;
+    s64 y = context->prep_y;
+    s64 y_incr = context->prep_y_incr;
+
+    {int ascent, descent, linegap;
+    stbtt_GetFontVMetrics(fontinfo, &ascent, &descent, &linegap);
+    box->newline = (float)(ascent - descent + linegap) * f;
+    box->ascent = (float)ascent * f;}
+
+    {int advance, left_side_bearing;
+    stbtt_GetCodepointHMetrics(fontinfo, ' ', &advance, nullptr);
+    box->space = (float)advance * f;}
+    
+    Array_dyn<u8> buf = context->prep_image_buf;
+    defer { context->prep_image_buf = buf; };
+
+    float shift = 0.f;
+    bool draw = false;
+    s64 x_orig = x;
+    s64 y_orig = y;
+    s64 x_init_off = 0;
+    s64 y_incr_new = 0;
+    s64 size = context->prep_size;
+    
+    for (s64 k = 0; k < glyphs.size; ++k) {
+        int ix0, iy0, ix1, iy1;
+        stbtt_GetGlyphBitmapBoxSubpixel(fontinfo, glyphs[k], f, f, shift, 0.f, &ix0, &iy0, &ix1, &iy1);
+
+        s64 w = ix1 - ix0;
+        s64 h = iy1 - iy0;
+
+        int adv, lsb;
+        stbtt_GetGlyphHMetrics(fontinfo, glyphs[k], &adv, &lsb);
+
+        s64 x0 = (s64)((float)x+shift) + ix0;//(s64)std::round(lsb*f);
+        s64 y0 = y + iy0;
+
+        if (not draw) {
+            if (x0 < x_orig+1) {
+                x_init_off += x_orig+1 - x0;
+                x += x_orig+1 - x0;
+                x0 = x_orig+1;
+            }
+            if (y0 < y_orig+1) {
+                s64 diff = y_orig+1 - y0;
+                y += diff;
+                y_incr_new += diff;
+                y0 += diff;
+            }
+            if (y_incr_new < y0+h - y_orig) y_incr_new = y0+h - y_orig;
+        } else {
+            array_resize(&buf, w * h);
+            stbtt_MakeGlyphBitmapSubpixel(fontinfo, buf.data, w, h, w, f, f, shift, 0.f, glyphs[k]);
+
+            for (s64 row = 0; row < h; ++row) {
+                for (s64 col = 0; col < w; ++col) {
+                    u8* p = &context->prep_image[(x0 + col) + (y0 + row) * size];
+                    *p = (u8)std::min(255, *p + buf[col + row*w]);
+                }
+            }
+        }
+
+        if (k+1 < glyphs.size) {
+            int kern = stbtt_GetGlyphKernAdvance(fontinfo, glyphs[k], glyphs[k+1]);
+            shift += (adv + kern/2) * f; // Should be just kern, but looks weird...
+            float shift_f = std::floor(shift);
+            if (shift - shift_f > 0.99) {shift_f += 1; shift += 0.01;}
+            x += (s64)shift_f;
+            shift -= shift_f;
+        } else if (not draw) {
+            // Execute the loop another time, but now we draw the glyphs
+            draw = true;
+            k = -1;
+            shift = 0.f;
+            box->x0 = (float)(1-x_init_off);
+            box->y0 = (float)(y_orig+1 - y);
+            box->x1 = (float)(x0 + w - x_orig - x_init_off);
+            box->y1 = (float)(y_incr_new - y + y_orig+1);
+            box->advance = (float)(x - x_orig - x_init_off) + adv*f;
+            
+            if (x0 + w < size) {
+                x = x_orig + x_init_off;
+                if (y_incr < y_incr_new) y_incr = y_incr_new;
+            } else {
+                x = x_init_off;
+                y += y_incr;
+                y_orig += y_incr;
+                y_incr = y_incr_new;
+            }
+
+            box->s0 = (float)(box->x0 + x) / (float)size;
+            box->t0 = (float)(box->y0 + y) / (float)size;
+            box->s1 = (float)(box->x1 + x) / (float)size;
+            box->t1 = (float)(box->y1 + y) / (float)size;
+        } else {
+            // Move to the next box
+            x = x0 + w;
+            y = y_orig;
+        }
+    }
+    
+    context->prep_x = x;
+    context->prep_y = y;
+    context->prep_y_incr = y_incr;
+    context->prep_dirty = true;
 }
 
-void uil_text_draw(Platform_gl_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill) {
+void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill) {
     assert(context);
     
     float x = (float)x_, y = (float)y_, w = (float)w_;
     y = global_context.screen_h-1 - y;
     float orig_x = x, orig_y = y;
 
-    int ascent_, descent_, linegap_;
-    stbtt_GetFontVMetrics(&context->font_ui, &ascent_, &descent_, &linegap_);
-    float f = context->font_ui_scale;
-    float ascent  = ascent_ *f, descent = descent_*f, linegap = linegap_*f;
-
-    float newline_off = ascent - descent + linegap;
-    float newpar_off  = newline_off * 1.5;
-
-    float newword_off;
-    {int adv, lsb;
-    stbtt_GetCodepointHMetrics(&context->font_ui, ' ', &adv, &lsb);
-    newword_off = (float)adv * f;}
-    
-    y += ascent;
+    if (boxes.size) {
+        y += boxes[0].ascent;
+    }
     u8 flags = 0;
 
     for (Text_box box: boxes) {
-        if (flags & Text_box::NEWLINE) {
+        if (flags & Text_fmt::PARAGRAPH) {
             x = orig_x;
-            y += newpar_off;
-        } else if (x + box.x1 > w or (flags & Text_box::NEWLINE)) {
+            y += box.newline * 1.5f;
+        } else if (x + box.x1 > w or (flags & Text_fmt::NEWLINE)) {
             x = orig_x;
-            y += newline_off;
+            y += box.newline;
         }
         if (x + box.x0 < 0) {
             x = -box.x0;
@@ -512,50 +547,73 @@ void uil_text_draw(Platform_gl_context* context, Array_t<Text_box> boxes, s64 x_
             array_append(&context->buf_uitext_fill, {fill, 4});
         }
 
-        x += box.advance + newword_off;
+        x = std::round(x + box.advance + box.space);
     }
 }
 
-
-/*void uil_draw_text_multiline(Platform_gl_context* context, s64 x_, s64 y_, s64 w_, Array_t<u8> text, u8* fill) {
-    float x = (float)x_, y = (float)y_, w = (float)w_;
-    y = global_context.screen_h - y;
-    float orig_x = x, orig_y = y;
-
-    int ascent_, descent_, linegap_;
-    stbtt_GetFontVMetrics(&context->font_ui, &ascent_, &descent_, &linegap_);
-    float f = context->font_ui_scale;
-    float ascent  = ascent_ *f, descent = descent_*f, linegap = linegap_*f;
-    
-    y += ascent;
-
-    for (u8 c: text) {
-        int x0_, y0_, x1_, y1_;
-        stbtt_GetCodepointBox(&context->font_ui, c, &x0_, &y0_, &x1_, &y1_);
-        float x0 = x0_*f, y0 = y0_*f, x1 = x1_*f, y1 = y1_*f;
-
-        if (x + x1 > w) {
-            x = orig_x;
-            y += ascent - descent + linegap;
-        }
-        if (x + x0 < 0) {
-            x = -x0;
-        }
-        
-        stbtt_aligned_quad q;
-        stbtt_GetPackedQuad(context->uitext_pack.data, 512, 512, c - 0x20, &x, &y, &q, true);
-        array_append(&context->buf_uitext_pos, {
-            q.x0, q.y0, q.x1, q.y0, q.x1, q.y1, q.x0, q.y0, q.x1, q.y1, q.x0, q.y1
-        });
-        array_append(&context->buf_uitext_tpos, {
-            q.s0, q.t0, q.s1, q.t0, q.s1, q.t1, q.s0, q.t0, q.s1, q.t1, q.s0, q.t1
-        });
-
-        for (s64 j = 0; j < 6; ++j) {
-            array_append(&context->buf_uitext_fill, {fill, 4});
-        }
+void platform_fmt_init() {
+    global_platform.gl_context.fmt_flags = 0;
+}
+void platform_fmt_begin(u64 flags) {
+    global_platform.gl_context.fmt_flags |= flags;
+}
+void platform_fmt_end(u64 flags) {
+    Lui_context* context = &global_platform.gl_context;
+    if (context->fmt_boxes.size) {
+        context->fmt_boxes[context->fmt_boxes.size-1].flags |= flags & Text_fmt::GROUP_SPACING;
     }
-    }*/
+    
+    context->fmt_flags &= ~flags;
+}
+void platform_fmt_text(u64 flags, Array_t<u8> text) {
+    platform_fmt_begin(flags);
+    flags = global_platform.gl_context.fmt_flags;
+
+    u8 font;
+    if (flags & Text_fmt::HEADER) {
+        font = Lui_context::FONT_LUI_HEADER;
+    } else if (flags & Text_fmt::BOLD) {
+        font = Lui_context::FONT_LUI_BOLD;
+    } else if (flags & Text_fmt::ITALICS) {
+        font = Lui_context::FONT_LUI_ITALIC;
+    } else {
+        font = Lui_context::FONT_LUI_NORMAL;
+    }
+    
+    s64 last = 0;
+    for (s64 i = 0; i <= text.size; ++i) {
+        if (i < text.size and text[i] != ' ' and text[i] != '\n') continue;
+        
+        if (last == i) {
+            last = i;
+            continue;
+        }
+
+        Text_box box;
+        lui_text_prepare_word(&global_platform.gl_context, font, array_subarray(text, last, i), &box);
+        array_push_back(&global_platform.gl_context.fmt_boxes, box);
+        last = i+1;
+    }
+    
+    platform_fmt_end(flags);
+}
+void platform_fmt_text(u64 flags, char const* s) {
+    platform_fmt_text(flags, {(u8*)s, (s64)strlen(s)});
+}
+void platform_fmt_store(s64 slot) {
+    assert(0 <= slot);
+
+    Lui_context* context = &global_platform.gl_context;
+    array_resize(&context->fmt_slots, slot+1);
+    
+    context->fmt_slots[slot].size = 0;
+    array_append(&context->fmt_slots[slot], context->fmt_boxes);
+}
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w) {
+    Lui_context* context = &global_platform.gl_context;
+    u8 black[] = {0, 0, 0, 255};
+    lui_text_draw(context, context->fmt_slots[slot], x, y, w, black);
+}
 
 void _platform_frame_init() {
     glEnable(GL_BLEND);
@@ -571,6 +629,16 @@ void _platform_frame_init() {
     context->buf_uitext_fill.size = 0;
 }
 
+void test_init() {
+    platform_fmt_init();
+    platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Binary Decision Diagrams");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018");
+    platform_fmt_text(Text_fmt::PARAGRAPH, u8"Read the help for more information, or get started right away by pressing “Create and Add”.");
+    platform_fmt_text(Text_fmt::ITALICS, "Hint:");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "You can hover over nodes using your cursor, showing additional details.");
+    platform_fmt_store(2);    
+}
+
 void _platform_frame_draw() {
     float ox = global_context.screen_w / 2.f;
     float oy = global_context.screen_h / 2.f;
@@ -578,6 +646,20 @@ void _platform_frame_draw() {
     float sy = -2.f / global_context.screen_h;
 
     auto context = &global_platform.gl_context; // The macros expect a local named context
+
+    if (context->prep_dirty) {
+        context->prep_dirty = false;
+        
+        if (context->uitext_tex) {
+            glDeleteTextures(1, &context->uitext_tex);
+        }
+        glGenTextures(1, &context->uitext_tex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, context->uitext_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, context->prep_size, context->prep_size, 0, GL_RED, GL_UNSIGNED_BYTE, context->prep_image.data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
     
     glUseProgram(context->program_uirect);
     
@@ -616,13 +698,9 @@ void _platform_render(Platform_state* platform) {
     // Now draw the UI
     u8 white[] = {255, 255, 255, 255};
     u8 black[] = {0, 0, 0, 255};
-    uil_draw_rect(&platform->gl_context, 0, 0, platform->panel_left_width, global_context.screen_h, 1, white);
+    lui_draw_rect(&platform->gl_context, 0, 0, platform->panel_left_width, global_context.screen_h, 1, white);
 
-    /*char* s = "This is obst, AV, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018. Read to the help for more information, or get started right away by pressing \"Create and add\". Hint: You can hover over nodes using your cursor, showing additional details.";
-      uil_draw_text_multiline(&platform->gl_context, 10, global_context.screen_h-10, platform->panel_left_width-20, {(u8*)s, (s64)strlen(s)}, black);*/
-
-    uil_text_draw(&platform->gl_context, platform->gl_context.uitext_boxes, 10, global_context.screen_h-10, platform->panel_left_width-20, black);
-
+    platform_fmt_draw(2, 10, global_context.screen_h - 10, platform->panel_left_width - 20);
     _platform_frame_draw();
 
     glXSwapBuffers(platform->display, platform->window_glx);

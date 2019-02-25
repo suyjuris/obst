@@ -161,11 +161,7 @@ void array_reserve(Array_dyn<T>* into, s64 count) {
         if (capacity_new < count) {
             capacity_new = count;
         }
-        if (into->data) {
-            into->data = (T*)std::realloc(into->data, capacity_new * sizeof(T));
-        } else {
-            into->data = (T*)std::malloc(capacity_new * sizeof(T));
-        }
+        into->data = (T*)std::realloc(into->data, capacity_new * sizeof(T));
         assert(into->data);
         into->capacity = capacity_new;
         assert(into->data);
@@ -184,6 +180,9 @@ void array_resize(Array_t<T>* arr, s64 count) {
 template <typename T>
 void array_resize(Array_dyn<T>* arr, s64 count) {
     array_reserve(arr, count);
+    if (arr->size < count) {
+        memset(arr->data + arr->size, 0, (count - arr->size) * sizeof(T));
+    }
     arr->size = count;
 }
 
