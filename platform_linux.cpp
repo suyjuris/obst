@@ -44,23 +44,23 @@ Array_t<u8> array_load_from_file(Array_t<u8> path) {
 
     if (f == nullptr) {
         fprintf(stderr, "Error: Could not open file '%s' for reading (1)\n", path.data);
-        perror("Error:"); exit(1025);
+        perror("Error"); exit(1025);
     }
 
     if (fseek(f, 0, SEEK_END) == -1) {
         fprintf(stderr, "Error: Could not open file '%s' for reading (2)\n", path.data);
-        perror("Error:"); exit(1026);
+        perror("Error"); exit(1026);
     }
 
     s64 f_size = ftell(f);
     if (f_size == -1) {
         fprintf(stderr, "Error: Could not open file '%s' for reading (3)\n", path.data);
-        perror("Error:"); exit(1027);
+        perror("Error"); exit(1027);
     }
 
     if (fseek(f, 0, SEEK_SET) == -1) {
         fprintf(stderr, "Error: Could not open file '%s' for reading (4)\n", path.data);
-        perror("Error:"); exit(1028);
+        perror("Error"); exit(1028);
     }
 
     Array_t<u8> data = array_create<u8>(f_size);
@@ -68,7 +68,7 @@ Array_t<u8> array_load_from_file(Array_t<u8> path) {
     if (read < f_size) {
         if (ferror(f)) {
             fprintf(stderr, "Error: Could not open file '%s' for reading (5)\n", path.data);
-            perror("Error:"); exit(1029);
+            perror("Error"); exit(1029);
         } else {
             fprintf(stderr, "Error: Could not open file '%s' for reading (6)\n", path.data);
             fprintf(stderr, "Error: Unexpected eof while reading file. (Concurrent modification?)\n");
@@ -96,10 +96,11 @@ enum Flags: u64 {
     HEADER = 4, // Corresponds to <h4>, draw text as title
     BOLD = 8,
     ITALICS = 16,
+    SMALL = 32,
     GROUP_SPACING = PARAGRAPH | NEWLINE,
 };
 enum Slots: s64 {
-    SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_PLATFORM_FIRST
+    SLOT_CONTEXT, SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_PLATFORM_FIRST
 };
 
 };
@@ -107,11 +108,15 @@ enum Slots: s64 {
 struct Text_box {
     float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
     float s0 = 0.f, t0 = 0.f, s1 = 0.f, t1 = 0.f;
-    float advance = 0.f, space = 0.f, newline = 0.f, ascent = 0.f;
+    float advance = 0.f;
+    u8 font;
     u32 flags = 0; // Same as the spacing flags in Text_fmt::Flags
     
     static_assert(Text_fmt::GROUP_SPACING >> 32 == 0, "32-bit not sufficient or Text_box flags");
 }; //@Cleanup: Move
+struct Text_box_lookup {
+    u64 hash = 0; s64 index = -1;
+};
 
 // Keeps the necessary data to manage OpenGL and other data for the uil layer
 struct Lui_context {
@@ -119,17 +124,20 @@ struct Lui_context {
     enum Attributes: GLuint {
         UIRECT_POS = 0, UIRECT_FILL, UIRECT_ATTR_COUNT,
         UITEXT_POS = 0, UITEXT_TPOS, UITEXT_FILL, UITEXT_ATTR_COUNT,
+        UIBUTTON_POS = 0, UIBUTTON_X, UIBUTTON_P, UIBUTTON_SIZE, UIBUTTON_STATE, UIBUTTON_ATTR_COUNT,
     };
     // Names for all uniforms
     enum Uniforms: int {
         UIRECT_ORIGIN, UIRECT_SCALE,
         UITEXT_ORIGIN, UITEXT_SCALE, UITEXT_SAMPLER,
+        UIBUTTON_ORIGIN, UIBUTTON_SCALE,
         UNIFORMS_COUNT
     };
     
     // Ids of the shader programs
     GLuint program_uirect;
     GLuint program_uitext;
+    GLuint program_uibutton;
     // Ids of the uniforms
     Array_t<GLint> uniforms;
 
@@ -144,14 +152,21 @@ struct Lui_context {
     Array_dyn<float> buf_uitext_tpos;
     Array_dyn<u8>    buf_uitext_fill;
 
+    Array_dyn<float> buf_uibutton_pos;
+    Array_dyn<float> buf_uibutton_x;
+    Array_dyn<float> buf_uibutton_p;
+    Array_dyn<float> buf_uibutton_size;
+    Array_dyn<float> buf_uibutton_state;
+
     // Names of the buffers for the vertex attributes of each shader
     Array_t<GLuint> buffers_uirect;
     Array_t<GLuint> buffers_uitext;
+    Array_t<GLuint> buffers_uibutton;
 
     // Date for font rendering
     struct Font_instance {
         s64 info_index;
-        float scale;
+        float scale, ascent, height, newline, space;
     };
     enum Font_instance_id: u8 {
         FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL, FONT_LUI_SANS, FONT_BDD_LABEL,
@@ -169,11 +184,20 @@ struct Lui_context {
     Array_dyn<int> prep_glyph_buf; // Temporary storage to hold the glyphs
     Array_dyn<u8>  prep_image_buf; // Temporary storage to hold pixel data
     bool prep_dirty = false; // Whether we need to re-send the texture to the GPU
+    Array_dyn<Text_box> prep_cache; // Holds a copy of everything we have already rendered
+    Array_t<Text_box_lookup> prep_cache_lookup; // Hash table for the cache
 
+    // Additional slots for text belonging to the UI
+    enum Fmt_slots_lui: s64 {
+        SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
+        SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT,
+        SLOT_COUNT
+    };
+    
     // Data for formatted text display
-    u64 fmt_flags;
-    Array_dyn<Text_box> fmt_boxes;
-    Array_dyn<Array_dyn<Text_box>> fmt_slots;
+    u64 fmt_flags; // Current flags
+    Array_dyn<Text_box> fmt_boxes; // Set of boxes we are currently generating
+    Array_dyn<Array_dyn<Text_box>> fmt_slots; // Stored sets of boxes
 };
 
 struct Platform_state {
@@ -227,10 +251,9 @@ void _platform_handle_resize(s64 width, s64 height) {
 
 void test_init();
 
-void _platform_init(Platform_state* platform) {
+void _platform_init_gl(Platform_state* platform) {
     assert(platform);
-    
-    _platform_init_opengl();
+    _platform_init_gl_pointers();
 
     // WebGL has no vertex array objects, OpenGL requires them. Yay. However, creating a single one
     // is fine, and we can do everything else WebGL style.
@@ -270,7 +293,7 @@ void _platform_init(Platform_state* platform) {
         "uniform vec2 origin;\n"
         "uniform vec2 scale;\n"
         "void main() {\n"
-        "    gl_Position = vec4((pos - origin)*scale, 0.09, 1);\n"
+        "    gl_Position = vec4((pos - origin)*scale, 0.08, 1);\n"
         "    v_tpos = tpos;\n"
         "    v_fill = fill;\n"
         "}\n";
@@ -284,6 +307,56 @@ void _platform_init(Platform_state* platform) {
         "    vec4 col = v_fill;\n"
         "    col.a *= texture2D(sampler, v_tpos).r;\n"
         "    gl_FragColor = col;\n"
+        "}\n";
+
+    GLbyte shader_v_uibutton[] =
+        "attribute vec2 pos;\n"
+        "attribute vec2 x;\n"
+        "attribute vec2 p;\n"
+        "attribute float size;\n"
+        "attribute vec2 state;\n"
+        "varying vec2 v_pos;\n"
+        "varying float v_size;\n"
+        "varying vec3 border;\n"
+        "varying vec3 grad;\n"
+        "uniform vec2 origin;\n"
+        "uniform vec2 scale;\n"
+        "void main() {\n"
+        "    gl_Position = vec4((pos - origin)*scale, 0.09, 1);\n"
+        "    v_pos = x + p*1e-7;\n"
+        "    v_size = size;\n"
+        "    border = mix(vec3(1.0, 0.72, 0.55), vec3(1.5, 0.62, 0.45), state[0]);\n"
+        "    grad = mix(vec3(0.85, 1.0, 0.92), vec3(0.15, 0.9, 0.87), state[1]);\n"
+        "}\n";
+    
+    GLbyte shader_f_uibutton[] =
+        "varying vec2 v_pos;\n"
+        "varying float v_size;\n"
+        "varying vec3 border;\n"
+        "varying vec3 grad;\n"
+        "void main() {\n"
+        "    float dp = 8.0;\n"
+        "    float f = pow(abs(v_pos.x)/v_size, dp) + pow(abs(v_pos.y)/v_size, dp) - 1.0;\n"
+        "    vec2 df = vec2(dp/v_size*pow(abs(v_pos.x)/v_size, dp-1.0), dp/v_size*pow(abs(v_pos.y)/v_size, dp-1.0));\n"
+        "    float d = f / length(df);\n"
+        "    \n"
+        "    float t = (v_pos.y/v_size+1.0) / 2.0;\n"
+        "    float c = mix(border[1], border[2], clamp(t, 0.0, 1.0)), a = 1.0;\n"
+        "    if (f < 0.0) {\n"
+        "        float l;\n"
+        "        if (t < grad[0]) {\n"
+        "            l = mix(grad[1], grad[2], t / grad[0]);\n"
+        "        } else {\n"
+        "         	l = mix(grad[2], 0.95, (t-grad[0])/(1.0-grad[0]));\n"
+        "        }\n"
+        "        c = mix(c, l, min(-d, 1.0));\n"
+        "    } else if (d <= border[0]) {\n"
+        "     	a = 1.0 - max(d - border[0] + 1.0, 0.0);\n"
+        "    } else {\n"
+        "     	discard;\n"
+        "    }\n"
+        "    \n"
+        "    gl_FragColor = vec4(c, c, c, a);\n"
         "}\n";
 
     GLuint program;
@@ -310,50 +383,17 @@ void _platform_init(Platform_state* platform) {
 
     OBST_GEN_BUFFERS(uitext, UITEXT);
 
-    // Font stuff
-    
-    // @Leak: We do not store a pointer to the font data directly. However, this data is freed
-    // precisely when we exit anyway.
-    Array_t<u8> font_data_lui_n = array_load_from_file("DejaVuSerif.ttf");
-    Array_t<u8> font_data_lui_i = array_load_from_file("DejaVuSerif-Italic.ttf");
-    Array_t<u8> font_data_lui_b = array_load_from_file("DejaVuSerif-Bold.ttf");
-    Array_t<u8> font_data_bdd_n = array_load_from_file("DejaVuSans.ttf");
+    OBST_PROGRAM_INIT(uibutton);
+    OBST_ATTRIB(UIBUTTON_POS, pos);
+    OBST_ATTRIB(UIBUTTON_X, x);
+    OBST_ATTRIB(UIBUTTON_P, p);
+    OBST_ATTRIB(UIBUTTON_SIZE, size);
+    OBST_ATTRIB(UIBUTTON_STATE, state);
+    OBST_PROGRAM_LINK(uibutton);
+    OBST_UNIFORM(UIBUTTON_ORIGIN, origin);
+    OBST_UNIFORM(UIBUTTON_SCALE, scale);
 
-    context->font_info = array_create<stbtt_fontinfo>(4);
-    {int code = stbtt_InitFont(&context->font_info[0], font_data_lui_n.data, 0);
-    if (code == 0) {
-        fprintf(stderr, "Error: Could not parse font data (1)\n"); exit(101);
-    }}
-    {int code = stbtt_InitFont(&context->font_info[1], font_data_lui_i.data, 0);
-    if (code == 0) {
-        fprintf(stderr, "Error: Could not parse font data (2)\n"); exit(102);
-    }}
-    {int code = stbtt_InitFont(&context->font_info[2], font_data_lui_b.data, 0);
-    if (code == 0) {
-        fprintf(stderr, "Error: Could not parse font data (3)\n"); exit(103);
-    }}
-    {int code = stbtt_InitFont(&context->font_info[3], font_data_bdd_n.data, 0);
-    if (code == 0) {
-        fprintf(stderr, "Error: Could not parse font data (4)\n"); exit(104);
-    }}
-
-    context->fonts = array_create<Lui_context::Font_instance>(Lui_context::FONT_COUNT);
-    auto set_font = [context](s64 font_style, s64 index, float size) {
-        context->fonts[font_style] = {index, stbtt_ScaleForPixelHeight(&context->font_info[index], size)};
-    };
-    set_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
-    set_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
-    set_font(Lui_context::FONT_LUI_BOLD, 2, 20);
-    set_font(Lui_context::FONT_LUI_HEADER, 2, 26);
-    set_font(Lui_context::FONT_LUI_SMALL, 0, 15);
-    set_font(Lui_context::FONT_LUI_SANS, 3, 20);
-    set_font(Lui_context::FONT_BDD_LABEL, 3, 20);
-
-    // Initialise font preparation
-    context->prep_size = 512;
-    context->prep_image = array_create<u8>(context->prep_size * context->prep_size);
-
-    test_init();
+    OBST_GEN_BUFFERS(uibutton, UIBUTTON);
     
     //@Cleanup: Check max size using RECTANGLE_TEXTURE_SIZE
 }
@@ -371,8 +411,25 @@ void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, s64 layer, 
     }
 }
 
-void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text_box* box) {
+void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text_box* box, float letter_fac=1.f) {
     assert(box);
+
+    // Lookup in hash table
+    u64 hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ (*(u64*)&letter_fac << 32);
+    for (u8 c: word) {
+        hash = hash * 1099511628211ull ^ c;
+    }
+    s64 slot_i = hash % context->prep_cache_lookup.size;
+    while (true) {
+        auto slot = context->prep_cache_lookup[slot_i];
+        if (slot.index == -1) break;
+        if (slot.hash == hash) {
+            *box = context->prep_cache[slot.index];
+            return;
+        }
+        slot_i = (slot_i + 1) % context->prep_cache_lookup.size;
+    }
+    // Note that slot_i now points at the next empty slot
 
     Array_dyn<int> glyphs = context->prep_glyph_buf;
     defer { context->prep_glyph_buf = glyphs; };
@@ -406,15 +463,6 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
     s64 x = context->prep_x;
     s64 y = context->prep_y;
     s64 y_incr = context->prep_y_incr;
-
-    {int ascent, descent, linegap;
-    stbtt_GetFontVMetrics(fontinfo, &ascent, &descent, &linegap);
-    box->newline = (float)(ascent - descent + linegap) * f;
-    box->ascent = (float)ascent * f;}
-
-    {int advance, left_side_bearing;
-    stbtt_GetCodepointHMetrics(fontinfo, ' ', &advance, nullptr);
-    box->space = (float)advance * f;}
     
     Array_dyn<u8> buf = context->prep_image_buf;
     defer { context->prep_image_buf = buf; };
@@ -437,7 +485,7 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
         int adv, lsb;
         stbtt_GetGlyphHMetrics(fontinfo, glyphs[k], &adv, &lsb);
 
-        s64 x0 = (s64)((float)x+shift) + ix0;//(s64)std::round(lsb*f);
+        s64 x0 = (s64)((float)x+shift) + ix0; //@Cleanup x + ix0
         s64 y0 = y + iy0;
 
         if (not draw) {
@@ -467,7 +515,7 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
 
         if (k+1 < glyphs.size) {
             int kern = stbtt_GetGlyphKernAdvance(fontinfo, glyphs[k], glyphs[k+1]);
-            shift += (adv + kern/2) * f; // Should be just kern, but looks weird...
+            shift += (adv + kern/2) * letter_fac * f; // Should be just kern, but looks weird...
             float shift_f = std::floor(shift);
             if (shift - shift_f > 0.99) {shift_f += 1; shift += 0.01;}
             x += (s64)shift_f;
@@ -482,6 +530,7 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
             box->x1 = (float)(x0 + w - x_orig - x_init_off);
             box->y1 = (float)(y_incr_new - y + y_orig+1);
             box->advance = (float)(x - x_orig - x_init_off) + adv*f;
+            box->font = font;
             
             if (x0 + w < size) {
                 x = x_orig + x_init_off;
@@ -508,33 +557,38 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
     context->prep_y = y;
     context->prep_y_incr = y_incr;
     context->prep_dirty = true;
+
+    // Insert element into hashtable
+    if (context->prep_cache.size*4 > context->prep_cache_lookup.size*3) {
+        fprintf(stderr, "Error: Text_box cache size limit exceeded.\n");
+        exit(201);
+    }
+    context->prep_cache_lookup[slot_i] = {hash, context->prep_cache.size};
+    array_push_back(&context->prep_cache, *box);
 }
 
-void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill) {
-    assert(context);
-    
-    float x = (float)x_, y = (float)y_, w = (float)w_;
-    y = global_context.screen_h-1 - y;
-    float orig_x = x, orig_y = y;
+void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64* x_, s64* y_, s64 w_, u8* fill) {
+    assert(context and x_ and y_);
 
-    if (boxes.size) {
-        y += boxes[0].ascent;
-    }
-    u8 flags = 0;
+    if (not boxes.size) return;
+    
+    float x = (float)*x_, y = (float)*y_, w = (float)w_;
+    float orig_x = x, orig_y = y;
+    if (w_ == -1) w = INFINITY;
+
+    u8 black[] = {0, 0, 0, 255};
+    if (not fill) fill = black;
+
+    y = std::round(y + context->fonts[boxes[0].font].ascent);
 
     for (Text_box box: boxes) {
-        if (flags & Text_fmt::PARAGRAPH) {
+        auto font_inst = context->fonts[box.font];
+        
+        if (x > orig_x and x + box.x1 > w) {
             x = orig_x;
-            y += box.newline * 1.5f;
-        } else if (x + box.x1 > w or (flags & Text_fmt::NEWLINE)) {
-            x = orig_x;
-            y += box.newline;
-        }
-        if (x + box.x0 < 0) {
-            x = -box.x0;
+            y = std::round(y + font_inst.newline);
         }
 
-        flags = box.flags;
         array_append(&context->buf_uitext_pos, {
             x+box.x0, y+box.y0, x+box.x1, y+box.y0, x+box.x1, y+box.y1,
             x+box.x0, y+box.y0, x+box.x1, y+box.y1, x+box.x0, y+box.y1
@@ -547,10 +601,71 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
             array_append(&context->buf_uitext_fill, {fill, 4});
         }
 
-        x = std::round(x + box.advance + box.space);
+        x = std::round(x + box.advance + font_inst.space);
+        
+        if (box.flags & Text_fmt::PARAGRAPH) {
+            x = orig_x;
+            y = std::round(y + font_inst.newline * 1.5f);
+        } else if (box.flags & Text_fmt::NEWLINE) {
+            x = orig_x;
+            y = std::round(y + font_inst.newline);
+        }
     }
+
+    {auto font_inst = context->fonts[boxes[boxes.size-1].font];
+    y += font_inst.newline - font_inst.ascent;}
+    
+    *x_ = (s64)std::round(x);
+    *y_ = (s64)std::round(y);
 }
 
+void lui_draw_button(Lui_context* context, Array_t<u8> text, s64* x, s64 y, u8 state) {
+    assert(context and x);
+
+    Text_box box;
+    lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, text, &box, 0.9f);
+    auto font_inst = context->fonts[box.font];
+
+    float pad_x = 14.f;
+    float pad_y = 4.5f;
+    float mar_x = 3.f;
+    float mar_y = 3.f;
+
+    float w = 2.f*pad_x + box.advance;
+    float h = 2.f*pad_y + font_inst.height;
+    if (w < h) w = h;
+    
+    float x1 = (float)*x - w - 2*mar_x;
+    float x2 = x1+mar_y     + h/2.f;
+    float x3 = x1+mar_y + w - h/2.f;
+    float x4 = (float)*x;
+    float y1 = (float)y - pad_y - mar_y;
+    float y2 = (float)y + h - pad_y + mar_y;
+
+    //@Cleanup Construct the button out of different rects
+    array_append(&context->buf_uibutton_pos, {
+        x1, y2, x1, y1, x2, y2, x2, y1, x3, y2, x3, y1, x4, y2, x4, y1, x4, y1
+    });
+    float sx = h * 0.5f + mar_x;
+    float sy = h * 0.5f + mar_y;
+    array_append(&context->buf_uibutton_x, {
+        -sx, sy, -sx, -sy, 0.f, sy, 0.f, -sy, 0.f, sy, 0.f, -sy, sx, sy, sx, -sy, sx, -sy
+    });
+    for (s64 i = 0; i < 9; ++i) {
+        array_append(&context->buf_uibutton_p, {(x1 + x4) / 2.f, (y1 + y2) / 2.f});
+        array_push_back(&context->buf_uibutton_size, h * 0.5f);
+        array_append(&context->buf_uibutton_state, {(float)(state&1), (float)(state>>1)});
+    }
+    {s64 x0_ = *x - (s64)std::round(w + mar_x - pad_x), y0_ = y;
+    u8 gray[] = {70, 70, 70, 255};
+    lui_text_draw(context, {&box, 1}, &x0_, &y0_, -1, gray);}
+
+    *x = (s64)std::round(x1);
+}
+void lui_draw_button(Lui_context* context, const char* text, s64* x, s64 y, u8 state) {
+    lui_draw_button(context, {(u8*)text, (s64)strlen(text)}, x, y, state);
+}
+    
 void platform_fmt_init() {
     global_platform.gl_context.fmt_flags = 0;
 }
@@ -576,6 +691,8 @@ void platform_fmt_text(u64 flags, Array_t<u8> text) {
         font = Lui_context::FONT_LUI_BOLD;
     } else if (flags & Text_fmt::ITALICS) {
         font = Lui_context::FONT_LUI_ITALIC;
+    } else if (flags & Text_fmt::SMALL) {
+        font = Lui_context::FONT_LUI_SMALL;
     } else {
         font = Lui_context::FONT_LUI_NORMAL;
     }
@@ -608,11 +725,11 @@ void platform_fmt_store(s64 slot) {
     
     context->fmt_slots[slot].size = 0;
     array_append(&context->fmt_slots[slot], context->fmt_boxes);
+    context->fmt_boxes.size = 0;
 }
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w) {
+void platform_fmt_draw(s64 slot, s64* x, s64* y, s64 w) {
     Lui_context* context = &global_platform.gl_context;
-    u8 black[] = {0, 0, 0, 255};
-    lui_text_draw(context, context->fmt_slots[slot], x, y, w, black);
+    lui_text_draw(context, context->fmt_slots[slot], x, y, w, nullptr);
 }
 
 void _platform_frame_init() {
@@ -627,16 +744,101 @@ void _platform_frame_init() {
     context->buf_uitext_pos.size = 0;
     context->buf_uitext_tpos.size = 0;
     context->buf_uitext_fill.size = 0;
+    
+    context->buf_uibutton_pos.size = 0;
+    context->buf_uibutton_x.size = 0;
+    context->buf_uibutton_p.size = 0;
+    context->buf_uibutton_size.size = 0;
+    context->buf_uibutton_state.size = 0;
 }
 
-void test_init() {
+void _platform_init(Platform_state* platform) {
+    assert(platform);
+    Lui_context* context = &global_platform.gl_context; // The macros expect a local named context
+    
+    _platform_init_gl(platform);
+
+    // Font stuff
+    char* font_files[] = {
+        "DejaVuSerif.ttf",
+        "DejaVuSerif-Italic.ttf",
+        "DejaVuSerif-Bold.ttf",
+        "DejaVuSans.ttf",
+        "DejaVuSans.ttf"
+    };
+    context->font_info = array_create<stbtt_fontinfo>(sizeof(font_files) / sizeof(font_files[0]));
+
+    for (s64 i = 0; i < context->font_info.size; ++i) {
+        // @Leak: We do not store a pointer to the font data directly. However, this data is freed
+        // precisely when we exit anyway.
+        Array_t<u8> font_data = array_load_from_file(font_files[i]);
+        int code = stbtt_InitFont(&context->font_info[i], font_data.data, 0);
+        if (code == 0) {
+            fprintf(stderr, "Error: Could not parse font data in file %s\n", font_files[i]);
+            exit(101);
+        }
+    }
+
+    context->fonts = array_create<Lui_context::Font_instance>(Lui_context::FONT_COUNT);
+    auto set_font = [context](s64 font_style, s64 index, float size) {
+        Lui_context::Font_instance inst;
+        inst.info_index = index;
+        inst.scale = stbtt_ScaleForPixelHeight(&context->font_info[index], size);
+        
+        {int ascent, descent, linegap;
+        stbtt_GetFontVMetrics(&context->font_info[index], &ascent, &descent, &linegap);
+        inst.ascent = (float)ascent * inst.scale;
+        inst.height = (float)(ascent - descent) * inst.scale;
+        inst.newline = (float)(ascent - descent + linegap) * inst.scale;}
+
+        {int advance;
+        stbtt_GetCodepointHMetrics(&context->font_info[index], ' ', &advance, nullptr);
+        inst.space = (float)advance * inst.scale;}
+
+        context->fonts[font_style] = inst;
+    };
+    set_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
+    set_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
+    set_font(Lui_context::FONT_LUI_BOLD, 2, 20);
+    set_font(Lui_context::FONT_LUI_HEADER, 2, 26);
+    set_font(Lui_context::FONT_LUI_SMALL, 0, 15);
+    set_font(Lui_context::FONT_LUI_SANS, 4, 16.7);
+    set_font(Lui_context::FONT_BDD_LABEL, 3, 20);
+
+    // Initialise font preparation
+    context->prep_size = 512;
+    context->prep_image = array_create<u8>(context->prep_size * context->prep_size);
+    context->prep_cache_lookup = array_create<Text_box_lookup>(4096);
+    memset(context->prep_cache_lookup.data, -1, context->prep_cache_lookup.size * sizeof(Text_box_lookup));
+
     platform_fmt_init();
     platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Binary Decision Diagrams");
     platform_fmt_text(Text_fmt::PARAGRAPH, "This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018");
     platform_fmt_text(Text_fmt::PARAGRAPH, u8"Read the help for more information, or get started right away by pressing “Create and Add”.");
     platform_fmt_text(Text_fmt::ITALICS, "Hint:");
     platform_fmt_text(Text_fmt::PARAGRAPH, "You can hover over nodes using your cursor, showing additional details.");
-    platform_fmt_store(2);    
+    platform_fmt_store(Lui_context::SLOT_INITTEXT);
+
+    platform_fmt_init();
+    platform_fmt_text(0, "Adds the BDD to the graph.");
+    platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_CREATE);
+    
+    platform_fmt_init();
+    platform_fmt_text(0, "Applies the operation.");
+    platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_OP);
+
+    platform_fmt_init();
+    platform_fmt_text(0, "Reset the application, delete all nodes.");
+    platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_REMOVEALL);
+    
+    platform_fmt_init();
+    platform_fmt_text(0, "Display usage instructions.");
+    platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_HELP);
+    
+    platform_fmt_init();
+    platform_fmt_text(Text_fmt::BOLD, "Step-by-step");
+    platform_fmt_text(Text_fmt::SMALL, "(Move using arrow keys)");
+    platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_CONTEXT);
 }
 
 void _platform_frame_draw() {
@@ -661,6 +863,8 @@ void _platform_frame_draw() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     }
     
+    glEnable(GL_DEPTH_TEST);
+    
     glUseProgram(context->program_uirect);
     
     OBST_DO_UNIFORM(UIRECT_ORIGIN, 2f, ox, oy);
@@ -671,7 +875,19 @@ void _platform_frame_draw() {
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_uirect_pos.size / 3);
 
-    glDisable(GL_DEPTH_TEST);
+    glUseProgram(context->program_uibutton);
+
+    OBST_DO_UNIFORM(UIBUTTON_ORIGIN, 2f, ox, oy);
+    OBST_DO_UNIFORM(UIBUTTON_SCALE, 2f, sx, sy);
+
+    OBST_DO_BUFFER(uibutton, UIBUTTON_POS,   buf_uibutton_pos,   2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(uibutton, UIBUTTON_X,     buf_uibutton_x,     2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(uibutton, UIBUTTON_P,     buf_uibutton_p,     2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(uibutton, UIBUTTON_SIZE,  buf_uibutton_size,  1, GL_FLOAT, 0);
+    OBST_DO_BUFFER(uibutton, UIBUTTON_STATE, buf_uibutton_state, 2, GL_FLOAT, 0);
+
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, context->buf_uibutton_pos.size / 2);
+    
     glUseProgram(context->program_uitext);
     glActiveTexture(GL_TEXTURE1);
 
@@ -695,14 +911,43 @@ void _platform_render(Platform_state* platform) {
 
     _platform_frame_init();
     
+    Lui_context* context = &global_platform.gl_context;
+    
     // Now draw the UI
+    
     u8 white[] = {255, 255, 255, 255};
     u8 black[] = {0, 0, 0, 255};
-    lui_draw_rect(&platform->gl_context, 0, 0, platform->panel_left_width, global_context.screen_h, 1, white);
+    lui_draw_rect(context, 0, 0, platform->panel_left_width, global_context.screen_h, 1, white);
 
-    platform_fmt_draw(2, 10, global_context.screen_h - 10, platform->panel_left_width - 20);
+    s64 x = 10;
+    s64 y = 10;
+    s64 w = platform->panel_left_width - 20;
+    
+    auto hsep = [context, x, w, &y]() {
+        u8 gray[] = {153, 153, 153, 255};
+        lui_draw_rect(context, x + 12, y+8, w - 24, 1, 0, gray);
+        y += 17;
+    };
+
+    platform_fmt_draw(Lui_context::SLOT_INITTEXT, &x, &y, w);
+    hsep();
+
+    
+    s64 x_ = x + w;
+    lui_draw_button(context, "Create and add", &x_, y, 0);
+    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CREATE, &x, &y, x_ - x);
+    hsep();
+
+    /*platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_OP, &x, &y, w);
+    hsep();
+    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_REMOVEALL, &x, &y, w);
+    hsep();
+    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_HELP, &x, &y, w);
+    hsep();
+    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CONTEXT, &x, &y, w);*/
+
+    
     _platform_frame_draw();
-
     glXSwapBuffers(platform->display, platform->window_glx);
 }
 

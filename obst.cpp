@@ -244,7 +244,7 @@ u32 bdd_insert(Bdd_store* store, Bdd bdd) {
     u64 hash = bdd_hash(bdd);
 
     if (store->bdd_lookup_count*4 >= store->bdd_lookup.size*3) {
-        ui_error_report("Error: size of hash table exceeded\n");
+        ui_error_report("Error: size of hash table exceeded\n"); //@Cleanup This should not use this function
         abort();
     }
     

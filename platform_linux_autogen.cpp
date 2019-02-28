@@ -48,7 +48,7 @@ glGenerateMipmap_t glGenerateMipmap;
 glBindVertexArray_t glBindVertexArray;
 glGenVertexArrays_t glGenVertexArrays;
 
-void _platform_init_opengl() {
+void _platform_init_gl_pointers() {
     glBindBuffer = (glBindBuffer_t)glXGetProcAddress((u8*)"glBindBuffer"); assert(glBindBuffer);
     glGenBuffers = (glGenBuffers_t)glXGetProcAddress((u8*)"glGenBuffers"); assert(glGenBuffers);
     glBufferData = (glBufferData_t)glXGetProcAddress((u8*)"glBufferData"); assert(glBufferData);
