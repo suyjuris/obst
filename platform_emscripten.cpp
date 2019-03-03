@@ -437,7 +437,7 @@ int OBST_EM_EXPORT(main) () {
     emscripten_set_mousemove_callback("canvas", nullptr, false, &_platform_ui_mouse_move);
 
     _platform_init_context(&global_context);
-    application_main();
+    application_init();
     
     return 0;
 }

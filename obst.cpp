@@ -4368,7 +4368,7 @@ bool ui_key_press(Key key) {
 }
 
 // This is the entry point for platform-independent initialisation.
-void application_main() {
+void application_init() {
     bdd_store_init(&global_store);
     ui_button_removeall();
 }

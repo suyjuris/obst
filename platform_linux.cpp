@@ -93,12 +93,14 @@ namespace Text_fmt {
 enum Flags: u64 {
     PARAGRAPH = 1, // Indicates a paragraph break at the end of the item
     NEWLINE = 2,
-    HEADER = 4, // Corresponds to <h4>, draw text as title
-    BOLD = 8,
-    ITALICS = 16,
-    SMALL = 32,
-    COMPACT = 64,
-    GROUP_SPACING = PARAGRAPH | NEWLINE,
+    NOSPACE = 4, // Do not leave a space after the word. Internal flag for lui_text_draw
+    HEADER = 8, // Corresponds to <h4>, draw text as title
+    BOLD = 16,
+    ITALICS = 32,
+    SMALL = 64,
+    SANS = 128,
+    COMPACT = 256,
+    GROUP_SPACING = PARAGRAPH | NEWLINE | NOSPACE,
 };
 enum Slots: s64 {
     SLOT_CONTEXT, SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_PLATFORM_FIRST
@@ -123,6 +125,11 @@ struct Text_entry {
     Array_dyn<u8> text;
     s64 cursor, cursor_row, cursor_col;
     float offset_row, offset_col;
+    s64 slot;
+};
+
+struct Rect {
+    s64 x, y, w, h;
 };
 
 // Keeps the necessary data to manage OpenGL and other data for the uil layer
@@ -200,7 +207,10 @@ struct Lui_context {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
         SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT, SLOT_LABEL_BASE,
         SLOT_LABEL_BITORDER, SLOT_LABEL_OPERATION, SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION,
-        SLOT_LABEL_COMPLEMENT, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE,
+        SLOT_LABEL_COMPLEMENT, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_FRAME,
+        SLOT_LABEL_CREATE, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C, SLOT_LABEL_REMOVEALL,
+        SLOT_LABEL_HELP, SLOT_LABEL_PREV, SLOT_LABEL_NEXT, SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE,
+        SLOT_ENTRY_BITORDER, SLOT_ENTRY_FIRSTNODE, SLOT_ENTRY_SECONDNODE,
         SLOT_COUNT
     };
     
@@ -209,27 +219,42 @@ struct Lui_context {
     Array_dyn<Text_box> fmt_boxes; // Set of boxes we are currently generating
     Array_dyn<Array_dyn<Text_box>> fmt_slots; // Stored sets of boxes
 
-    enum Button_flags: u8 {
-        BUTTON_NORMAL = 0,
-        BUTTON_FOCUSED = 1,
-        BUTTON_PRESSED = 2,
-        BUTTON_ENTRY = 4,
-        BUTTON_RADIO = 8,
+    enum Element_flags: u8 {
+        DRAW_FOCUSED = 1,
+        DRAW_ACTIVE = 2,
+        DRAW_PRESSED = 4,
+        DRAW_DISABLED = 8,
+        DRAW_BUTTON = 16,
+        DRAW_ENTRY = 32,
+        DRAW_RADIO = 64,
+        DRAW_COMPACT = 128,
     };
-    
+
+    // Buffer
+    Array_dyn<u8> lui_buffer;
+
+    // State of the ui elements
     Text_entry entry_numbers, entry_base, entry_bitorder, entry_firstnode, entry_secondnode;
+    Array_t<u64> elem_flags;
+    Array_t<Rect> elem_bb;
+    s64 panel_left_width = 475; //@Cleanup: Make this DPI aware
+
+    // Input state
+    s64 pointer_x, pointer_y;
 };
 
 struct Platform_state {
     bool is_active = true;
     Array_dyn<Key> input_queue;
 
-    s64 panel_left_width = 470; //@Cleanup: Make this DPI aware
-    
     Display* display = nullptr;
+    Window window;
     GLXWindow window_glx;
 
-    Lui_context gl_context;
+    bool cursor_is_text = false;
+    Cursor cursor_text;
+
+    Lui_context gl_context; //@Cleanup: Rename to lui_context
 };
 Platform_state global_platform;
 
@@ -243,7 +268,6 @@ void platform_ui_context_set(Array_t<u8> text, int frame, int frame_max) {}
 void platform_mouse_position(float* out_x, float* out_y) {}
 void platform_ui_button_help () {}
 void platform_operations_enable(u32 bdd) {}
-void platform_operations_disable() {}
 
 void platform_main_loop_active(bool is_active) {
     global_platform.is_active = is_active;
@@ -259,9 +283,9 @@ void _platform_handle_resize(s64 width, s64 height) {
     global_context.screen_w = width;
     global_context.screen_h = height;
     
-    global_context.width = std::min(global_context.screen_w - global_platform.panel_left_width, 800ll);
+    global_context.width = std::min(global_context.screen_w - global_platform.gl_context.panel_left_width, 800ll);
     global_context.height = global_context.screen_h;
-    global_context.canvas_x = global_platform.panel_left_width;
+    global_context.canvas_x = global_platform.gl_context.panel_left_width;
     global_context.canvas_y = 0;
 
     glViewport(0.0, 0.0, global_context.screen_w, global_context.screen_h);
@@ -597,8 +621,8 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
     array_push_back(&context->prep_cache, *box);
 }
 
-void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out) {
-    assert(context and x_ and y_);
+void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out, bool only_measure=false) {
+    assert(context);
 
     if (not boxes.size) return;
     
@@ -619,19 +643,25 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
             y = std::round(y + font_inst.newline);
         }
 
-        array_append(&context->buf_uitext_pos, {
-            x+box.x0, y+box.y0, x+box.x1, y+box.y0, x+box.x1, y+box.y1,
-            x+box.x0, y+box.y0, x+box.x1, y+box.y1, x+box.x0, y+box.y1
-        });
-        array_append(&context->buf_uitext_tpos, {
-            box.s0, box.t0, box.s1, box.t0, box.s1, box.t1, box.s0, box.t0, box.s1, box.t1, box.s0, box.t1
-        });
-
-        for (s64 j = 0; j < 6; ++j) {
-            array_append(&context->buf_uitext_fill, {fill, 4});
+        if (not only_measure) {
+            array_append(&context->buf_uitext_pos, {
+                x+box.x0, y+box.y0, x+box.x1, y+box.y0, x+box.x1, y+box.y1,
+                x+box.x0, y+box.y0, x+box.x1, y+box.y1, x+box.x0, y+box.y1
+            });
+            array_append(&context->buf_uitext_tpos, {
+                box.s0, box.t0, box.s1, box.t0, box.s1, box.t1, box.s0, box.t0, box.s1, box.t1, box.s0, box.t1
+            });
+            
+            for (s64 j = 0; j < 6; ++j) {
+                array_append(&context->buf_uitext_fill, {fill, 4});
+            }
         }
 
-        x = std::round(x + box.advance + font_inst.space);
+        if (box.flags & Text_fmt::NOSPACE) {
+            x = std::round(x + box.advance);
+        } else {
+            x = std::round(x + box.advance + font_inst.space);
+        }
         
         if (box.flags & Text_fmt::PARAGRAPH) {
             x = orig_x;
@@ -649,9 +679,6 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
     if (y_out) *y_out = (s64)std::round(y);
 }
 
-struct Rect {
-    s64 x, y, w, h;
-};
 struct Padding {
     s64 pad_x, pad_y, mar_x, mar_y;
 };
@@ -698,22 +725,31 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     float grad_light_t = std::min(1.f, 15.f / (float)bb.h);
     
     float border_normal[] = { 1.1, 0.72, 0.55 };
+    float border_active[] = { 1.3, 0.67, 0.5 };
     float border_thick [] = { 1.5, 0.62, 0.45 };
     float border_entry [] = { 1.0, 0.55, 0.72 };
+    float border_gray  [] = { 0.97, 0.78, 0.78 };
     float grad_normal  [] = { 0.85, 1.0, 0.92, 0.95 };
     float grad_pressed [] = { 0.15, 0.9, 0.87, 0.95 };
     float grad_light   [] = { grad_light_t, 0.95, 1.0, 1.0 };
-
-    bool inwards = flags & (Lui_context::BUTTON_ENTRY | Lui_context::BUTTON_RADIO);
-    float* border = inwards ? border_entry :
-        flags & (Lui_context::BUTTON_FOCUSED | Lui_context::BUTTON_PRESSED)
-        ? border_thick : border_normal;
-    float* grad = inwards ? grad_light :
-        flags & Lui_context::BUTTON_PRESSED ? grad_pressed : grad_normal;
-    float size = inwards ? h * 0.5f - 0.15f : h * 0.5f;
-    float inner = inwards and (flags & Lui_context::BUTTON_PRESSED) ? 0.2f : 1.f;
-    float circle = flags & Lui_context::BUTTON_RADIO ? 2.f : 8.f;
+    float grad_flat    [] = { 1.0, 0.95, 0.95, 0.95 };
     
+    bool inwards = flags & (Lui_context::DRAW_ENTRY | Lui_context::DRAW_RADIO);
+    float* border = flags & Lui_context::DRAW_DISABLED ? border_gray :
+        inwards ? border_entry :
+        flags & Lui_context::DRAW_ACTIVE ? border_active :
+        flags & (Lui_context::DRAW_FOCUSED | Lui_context::DRAW_PRESSED) ? border_thick
+        : border_normal;
+    float* grad = flags & Lui_context::DRAW_DISABLED ? grad_flat :
+        inwards ? grad_light :
+        flags & Lui_context::DRAW_PRESSED ? grad_pressed
+        : grad_normal;
+    float size = inwards ? h * 0.5f - 0.15f : h * 0.5f;
+    float inner = ~flags & Lui_context::DRAW_RADIO ? 1.f :
+        ~flags & Lui_context::DRAW_PRESSED ? 1.f :
+        flags & Lui_context::DRAW_DISABLED ? 0.7f
+        : 0.2f;
+    float circle = flags & Lui_context::DRAW_RADIO ? 2.f : 8.f;
     
     for (s64 i = 0; i < 10; ++i) {
         array_push_back(&context->buf_uibutton_size, size);
@@ -723,35 +759,8 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     }
 }
 
-void lui_draw_button_right(Lui_context* context, Array_t<u8> text, s64 x, s64 y, s64 w, u8 flags, s64* ha_out, s64* w_out) {
-    assert(context and x and y and w);
-    
-    Text_box box;
-    lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, text, &box, 0.9f);
-
-    Padding pad {12, 4, 3, 3};
-    Rect bb;
-    bb.w = 2*pad.mar_x + 2*pad.pad_x + (s64)std::round(box.advance);
-    bb.h = 2*pad.mar_y + 2*pad.pad_y + (s64)std::round(context->fonts[box.font].height);
-    bb.x = x+w - bb.w;
-    bb.y = y;
-    
-    Rect text_bb;
-    lui_draw_buttonlike(context, bb, pad, flags, &text_bb);
-    
-    u8 gray[] = {70, 70, 70, 255};
-    lui_text_draw(context, {&box, 1}, text_bb.x, text_bb.y, -1, gray, &text_bb.x, &text_bb.y);
-
-    if (ha_out) *ha_out = text_bb.y - y + context->fonts[box.font].ascent - context->fonts[Lui_context::FONT_LUI_NORMAL].ascent;
-    if (w_out) *w_out = w - bb.w;
-}
-void lui_draw_button_right(Lui_context* context, const char* text, s64 x, s64 y, s64 w, u8 flags, s64* ha_out, s64* w_out) {
-    lui_draw_button_right(context, {(u8*)text, (s64)strlen(text)}, x, y, w, flags, ha_out, w_out);
-}
-
-void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u8 font) {
+void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u8 font, u8* fill) {
     auto font_inst = context->fonts[font];
-    u8 fill[] = {20, 20, 20, 255};
     
     float tx = (float)text_bb.x, ty = (float)text_bb.y, tw = (float)text_bb.w, th = (float)text_bb.h;
     float y = std::round(ty + font_inst.ascent);
@@ -828,37 +837,6 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
     }    
 }
 
-void lui_draw_entry(Lui_context* context, Text_entry entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, bool only_measure=false) {
-    u8 font = Lui_context::FONT_LUI_SANS;
-    auto font_inst = context->fonts[font];
-    Padding pad {7, 5, 3, 3};
-
-    Rect bb {x, y, w, -1};
-    bb.h = rows * (s64)std::round(font_inst.newline) + pad.mar_y*2 + pad.pad_y*2;
-    
-    Rect text_bb;
-    lui_draw_buttonlike(context, bb, pad, Lui_context::BUTTON_ENTRY, &text_bb, only_measure);
-
-    if (not only_measure) {
-        lui_draw_entry_text(context, entry, text_bb, font);
-    }
-    
-    if (x_out) *x_out = bb.x + bb.w;
-    if (y_out) *y_out = bb.y + bb.h;
-    if (ha_out) *ha_out = text_bb.y - y + font_inst.ascent - context->fonts[Lui_context::FONT_LUI_NORMAL].ascent;
-}
-
-void lui_draw_radio(Lui_context* context, s64 x, s64 y, s64* x_out) {
-    auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
-
-    s64 size = 21;
-    Padding pad {3, 3, 5, 5};
-    Rect bb {x, y + (s64)std::round(font_inst.ascent) - size + pad.mar_y, size, size};
-    lui_draw_buttonlike(context, bb, pad, Lui_context::BUTTON_RADIO | Lui_context::BUTTON_PRESSED, nullptr);
-
-    if (x_out) *x_out += size;
-}
-
 void platform_fmt_init() {
     global_platform.gl_context.fmt_flags = 0;
 }
@@ -886,6 +864,8 @@ void platform_fmt_text(u64 flags, Array_t<u8> text) {
         font = Lui_context::FONT_LUI_ITALIC;
     } else if (flags & Text_fmt::SMALL) {
         font = Lui_context::FONT_LUI_SMALL;
+    } else if (flags & Text_fmt::SANS) {
+        font = Lui_context::FONT_LUI_SANS;
     } else {
         font = Lui_context::FONT_LUI_NORMAL;
     }
@@ -894,17 +874,18 @@ void platform_fmt_text(u64 flags, Array_t<u8> text) {
     
     s64 last = 0;
     for (s64 i = 0; i <= text.size; ++i) {
-        if (i < text.size and text[i] != ' ' and text[i] != '\n') continue;
+        // Digits are liable to change, so we render them individually
+        bool isdigit = last < text.size and ('0' <= text[last] and text[last] <= '9');
+        if (i < text.size and text[i] != ' ' and text[i] != '\n' and not isdigit)  continue;
         
-        if (last == i) {
-            last = i;
-            continue;
-        }
+        if (last == i) continue;
 
         Text_box box;
         lui_text_prepare_word(&global_platform.gl_context, font, array_subarray(text, last, i), &box, letter_fac);
+        if (isdigit) box.flags |= Text_fmt::NOSPACE;
+        
         array_push_back(&global_platform.gl_context.fmt_boxes, box);
-        last = i+1;
+        last = i + not isdigit;
     }
     
     platform_fmt_end(flags);
@@ -926,9 +907,102 @@ void platform_fmt_store_simple(u64 flags, char const* str, s64 slot) {
     platform_fmt_text(flags, str);
     platform_fmt_store(slot);
 }
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out) {
+void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot) {
+    platform_fmt_init();
+    platform_fmt_text(flags, str);
+    platform_fmt_store(slot);
+}
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false) {
     Lui_context* context = &global_platform.gl_context;
-    lui_text_draw(context, context->fmt_slots[slot], x, y, w, nullptr, x_out, y_out);
+    u8 black[] = {0, 0, 0, 255};
+    u8 gray[] = {120, 120, 120, 255};
+    u8* fill = context->elem_flags[slot] & Lui_context::DRAW_DISABLED ? gray : black;
+    lui_text_draw(context, context->fmt_slots[slot], x, y, w, fill, x_out, y_out, only_measure);
+}
+
+void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, s64* ha_out, s64* w_out) {
+    assert(context and x and y and w);
+
+    s64 text_w = 0, text_h = 0;
+    u8 font = Lui_context::FONT_LUI_SANS;
+    
+    Array_t<Text_box> boxes = context->fmt_slots[slot];
+    if (boxes.size) {
+        font = boxes[0].font;
+        lui_text_draw(context, boxes, 0, 0, -1, nullptr, &text_w, nullptr, true);
+        text_h = (s64)std::round(context->fonts[font].height);
+    }
+    
+    context->elem_flags[slot] |= Lui_context::DRAW_BUTTON;
+    u64 flags = context->elem_flags[slot];
+
+    Padding pad {12, 4, 3, 3};
+    if (flags & Lui_context::DRAW_COMPACT) pad.pad_x = 9;
+    
+    Rect bb;
+    bb.w = 2*pad.mar_x + 2*pad.pad_x + text_w;
+    bb.h = 2*pad.mar_y + 2*pad.pad_y + text_h;
+    bb.x = x+w - bb.w;
+    bb.y = y;
+    context->elem_bb[slot] = bb;
+    
+    Rect text_bb;
+    lui_draw_buttonlike(context, bb, pad, flags, &text_bb);
+    
+    u8 gray1[] = { 70,  70,  70, 255};
+    u8 gray2[] = {140, 140, 140, 255};
+    u8* fill = flags & Lui_context::DRAW_DISABLED ? gray2 : gray1;
+    lui_text_draw(context, boxes, text_bb.x, text_bb.y, -1, fill, &text_bb.x, &text_bb.y);
+
+    if (ha_out) *ha_out = text_bb.y - y + context->fonts[font].ascent - context->fonts[Lui_context::FONT_LUI_NORMAL].ascent;
+    if (w_out) *w_out = w - bb.w;
+}
+
+void lui_draw_entry(Lui_context* context, Text_entry entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, bool only_measure=false) {
+    u8 font = Lui_context::FONT_LUI_SANS;
+    auto font_inst = context->fonts[font];
+    Padding pad {7, 5, 3, 3};
+
+    Rect bb {x, y, w, -1};
+    bb.h = rows * (s64)std::round(font_inst.newline) + pad.mar_y*2 + pad.pad_y*2;
+    context->elem_bb[entry.slot] = bb;
+
+    context->elem_flags[entry.slot] |= Lui_context::DRAW_ENTRY;
+    u64 flags = context->elem_flags[entry.slot];
+    
+    Rect text_bb;
+    lui_draw_buttonlike(context, bb, pad, flags, &text_bb, only_measure);
+
+    if (not only_measure) {
+        u8 gray1[] = { 20,  20,  20, 255};
+        u8 gray2[] = {140, 140, 140, 255};
+        u8* fill = flags & Lui_context::DRAW_DISABLED ? gray2 : gray1;
+        lui_draw_entry_text(context, entry, text_bb, font, fill);
+    }
+    
+    if (x_out) *x_out = bb.x + bb.w;
+    if (y_out) *y_out = bb.y + bb.h;
+    if (ha_out) *ha_out = text_bb.y - y + font_inst.ascent - context->fonts[Lui_context::FONT_LUI_NORMAL].ascent;
+}
+
+void lui_draw_radio(Lui_context* context, s64 x, s64 y, u64 slot, s64* x_out, s64* y_out) {
+    auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
+
+    context->elem_flags[slot] |= Lui_context::DRAW_RADIO;
+    u64 flags = context->elem_flags[slot];
+
+    s64 size = 21;
+    Padding pad {3, 3, 5, 5};
+    Rect bb {x, y + (s64)std::round(font_inst.ascent) - size + pad.mar_y, size, size};
+    lui_draw_buttonlike(context, bb, pad, flags, nullptr);
+
+    s64 x1, y1;
+    platform_fmt_draw(slot, x + size, y, -1, &x1, &y1);
+
+    context->elem_bb[slot] = {x, y, x1 - x, (s64)std::round(font_inst.height)};
+    
+    if (x_out) *x_out = x1;
+    if (y_out) *y_out = y1;
 }
 
 void _platform_frame_init() {
@@ -1036,11 +1110,66 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(Text_fmt::COMPACT, "Complement", Lui_context::SLOT_LABEL_COMPLEMENT);
     platform_fmt_store_simple(0, "First node:", Lui_context::SLOT_LABEL_FIRSTNODE);
     platform_fmt_store_simple(0, "Second node:", Lui_context::SLOT_LABEL_SECONDNODE);
-    
+
+    u64 button_flag = Text_fmt::SANS | Text_fmt::COMPACT | Text_fmt::NOSPACE;
+    platform_fmt_store_simple(button_flag, "Create and add", Lui_context::SLOT_LABEL_CREATE);
+    platform_fmt_store_simple(button_flag, "Calculate union", Lui_context::SLOT_LABEL_OP_U);
+    platform_fmt_store_simple(button_flag, "Calculate intersection", Lui_context::SLOT_LABEL_OP_I);
+    platform_fmt_store_simple(button_flag, "Calculate complement", Lui_context::SLOT_LABEL_OP_C);
+    platform_fmt_store_simple(button_flag, "Remove all", Lui_context::SLOT_LABEL_REMOVEALL);
+    platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_LABEL_HELP);
+    platform_fmt_store_simple(button_flag, u8"◁", Lui_context::SLOT_LABEL_PREV);
+    platform_fmt_store_simple(button_flag, u8"▷", Lui_context::SLOT_LABEL_NEXT);
+
     platform_fmt_init();
     platform_fmt_text(Text_fmt::BOLD, "Step-by-step");
     platform_fmt_text(Text_fmt::SMALL, "(Move using arrow keys)");
     platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_CONTEXT);
+
+    // Initialise elements
+    context->elem_flags = array_create<u64> (Lui_context::SLOT_COUNT);
+    context->elem_bb    = array_create<Rect>(Lui_context::SLOT_COUNT);
+    
+    context->entry_numbers.slot = Lui_context::SLOT_ENTRY_NUMBERS;
+    context->entry_base.slot = Lui_context::SLOT_ENTRY_BASE;
+    context->entry_bitorder.slot = Lui_context::SLOT_ENTRY_BITORDER;
+    context->entry_firstnode.slot = Lui_context::SLOT_ENTRY_FIRSTNODE;
+    context->entry_secondnode.slot = Lui_context::SLOT_ENTRY_SECONDNODE;
+
+    context->elem_flags[Lui_context::SLOT_LABEL_NEXT] |= Lui_context::DRAW_COMPACT;
+    context->elem_flags[Lui_context::SLOT_LABEL_PREV] |= Lui_context::DRAW_COMPACT;
+
+    // Initialise application
+    application_init();
+}
+    
+void platform_operations_disable() {
+    Lui_context* context = &global_platform.gl_context;
+        
+    s64 elem_disable[] = {
+        Lui_context::SLOT_BUTTON_DESC_OP,
+        Lui_context::SLOT_BUTTON_DESC_REMOVEALL,
+        Lui_context::SLOT_BUTTON_DESC_CONTEXT, 
+        Lui_context::SLOT_LABEL_OPERATION,
+        Lui_context::SLOT_LABEL_UNION,
+        Lui_context::SLOT_LABEL_INTERSECTION,
+        Lui_context::SLOT_LABEL_COMPLEMENT,
+        Lui_context::SLOT_LABEL_FIRSTNODE,
+        Lui_context::SLOT_LABEL_SECONDNODE,
+        Lui_context::SLOT_LABEL_FRAME,
+        Lui_context::SLOT_LABEL_OP_U,
+        Lui_context::SLOT_LABEL_OP_I,
+        Lui_context::SLOT_LABEL_OP_C,
+        Lui_context::SLOT_LABEL_REMOVEALL,
+        Lui_context::SLOT_LABEL_PREV,
+        Lui_context::SLOT_LABEL_NEXT,
+        Lui_context::SLOT_ENTRY_FIRSTNODE,
+        Lui_context::SLOT_ENTRY_SECONDNODE
+    };
+
+    for (s64 i: elem_disable) {
+        context->elem_flags[i] |= Lui_context::DRAW_DISABLED;
+    }
 }
 
 void _platform_frame_draw() {
@@ -1108,7 +1237,7 @@ void _platform_frame_draw() {
 void _platform_render(Platform_state* platform) {
     assert(platform);
     
-    //application_render();
+    application_render();
     glClear(GL_COLOR_BUFFER_BIT);
     glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -1116,16 +1245,35 @@ void _platform_render(Platform_state* platform) {
     
     Lui_context* context = &global_platform.gl_context;
     auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
+
+    // Process input
+
+    auto in_rect = [](Rect r, s64 x, s64 y) {
+        return r.x <= x and x < r.x+r.w and r.y <= y and y < r.y+r.h;
+    };
+    bool cursor_is_text = false;
+    for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
+        if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
+        if (in_rect(context->elem_bb[slot], context->pointer_x, context->pointer_y)) {
+            context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
+            if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
+                cursor_is_text = true;
+            }
+        } else {
+            context->elem_flags[slot] &= ~Lui_context::DRAW_ACTIVE;
+        }
+    }
+    platform_set_cursor(cursor_is_text);
     
     // Now draw the UI
     
     u8 white[] = {255, 255, 255, 255};
     u8 black[] = {0, 0, 0, 255};
-    lui_draw_rect(context, 0, 0, platform->panel_left_width, global_context.screen_h, 1, white);
+    lui_draw_rect(context, 0, 0, context->panel_left_width, global_context.screen_h, 1, white);
 
     s64 x = 10;
     s64 y = 10;
-    s64 w = platform->panel_left_width - 20;
+    s64 w = context->panel_left_width - 20;
     s64 w_line, ha_line;
     
     auto hsep = [context, x, w, &y, font_inst]() {
@@ -1155,7 +1303,7 @@ void _platform_render(Platform_state* platform) {
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
     
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, "Create and add", x, y, w, 0, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_LABEL_CREATE, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CREATE, x, y, w_line, &x, &y);
     y += ha_line;
@@ -1163,12 +1311,9 @@ void _platform_render(Platform_state* platform) {
 
     {s64 x_orig = x;
     platform_fmt_draw(Lui_context::SLOT_LABEL_OPERATION, x, y, -1, &x, &y);
-    lui_draw_radio(context, x, y, &x);
-    platform_fmt_draw(Lui_context::SLOT_LABEL_UNION, x, y, -1, &x, &y);
-    lui_draw_radio(context, x, y, &x);
-    platform_fmt_draw(Lui_context::SLOT_LABEL_INTERSECTION, x, y, -1, &x, &y);
-    lui_draw_radio(context, x, y, &x);
-    platform_fmt_draw(Lui_context::SLOT_LABEL_COMPLEMENT, x, y, -1, &x, &y);
+    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_OPERATION, &x, &y);
+    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_UNION, &x, &y);
+    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_INTERSECTION, &x, &y);
     y += (s64)std::round(font_inst.newline); x = x_orig;}
 
     y += std::round(font_inst.height - font_inst.ascent);
@@ -1186,27 +1331,38 @@ void _platform_render(Platform_state* platform) {
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
 
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, "Calculate Union", x, y, w, 0, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_LABEL_OP_U, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_OP, x, y, w_line, &x, &y);
     y += ha_line;
     hsep();}
 
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, "Remove all", x, y, w, 0, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_LABEL_REMOVEALL, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_REMOVEALL, x, y, w_line, &x, &y);
     y += ha_line;
     hsep();}
 
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, "Show help", x, y, w, 0, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_LABEL_HELP, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_HELP, x, y, w_line, &x, &y);
     y += ha_line;
     hsep();}
-
-    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CONTEXT, x, y, -1, &x, &y);
+    
+    {s64 w_line, ha_line, w_label, pad_x = 5;
+    lui_draw_button_right(context, Lui_context::SLOT_LABEL_NEXT, x, y, w, &ha_line, &w_line);
+    context->lui_buffer.size = 0;
+    array_printf(&context->lui_buffer, "%d/%d", 382, 929);
+    platform_fmt_store_simple(Text_fmt::NOSPACE, context->lui_buffer, Lui_context::SLOT_LABEL_FRAME);
+    platform_fmt_draw(Lui_context::SLOT_LABEL_FRAME, 0, 0, -1, &w_label, nullptr, true);
+    y += ha_line; w_line -= w_label + pad_x;
+    platform_fmt_draw(Lui_context::SLOT_LABEL_FRAME, x+w_line, y, -1, nullptr, nullptr);
+    y -= ha_line;
+    lui_draw_button_right(context, Lui_context::SLOT_LABEL_PREV, x, y, w_line-pad_x, nullptr, &w_line);
+    y += ha_line; 
+    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CONTEXT, x, y, w_line, &x, &y);}    
     
     _platform_frame_draw();
     glXSwapBuffers(platform->display, platform->window_glx);
@@ -1276,6 +1432,17 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
             s64 end = i + chunk < buffer.size ? i + chunk : buffer.size;
             array_push_back(keys, Key::create_text(array_subarray(buffer, i, end)));
         }
+    }
+}
+
+void platform_set_cursor(bool is_text) {
+    if (is_text == global_platform.cursor_is_text) return;
+
+    global_platform.cursor_is_text = is_text;
+    if (is_text) {
+        XDefineCursor(global_platform.display, global_platform.window, global_platform.cursor_text);
+    } else {
+        XUndefineCursor(global_platform.display, global_platform.window);
     }
 }
 
@@ -1401,11 +1568,12 @@ int main(int argc, char** argv) {
 
     XSetWindowAttributes window_attrs = {};
     window_attrs.colormap = XCreateColormap(display, DefaultRootWindow(display), visual->visual, AllocNone); // Apparently you need the colormap, else XCreateWindow gives a BadMatch error. No worries, this fact features prominently in the documentation and it was no bother at all.
-    window_attrs.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask;
+    window_attrs.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | PointerMotionMask;
     
     Window window = XCreateWindow(display, DefaultRootWindow(display),
         0, 0, 1300, 800, 0,
     visual->depth, InputOutput, visual->visual, CWColormap | CWEventMask, &window_attrs); // We pass a type of InputOutput explicitly, as visual->c_class is an illegal value for some reason. A good reason, I hope.
+    global_platform.window = window;
 
     // Initialise window properties
     linux_set_wm_prop(display, window, "WM_NAME", "obst - Binary Decision Diagrams");
@@ -1418,6 +1586,9 @@ int main(int argc, char** argv) {
     Atom type_atom = XInternAtom(display, "ATOM", true);
     assert(wm_protocols != None and wm_delete_window != None and type_atom != None);
     XChangeProperty(display, window, wm_protocols, type_atom, 32, PropModeReplace, (u8*)&wm_delete_window, 1);
+
+    // Initialise cursor
+    global_platform.cursor_text = XCreateFontCursor(display, 152);
     
     GLXWindow window_glx = glXCreateWindow(display, *config, window, nullptr);
     global_platform.window_glx = window_glx;
@@ -1429,19 +1600,25 @@ int main(int argc, char** argv) {
     _platform_init(&global_platform);
 
     XMapWindow(display, window);
-    
+
+    bool redraw = false;
     while (true) {
         XEvent event;
+        
+        if (XPending(display) <= 0 and redraw) {
+            redraw = false;
+            _platform_render(&global_platform);
+        }
         XNextEvent(display, &event);
         
         switch (event.type) {
         case Expose:
-            _platform_render(&global_platform);
+            redraw = true;
             break;
         case KeyPress:
             linux_get_event_key(&global_platform.input_queue, event.xkey);
             _platform_handle_keys(&global_platform);
-            _platform_render(&global_platform);
+            redraw = true;
             break;
         case MappingNotify:
             if (event.xmapping.request == MappingModifier or event.xmapping.request == MappingKeyboard) {
@@ -1456,6 +1633,11 @@ int main(int argc, char** argv) {
             break;
         case ConfigureNotify:
             _platform_handle_resize(event.xconfigure.width, event.xconfigure.height);
+            break;
+        case MotionNotify:
+            global_platform.gl_context.pointer_x = event.xmotion.x;
+            global_platform.gl_context.pointer_y = event.xmotion.y;
+            redraw = true;
             break;
         default:
             break;

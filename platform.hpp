@@ -71,3 +71,4 @@ void platform_ui_button_help ();
 void platform_operations_enable(u32 bdd);
 void platform_operations_disable();
 void platform_main_loop_active(bool is_active);
+void platform_set_cursor(bool is_text);
