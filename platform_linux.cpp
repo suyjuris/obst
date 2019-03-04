@@ -138,7 +138,7 @@ struct Lui_context {
     enum Attributes: GLuint {
         UIRECT_POS = 0, UIRECT_FILL, UIRECT_ATTR_COUNT,
         UITEXT_POS = 0, UITEXT_TPOS, UITEXT_FILL, UITEXT_ATTR_COUNT,
-        UIBUTTON_POS = 0, UIBUTTON_X, UIBUTTON_SIZE, UIBUTTON_BORDER, UIBUTTON_GRAD, UIBUTTON_CIRCLE, UIBUTTON_ATTR_COUNT,
+        UIBUTTON_POS = 0, UIBUTTON_X, UIBUTTON_SIZE, UIBUTTON_BORDER, UIBUTTON_COLOR, UIBUTTON_GRAD, UIBUTTON_CIRCLE, UIBUTTON_ATTR_COUNT,
     };
     // Names for all uniforms
     enum Uniforms: int {
@@ -170,6 +170,7 @@ struct Lui_context {
     Array_dyn<float> buf_uibutton_x;
     Array_dyn<float> buf_uibutton_size;
     Array_dyn<float> buf_uibutton_border;
+    Array_dyn<float> buf_uibutton_color;
     Array_dyn<float> buf_uibutton_grad;
     Array_dyn<float> buf_uibutton_circle;
 
@@ -178,7 +179,11 @@ struct Lui_context {
     Array_t<GLuint> buffers_uitext;
     Array_t<GLuint> buffers_uibutton;
 
-    // Date for font rendering
+    static constexpr float LAYER_BACK = 0.1f;
+    static constexpr float LAYER_MIDDLE = 0.085f;
+    static constexpr float LAYER_FRONT = 0.07f;
+    
+    // Data for font rendering
     struct Font_instance {
         s64 info_index;
         float scale, ascent, height, newline, space;
@@ -206,11 +211,12 @@ struct Lui_context {
     enum Fmt_slots_lui: s64 {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
         SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT, SLOT_LABEL_BASE,
-        SLOT_LABEL_BITORDER, SLOT_LABEL_OPERATION, SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION,
-        SLOT_LABEL_COMPLEMENT, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_FRAME,
-        SLOT_LABEL_CREATE, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C, SLOT_LABEL_REMOVEALL,
-        SLOT_LABEL_HELP, SLOT_LABEL_PREV, SLOT_LABEL_NEXT, SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE,
-        SLOT_ENTRY_BITORDER, SLOT_ENTRY_FIRSTNODE, SLOT_ENTRY_SECONDNODE,
+        SLOT_LABEL_BITORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_FRAME,
+        SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_LABEL_CREATE,
+        SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
+        SLOT_ENTRY_SECONDNODE, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
+        SLOT_LABEL_OPERATION, SLOT_LABEL_REMOVEALL, SLOT_LABEL_HELP, SLOT_LABEL_PREV,
+        SLOT_LABEL_NEXT,
         SLOT_COUNT
     };
     
@@ -237,15 +243,17 @@ struct Lui_context {
     Text_entry entry_numbers, entry_base, entry_bitorder, entry_firstnode, entry_secondnode;
     Array_t<u64> elem_flags;
     Array_t<Rect> elem_bb;
+    s64 elem_focused = 0;
+    s64 elem_tabindex = 0;
     s64 panel_left_width = 475; //@Cleanup: Make this DPI aware
 
     // Input state
     s64 pointer_x, pointer_y;
+    Array_dyn<Key> input_queue;
 };
 
 struct Platform_state {
     bool is_active = true;
-    Array_dyn<Key> input_queue;
 
     Display* display = nullptr;
     Window window;
@@ -358,11 +366,13 @@ void _platform_init_gl(Platform_state* platform) {
         "attribute vec2 x;\n"
         "attribute float size;\n"
         "attribute vec3 border;\n"
+        "attribute vec3 color;\n"
         "attribute vec4 grad;\n"
         "attribute vec2 circle;\n"
         "varying vec2 v_p;\n"
         "varying float v_size;\n"
         "varying vec3 v_border;\n"
+        "varying vec3 v_color;\n"
         "varying vec4 v_grad;\n"
         "varying vec2 v_circle;\n"
         "uniform vec2 origin;\n"
@@ -372,6 +382,7 @@ void _platform_init_gl(Platform_state* platform) {
         "    v_p = x;\n"
         "    v_size = size;\n"
         "    v_border = border;\n"
+        "    v_color = color;\n"
         "    v_grad = grad;\n"
         "    v_circle = circle;\n"
         "}\n";
@@ -380,6 +391,7 @@ void _platform_init_gl(Platform_state* platform) {
         "varying vec2 v_p;\n"
         "varying float v_size;\n"
         "varying vec3 v_border;\n"
+        "varying vec3 v_color;\n"
         "varying vec4 v_grad;\n"
         "varying vec2 v_circle;\n"
         "void main() {\n"
@@ -387,6 +399,7 @@ void _platform_init_gl(Platform_state* platform) {
         "    float f = pow(abs(v_p.x)/v_size, dp) + pow(abs(v_p.y)/v_size, dp) - 1.0;\n"
         "    vec2 df = vec2(dp/v_size*pow(abs(v_p.x)/v_size, dp-1.0), dp/v_size*pow(abs(v_p.y)/v_size, dp-1.0));\n"
         "    float d = f / length(df);\n"
+        "    if (d > v_border[0] + 0.5) discard;\n"
         "    if (0.0 < d && d < 3.0) {\n"
         "        vec2 pp = v_p - f * df / dot(df, df) * vec2(sign(v_p.x), sign(v_p.y));\n"
         "        float f2 = pow(abs(pp.x)/v_size, dp) + pow(abs(pp.y)/v_size, dp) - 1.0;\n"
@@ -395,14 +408,14 @@ void _platform_init_gl(Platform_state* platform) {
         "    }\n"
         "    \n"
         "    float t = (v_p.y/v_size+1.0) / 2.0;\n"
-        "    float i = mix(v_border[1], v_border[2], clamp(t, 0.0, 1.0));\n"
+        "    vec3 col1 = v_color * mix(v_border[1], v_border[2], clamp(t, 0.0, 1.0));\n"
         "    float l = t < v_grad[0] ? mix(v_grad[1], v_grad[2], t / v_grad[0])\n"
-        "            : mix(v_grad[1], v_grad[2], t / v_grad[0]);\n"
-        "    if (d > v_border[0] + 0.5) discard;\n"
-        "    float c1 = mix(l, i, clamp(d+0.5, 0.0, 1.0));\n"
-        "    float c2 = mix(c1*v_circle[1], c1, clamp(length(v_p) - v_size*0.5 + 0.5, 0.0, 1.0));\n"
+        "            : mix(v_grad[2], v_grad[3], clamp((t - v_grad[0]) / (1.0 - v_grad[0]), 0.0, 1.0));\n"
+        "    vec3 col2 = vec3(l, l, l);\n"
+        "    vec3 col3 = mix(col2, col1, clamp(d+0.5, 0.0, 1.0));\n"
+        "    vec3 col4 = mix(col3*v_circle[1], col3, clamp(length(v_p) - v_size*0.5 + 0.5, 0.0, 1.0));\n"
         "    float a = 1.0 - max(0.0, d - v_border[0] + 0.5);\n"
-        "    gl_FragColor = vec4(c2, c2, c2, a);\n"
+        "    gl_FragColor = vec4(col4, a);\n"
         "}\n";
 
     GLuint program;
@@ -434,6 +447,7 @@ void _platform_init_gl(Platform_state* platform) {
     OBST_ATTRIB(UIBUTTON_X, x);
     OBST_ATTRIB(UIBUTTON_SIZE, size);
     OBST_ATTRIB(UIBUTTON_BORDER, border);
+    OBST_ATTRIB(UIBUTTON_COLOR, color);
     OBST_ATTRIB(UIBUTTON_GRAD, grad);
     OBST_ATTRIB(UIBUTTON_CIRCLE, circle);
     OBST_PROGRAM_LINK(uibutton);
@@ -445,10 +459,19 @@ void _platform_init_gl(Platform_state* platform) {
     //@Cleanup: Check max size using RECTANGLE_TEXTURE_SIZE
 }
 
-void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, s64 layer, u8* fill) {
+void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, float z, u8* fill) {
     float x1 = x,   y1 = y;
     float x2 = x+w, y2 = y+h;
-    float z = 0.1f + (float)layer * 0.01f;
+    
+    array_append(&context->buf_uirect_pos, {
+        x1, y1, z, x2, y1, z, x2, y2, z, x1, y1, z, x2, y2, z, x1, y2, z
+    });
+    for (s64 i = 0; i < 6; ++i) {
+        array_append(&context->buf_uirect_fill, {fill, 4});
+    }
+}
+void lui_draw_rect(Lui_context* context, float x1, float y1, float w, float h, float z, u8* fill) {
+    float x2 = x1+w, y2 = y1+h;
     
     array_append(&context->buf_uirect_pos, {
         x1, y1, z, x2, y1, z, x2, y2, z, x1, y1, z, x2, y2, z, x1, y2, z
@@ -725,7 +748,7 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     float grad_light_t = std::min(1.f, 15.f / (float)bb.h);
     
     float border_normal[] = { 1.1, 0.72, 0.55 };
-    float border_active[] = { 1.3, 0.67, 0.5 };
+    float border_active[] = { 1.25, 0.67, 0.5 };
     float border_thick [] = { 1.5, 0.62, 0.45 };
     float border_entry [] = { 1.0, 0.55, 0.72 };
     float border_gray  [] = { 0.97, 0.78, 0.78 };
@@ -733,13 +756,17 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     float grad_pressed [] = { 0.15, 0.9, 0.87, 0.95 };
     float grad_light   [] = { grad_light_t, 0.95, 1.0, 1.0 };
     float grad_flat    [] = { 1.0, 0.95, 0.95, 0.95 };
+    float color_normal [] = { 1.0, 1.0, 1.0 };
+    float color_focused[] = { 1.32, 0.83, 0.28 };
     
     bool inwards = flags & (Lui_context::DRAW_ENTRY | Lui_context::DRAW_RADIO);
     float* border = flags & Lui_context::DRAW_DISABLED ? border_gray :
-        inwards ? border_entry :
+        flags & Lui_context::DRAW_ENTRY ? border_entry :
+        flags & Lui_context::DRAW_PRESSED ? border_thick :
         flags & Lui_context::DRAW_ACTIVE ? border_active :
-        flags & (Lui_context::DRAW_FOCUSED | Lui_context::DRAW_PRESSED) ? border_thick
+        flags & Lui_context::DRAW_RADIO ? border_entry
         : border_normal;
+    float* color = flags & Lui_context::DRAW_FOCUSED ? color_focused : color_normal;
     float* grad = flags & Lui_context::DRAW_DISABLED ? grad_flat :
         inwards ? grad_light :
         flags & Lui_context::DRAW_PRESSED ? grad_pressed
@@ -754,6 +781,7 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     for (s64 i = 0; i < 10; ++i) {
         array_push_back(&context->buf_uibutton_size, size);
         array_append(&context->buf_uibutton_border, {border, 3});
+        array_append(&context->buf_uibutton_color, {color, 3});
         array_append(&context->buf_uibutton_grad, {grad, 4});
         array_append(&context->buf_uibutton_circle, {circle, inner});
     }
@@ -779,6 +807,10 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
 
         float x = tx - entry.offset_col;
         while (true) {
+            if (c_i == entry.cursor) {
+                lui_draw_rect(context, x-1, y-font_inst.ascent+font_inst.height*0.1f, 1, font_inst.height*0.8f, Lui_context::LAYER_FRONT, fill);
+            }
+            
             if (c_i >= entry.text.size) break;
             if (entry.text[c_i] == '\n') break;
             // Not entirely accurate, due to left-side-bearing, but should not matter
@@ -787,7 +819,6 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
                 break;
             }
 
-            u32 c;
             s64 c_len = _decode_utf8(array_subarray(entry.text, c_i, entry.text.size));
 
             Text_box box;
@@ -948,11 +979,12 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
     
     Rect text_bb;
     lui_draw_buttonlike(context, bb, pad, flags, &text_bb);
-    
+
+    s64 xoff = flags & Lui_context::DRAW_PRESSED ? 1 : 0;
     u8 gray1[] = { 70,  70,  70, 255};
     u8 gray2[] = {140, 140, 140, 255};
     u8* fill = flags & Lui_context::DRAW_DISABLED ? gray2 : gray1;
-    lui_text_draw(context, boxes, text_bb.x, text_bb.y, -1, fill, &text_bb.x, &text_bb.y);
+    lui_text_draw(context, boxes, text_bb.x + xoff, text_bb.y, -1, fill, &text_bb.x, &text_bb.y);
 
     if (ha_out) *ha_out = text_bb.y - y + context->fonts[font].ascent - context->fonts[Lui_context::FONT_LUI_NORMAL].ascent;
     if (w_out) *w_out = w - bb.w;
@@ -1022,6 +1054,7 @@ void _platform_frame_init() {
     context->buf_uibutton_x.size = 0;
     context->buf_uibutton_size.size = 0;
     context->buf_uibutton_border.size = 0;
+    context->buf_uibutton_color.size = 0;
     context->buf_uibutton_grad.size = 0;
     context->buf_uibutton_circle.size = 0;
 }
@@ -1091,7 +1124,7 @@ void _platform_init(Platform_state* platform) {
     // Populate all the fixed slots
     platform_fmt_init();
     platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Binary Decision Diagrams");
-    platform_fmt_text(Text_fmt::PARAGRAPH, "This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018.");
     platform_fmt_text(Text_fmt::PARAGRAPH, u8"Read the help for more information, or get started right away by pressing “Create and Add”."); //@Cleanup: Remove the utf-8 string, replace by raw bytes
     platform_fmt_text(Text_fmt::ITALICS, "Hint:");
     platform_fmt_text(Text_fmt::PARAGRAPH, "You can hover over nodes using your cursor, showing additional details.");
@@ -1141,9 +1174,12 @@ void _platform_init(Platform_state* platform) {
 
     // Initialise application
     application_init();
+
+    // Set initial radiobutton
+    context->elem_flags[Lui_context::SLOT_LABEL_UNION] |= Lui_context::DRAW_PRESSED;
 }
     
-void platform_operations_disable() {
+void platform_operations_disable() {return;
     Lui_context* context = &global_platform.gl_context;
         
     s64 elem_disable[] = {
@@ -1215,6 +1251,7 @@ void _platform_frame_draw() {
     OBST_DO_BUFFER(uibutton, UIBUTTON_X,      buf_uibutton_x,      2, GL_FLOAT, 0);
     OBST_DO_BUFFER(uibutton, UIBUTTON_SIZE,   buf_uibutton_size,   1, GL_FLOAT, 0);
     OBST_DO_BUFFER(uibutton, UIBUTTON_BORDER, buf_uibutton_border, 3, GL_FLOAT, 0);
+    OBST_DO_BUFFER(uibutton, UIBUTTON_COLOR,  buf_uibutton_color,  3, GL_FLOAT, 0);
     OBST_DO_BUFFER(uibutton, UIBUTTON_GRAD,   buf_uibutton_grad,   4, GL_FLOAT, 0);
     OBST_DO_BUFFER(uibutton, UIBUTTON_CIRCLE, buf_uibutton_circle, 2, GL_FLOAT, 0);
 
@@ -1247,10 +1284,258 @@ void _platform_render(Platform_state* platform) {
     auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
 
     // Process input
-
+    
     auto in_rect = [](Rect r, s64 x, s64 y) {
         return r.x <= x and x < r.x+r.w and r.y <= y and y < r.y+r.h;
     };
+
+    for (Key key: context->input_queue) {
+        if (key.type == Key::SPECIAL and key.special == Key::C_QUIT) {
+            exit(0);
+        }
+
+        if (key.type == Key::MOUSE) {
+            u8 action; s64 x, y;
+            key.get_mouse_param(&action, &x, &y);
+
+            bool consumed = false;
+            for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
+                if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
+                if (not in_rect(context->elem_bb[slot], context->pointer_x, context->pointer_y)) continue;
+                
+                if (action == Key::LEFT_DOWN) {
+                    context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
+                    context->elem_focused = slot;
+                    context->elem_tabindex = slot;
+                    context->elem_flags[slot] |= Lui_context::DRAW_PRESSED;
+                    context->elem_flags[slot] |= Lui_context::DRAW_FOCUSED;
+
+                    if (context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
+                        for (s64 slot_j = slot-1; context->elem_flags[slot_j] & Lui_context::DRAW_RADIO; --slot_j)
+                            context->elem_flags[slot_j] &= ~Lui_context::DRAW_PRESSED;
+                        for (s64 slot_j = slot+1; context->elem_flags[slot_j] & Lui_context::DRAW_RADIO; ++slot_j)
+                            context->elem_flags[slot_j] &= ~Lui_context::DRAW_PRESSED;
+                    }
+                } else if (action == Key::LEFT_UP) {
+                    if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
+                        context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
+                    }
+                }
+                
+                consumed = true;
+                break;
+            }
+
+            if (not consumed and action == Key::LEFT_DOWN) {
+                context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
+                context->elem_focused = 0;
+                consumed = true;
+            }
+
+            if (consumed) continue;
+        } else if (key.type == Key::SPECIAL) {
+            bool consumed;
+            if (key.special == Key::TAB or key.special == Key::SHIFT_TAB) {
+                if (context->elem_focused != 0 or context->elem_tabindex == 0) {
+                    context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
+                    s64 diff = (key.special == Key::TAB) - (key.special == Key::SHIFT_TAB)  + Lui_context::SLOT_COUNT;
+                    while (true) {
+                        context->elem_tabindex = (context->elem_tabindex + diff) % Lui_context::SLOT_COUNT;
+                        u64 flags = context->elem_flags[context->elem_tabindex];
+                        if (flags & Lui_context::DRAW_DISABLED) continue;
+                        if (flags & (Lui_context::DRAW_ENTRY | Lui_context::DRAW_BUTTON)) break;
+                        if ((flags & Lui_context::DRAW_RADIO) and (flags & Lui_context::DRAW_PRESSED)) break;
+                    }
+                }
+                context->elem_focused = context->elem_tabindex;
+                context->elem_flags[context->elem_focused] |= Lui_context::DRAW_FOCUSED;
+                consumed = true;
+            }
+
+            u64 flags = context->elem_flags[context->elem_focused];
+            if (flags & Lui_context::DRAW_RADIO) {
+                s64 diff = 0;
+                if (key.special == Key::ARROW_R or key.special == Key::ARROW_D) {
+                    diff = 1;
+                } else if (key.special == Key::ARROW_L or key.special == Key::ARROW_U) {
+                    diff = -1;
+                }
+                if (diff != 0) {
+                    s64 slot = context->elem_focused + diff;
+                    if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
+                        while (context->elem_flags[slot-diff] & Lui_context::DRAW_RADIO) slot -= diff;
+                    }
+                    context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_PRESSED;
+                    context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
+                    context->elem_focused = slot;
+                    context->elem_tabindex = slot;
+                    context->elem_flags[slot] |= Lui_context::DRAW_PRESSED;
+                    context->elem_flags[slot] |= Lui_context::DRAW_FOCUSED;
+                    consumed = true;
+                }
+            }
+
+            if (consumed) continue;
+        } 
+
+        if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
+            Text_entry* entry;
+            switch (context->elem_focused) {
+            case Lui_context::SLOT_ENTRY_NUMBERS:    entry = &context->entry_numbers; break;
+            case Lui_context::SLOT_ENTRY_BASE:       entry = &context->entry_base; break;
+            case Lui_context::SLOT_ENTRY_BITORDER:   entry = &context->entry_bitorder; break;
+            case Lui_context::SLOT_ENTRY_FIRSTNODE:  entry = &context->entry_firstnode; break;
+            case Lui_context::SLOT_ENTRY_SECONDNODE: entry = &context->entry_secondnode; break;
+            default: assert(false);
+            }
+
+            enum Move_mode: u8 {
+                SINGLE, LINE, WORD, FOREVER
+            };
+
+            auto isalnum = [](u8 c) {
+                return ('0' <= c and c <= '9') or ('a' <= c and c <= 'z') or ('A' <= c and c <= 'Z');
+            };
+            auto move_r = [entry, &isalnum](u8 mode) {
+                while (entry->cursor < entry->text.size) {
+                    if (entry->text[entry->cursor] == '\n') {
+                        if (mode == LINE) break;
+                        entry->cursor_col = -1;
+                        ++entry->cursor_row;
+                    }
+                    do {
+                        ++entry->cursor_col; ++entry->cursor;
+                    } while (entry->cursor < entry->text.size and entry->text[entry->cursor] & 0x80);
+                    if (mode == SINGLE) break;
+                    if (mode == WORD and entry->cursor < entry->text.size and isalnum(entry->text[entry->cursor-1])
+                        and not isalnum(entry->text[entry->cursor])) break;
+                }
+            };
+            auto move_l = [entry, &isalnum](u8 mode) {
+                while (entry->cursor > 0) {
+                    if (mode == LINE and entry->text[entry->cursor-1] == '\n') break;
+                    
+                    do {
+                        --entry->cursor_col; --entry->cursor;
+                    } while (entry->cursor >= 0 and entry->text[entry->cursor] & 0x80);
+                    
+                    if (entry->text[entry->cursor] == '\n') {
+                        assert(entry->cursor_col < 0);
+                        --entry->cursor_row;
+                    }
+                    if (mode == SINGLE) break;
+                    if (mode == WORD and entry->cursor > 0 and not isalnum(entry->text[entry->cursor-1])
+                        and isalnum(entry->text[entry->cursor])) break;
+                }
+                if (entry->cursor_col < 0) {
+                    entry->cursor_col = 0;
+                    while (true) {
+                        if (entry->cursor - entry->cursor_col - 1 < 0) break;
+                        if (entry->text[entry->cursor - entry->cursor_col - 1] == '\n') break;
+                        ++entry->cursor_col;
+                    }
+                }
+            };
+            
+            auto get_width = [context, entry]() {
+                s64 width = 0;
+                for (s64 c_i = entry->cursor - entry->cursor_col; c_i < entry->cursor;) {
+                    s64 c_len = _decode_utf8(array_subarray(entry->text, c_i, entry->text.size));
+                    Text_box box;
+                    lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, array_subarray(entry->text, c_i, c_i+c_len), &box);
+                    width += (s64)std::round(box.advance);
+                    c_i += c_len;
+                }
+                return width;
+            };
+            auto move_width = [context, entry](s64 width) {
+                while (entry->cursor < entry->text.size and width > 0) {
+                    if (entry->text[entry->cursor] == '\n') break;
+                    
+                    s64 c_len = _decode_utf8(array_subarray(entry->text, entry->cursor, entry->text.size));
+                    Text_box box;
+                    auto c_arr = array_subarray(entry->text, entry->cursor, entry->cursor+c_len);
+                    lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, c_arr, &box);
+                    s64 advance = (s64)std::round(box.advance);
+
+                    if (advance >= 2 * width) break;
+
+                    entry->cursor += c_len;
+                    entry->cursor_col += c_len;
+                    width -= advance;
+                }
+            };
+            
+            auto move_d = [context, entry, &get_width, &move_width](s64 amount) {
+                assert(amount >= 0);
+
+                s64 width = get_width();
+                
+                while (entry->cursor < entry->text.size and amount > 0) {
+                    if (entry->text[entry->cursor] == '\n') {
+                        --amount;
+                        ++entry->cursor_row;
+                        entry->cursor_col = -1;
+                    }
+                    ++entry->cursor;
+                    ++entry->cursor_col;
+                }
+                
+                move_width(width);
+            };
+            auto move_u = [context, entry, &get_width, &move_width](s64 amount) {
+                assert(amount >= 0);
+
+                s64 width = get_width();
+
+                while (entry->cursor > 0 and amount > 0) {
+                    --entry->cursor;
+                    
+                    if (entry->text[entry->cursor] == '\n') {
+                        --amount;
+                        --entry->cursor_row;
+                    }
+                }
+                while (entry->cursor > 0 and entry->text[entry->cursor-1] != '\n') {
+                    --entry->cursor;
+                }
+                entry->cursor_col = 0;
+                if (amount > 0) return;
+
+                move_width(width);
+            };
+
+            bool consumed = true;
+            if (key.type == Key::SPECIAL) {
+                if (key.special == Key::ARROW_R) {
+                    move_r(key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+                } else if (key.special == Key::ARROW_L) {
+                    move_l(key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+                } else if (key.special == Key::ARROW_D and (~key.flags & Key::MOD_CTRL)) {
+                    move_d(1);
+                } else if (key.special == Key::ARROW_U and (~key.flags & Key::MOD_CTRL)) {
+                    move_u(1);
+                } else if (key.special == Key::HOME) {
+                    move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE);
+                } else if (key.special == Key::END) {
+                    move_r(key.flags & Key::MOD_CTRL ? FOREVER : LINE);
+                } else {
+                    consumed = false;
+                }
+            }
+
+            //if (consumed) {
+            //    s64 width = get_width();
+            //    
+            //}
+
+            if (consumed) continue;
+        }
+        
+        ui_key_press(key);
+    }
+    context->input_queue.size = 0;
+    
     bool cursor_is_text = false;
     for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
         if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
@@ -1261,6 +1546,11 @@ void _platform_render(Platform_state* platform) {
             }
         } else {
             context->elem_flags[slot] &= ~Lui_context::DRAW_ACTIVE;
+            // This is a bit hacky. Due to the way we only get the correct flags after drawing once,
+            // we run the risk of resetting the initial radiobutton selection here.
+            if (context->elem_flags[slot] & (Lui_context::DRAW_BUTTON | Lui_context::DRAW_ENTRY)) {
+                context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
+            }
         }
     }
     platform_set_cursor(cursor_is_text);
@@ -1269,7 +1559,7 @@ void _platform_render(Platform_state* platform) {
     
     u8 white[] = {255, 255, 255, 255};
     u8 black[] = {0, 0, 0, 255};
-    lui_draw_rect(context, 0, 0, context->panel_left_width, global_context.screen_h, 1, white);
+    lui_draw_rect(context, 0, 0, context->panel_left_width, global_context.screen_h, Lui_context::LAYER_BACK, white);
 
     s64 x = 10;
     s64 y = 10;
@@ -1278,7 +1568,7 @@ void _platform_render(Platform_state* platform) {
     
     auto hsep = [context, x, w, &y, font_inst]() {
         u8 gray[] = {153, 153, 153, 255};
-        lui_draw_rect(context, x + 12, y, w - 24, 1, 0, gray);
+        lui_draw_rect(context, x + 12, y, w - 24, 1, Lui_context::LAYER_MIDDLE, gray);
         y += (s64)std::round(font_inst.newline*1.5f - font_inst.height + 1);
     };
 
@@ -1311,9 +1601,9 @@ void _platform_render(Platform_state* platform) {
 
     {s64 x_orig = x;
     platform_fmt_draw(Lui_context::SLOT_LABEL_OPERATION, x, y, -1, &x, &y);
-    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_OPERATION, &x, &y);
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_UNION, &x, &y);
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_INTERSECTION, &x, &y);
+    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_COMPLEMENT, &x, &y);
     y += (s64)std::round(font_inst.newline); x = x_orig;}
 
     y += std::round(font_inst.height - font_inst.ascent);
@@ -1368,17 +1658,6 @@ void _platform_render(Platform_state* platform) {
     glXSwapBuffers(platform->display, platform->window_glx);
 }
 
-void _platform_handle_keys(Platform_state* platform) {
-    for (Key key: platform->input_queue) {
-        if (key.type == Key::SPECIAL and key.special == Key::C_QUIT) {
-            exit(0);
-        }
-        
-        ui_key_press(key);
-    }
-    platform->input_queue.size = 0;
-}
-
 void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     KeySym keysym;
 
@@ -1392,40 +1671,46 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
 
     s64 special = Key::INVALID;
     u64 mod = 0;
+    u64 shiftctrl = ShiftMask | ControlMask;
     switch (keysym) {
-    case XK_Escape:    special = Key::ESCAPE; break;
-    case XK_Left:      special = Key::ARROW_L; break;
-    case XK_Right:     special = Key::ARROW_R; break;
-    case XK_Down:      special = Key::ARROW_D; break;
-    case XK_Up:        special = Key::ARROW_U; break;
-    case XK_Home:      special = Key::HOME; break;
-    case XK_End:       special = Key::END; break;
-    case XK_Page_Up:   special = Key::PAGE_U; break;
-    case XK_Page_Down: special = Key::PAGE_D; break;
-    case XK_F1:        special = Key::F1; break;
-    case XK_F2:        special = Key::F2; break;
-    case XK_F3:        special = Key::F3; break;
-    case XK_F4:        special = Key::F4; break;
-    case XK_F5:        special = Key::F5; break;
-    case XK_F6:        special = Key::F6; break;
-    case XK_F7:        special = Key::F7; break;
-    case XK_F8:        special = Key::F8; break;
-    case XK_F9:        special = Key::F9; break;
-    case XK_F10:       special = Key::F10; break;
-    case XK_F11:       special = Key::F11; break;
-    case XK_F12:       special = Key::F12; break;
-    case XK_c:         special = Key::C_COPY;      mod = ControlMask; break;
-    case XK_v:         special = Key::C_PASTE;     mod = ControlMask; break;
-    case XK_a:         special = Key::C_SELECTALL; mod = ControlMask; break;
-    case XK_q:         special = Key::C_QUIT;      mod = ControlMask; break;
-    case XK_s:         special = Key::C_SAVE;      mod = ControlMask; break;
-    case XK_z:         special = Key::C_UNDO;      mod = ControlMask; break;
-    case XK_Z:         special = Key::C_REDO;      mod = ControlMask | ShiftMask; break;
+    case XK_Escape:       special = Key::ESCAPE; break;
+    case XK_Page_Up:      special = Key::PAGE_U; break;
+    case XK_Page_Down:    special = Key::PAGE_D; break;
+    case XK_Tab:          special = Key::TAB; break;
+    case XK_F1:           special = Key::F1; break;
+    case XK_F2:           special = Key::F2; break;
+    case XK_F3:           special = Key::F3; break;
+    case XK_F4:           special = Key::F4; break;
+    case XK_F5:           special = Key::F5; break;
+    case XK_F6:           special = Key::F6; break;
+    case XK_F7:           special = Key::F7; break;
+    case XK_F8:           special = Key::F8; break;
+    case XK_F9:           special = Key::F9; break;
+    case XK_F10:          special = Key::F10; break;
+    case XK_F11:          special = Key::F11; break;
+    case XK_F12:          special = Key::F12; break;
+    case XK_Left:         special = Key::ARROW_L; mod = e.state & shiftctrl; break;
+    case XK_Right:        special = Key::ARROW_R; mod = e.state & shiftctrl; break;
+    case XK_Down:         special = Key::ARROW_D; mod = e.state & shiftctrl; break;
+    case XK_Up:           special = Key::ARROW_U; mod = e.state & shiftctrl; break;
+    case XK_Home:         special = Key::HOME;    mod = e.state & shiftctrl; break;
+    case XK_End:          special = Key::END;     mod = e.state & shiftctrl; break;
+    case XK_ISO_Left_Tab: special = Key::SHIFT_TAB;   mod = ShiftMask; break;
+    case XK_c:            special = Key::C_COPY;      mod = ControlMask; break;
+    case XK_v:            special = Key::C_PASTE;     mod = ControlMask; break;
+    case XK_a:            special = Key::C_SELECTALL; mod = ControlMask; break;
+    case XK_q:            special = Key::C_QUIT;      mod = ControlMask; break;
+    case XK_s:            special = Key::C_SAVE;      mod = ControlMask; break;
+    case XK_z:            special = Key::C_UNDO;      mod = ControlMask; break;
+    case XK_Z:            special = Key::C_REDO;      mod = ControlMask | ShiftMask; break;
     }
 
     u64 mod_mask = ShiftMask | LockMask | ControlMask | Mod1Mask | Mod2Mask | Mod3Mask | Mod4Mask | Mod5Mask;
     if (special != Key::INVALID and (e.state & mod_mask) == mod) {
-        array_push_back(keys, Key::create_special(special));
+        u8 flags = 0;
+        if (e.state & ShiftMask) flags |= Key::MOD_SHIFT;
+        if (e.state & ControlMask) flags |= Key::MOD_CTRL;
+        array_push_back(keys, Key::create_special(special, flags));
     } else {
         s64 chunk = sizeof(Key::text);
         for (s64 i = 0; i < buffer.size; i += chunk) {
@@ -1568,11 +1853,11 @@ int main(int argc, char** argv) {
 
     XSetWindowAttributes window_attrs = {};
     window_attrs.colormap = XCreateColormap(display, DefaultRootWindow(display), visual->visual, AllocNone); // Apparently you need the colormap, else XCreateWindow gives a BadMatch error. No worries, this fact features prominently in the documentation and it was no bother at all.
-    window_attrs.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | PointerMotionMask;
+    window_attrs.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask | ButtonPressMask
+        | ButtonReleaseMask | StructureNotifyMask | PointerMotionMask;
     
-    Window window = XCreateWindow(display, DefaultRootWindow(display),
-        0, 0, 1300, 800, 0,
-    visual->depth, InputOutput, visual->visual, CWColormap | CWEventMask, &window_attrs); // We pass a type of InputOutput explicitly, as visual->c_class is an illegal value for some reason. A good reason, I hope.
+    Window window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, 1300, 800, 0,
+        visual->depth, InputOutput, visual->visual, CWColormap | CWEventMask, &window_attrs); // We pass a type of InputOutput explicitly, as visual->c_class is an illegal value for some reason. A good reason, I hope.
     global_platform.window = window;
 
     // Initialise window properties
@@ -1616,9 +1901,22 @@ int main(int argc, char** argv) {
             redraw = true;
             break;
         case KeyPress:
-            linux_get_event_key(&global_platform.input_queue, event.xkey);
-            _platform_handle_keys(&global_platform);
+            linux_get_event_key(&global_platform.gl_context.input_queue, event.xkey);
             redraw = true;
+            break;
+        case ButtonPress:
+            if (event.xbutton.button == Button1) {
+                Key key = Key::create_mouse(Key::LEFT_DOWN, event.xbutton.x, event.xbutton.y);
+                array_push_back(&global_platform.gl_context.input_queue, key);
+                redraw = true;
+            }
+            break;
+        case ButtonRelease:
+            if (event.xbutton.button == Button1) {
+                Key key = Key::create_mouse(Key::LEFT_UP, event.xbutton.x, event.xbutton.y);
+                array_push_back(&global_platform.gl_context.input_queue, key);
+                redraw = true;
+            }
             break;
         case MappingNotify:
             if (event.xmapping.request == MappingModifier or event.xmapping.request == MappingKeyboard) {
@@ -1627,8 +1925,8 @@ int main(int argc, char** argv) {
             break;
         case ClientMessage:
             if (event.xclient.message_type == wm_protocols and event.xclient.data.l[0] - wm_delete_window == 0) {
-                array_push_back(&global_platform.input_queue, Key::create_special(Key::C_QUIT));
-                _platform_handle_keys(&global_platform);
+                array_push_back(&global_platform.gl_context.input_queue, Key::create_special(Key::C_QUIT, 0));
+                redraw = true;
             }
             break;
         case ConfigureNotify:

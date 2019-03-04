@@ -2,14 +2,17 @@
 
 struct Key {
     enum Key_type: u8 {
-        NONE, TEXT, SPECIAL
+        NONE, TEXT, SPECIAL, MOUSE,
     };
     enum Key_special: u8 {
         INVALID, ESCAPE, ARROW_L, ARROW_R, ARROW_D, ARROW_U,
-        HOME, END, PAGE_U, PAGE_D,
+        HOME, END, PAGE_U, PAGE_D, TAB, SHIFT_TAB,
         C_COPY, C_PASTE, C_SELECTALL, C_UNDO, C_REDO, C_QUIT, C_SAVE,
         F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
         SPECIAL_COUNT
+    };
+    enum Key_flags: u8 {
+        MOD_SHIFT = 1, MOD_CTRL = 2,
     };
     static constexpr char const* key_special_names[] = {
         "invalid", "escape", "arrow_l", "arrow_r", "arrow_d", "arrow_u",
@@ -17,11 +20,15 @@ struct Key {
         "c_copy", "c_paste", "c_selectall", "c_undo", "c_redo", "c_quit", "c_save",
         "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"
     };
+    enum Mouse_action: u8 {
+        LEFT_DOWN, LEFT_UP
+    };
 
     u8 type = Key::NONE;
     union {
         u8 text[15];
-        u8 special;
+        struct { u8 special; u8 flags; };
+        s32 mouse[3];
     };
 
     static Key create_text(Array_t<char> text_) {
@@ -32,12 +39,29 @@ struct Key {
         result.text[text_.size] = 0;
         return result;
     }
-    static Key create_special(u8 special) {
+    static Key create_special(u8 special, u8 flags) {
         assert(special != INVALID and special < SPECIAL_COUNT);
         Key result;
         result.type = Key::SPECIAL;
         result.special = special;
+        result.flags = flags;
         return result;
+    }
+    static Key create_mouse(u8 action, s64 x, s64 y) {
+        assert((s32)x == x and (s32)y == y);
+        Key result;
+        result.type = Key::MOUSE;
+        result.mouse[0] = (s32)action;
+        result.mouse[1] = (s32)x;
+        result.mouse[2] = (s32)y;
+        return result;
+    }
+
+    void get_mouse_param(u8* action, s64* x, s64* y) {
+        assert(type == Key::MOUSE);
+        if (action) *action = (u8)mouse[0];
+        if (x) *x = mouse[1];
+        if (y) *y = mouse[2];
     }
 };
 
