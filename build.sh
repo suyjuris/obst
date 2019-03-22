@@ -3,7 +3,7 @@
 EMCC=emcc
 GXX=g++
 CXXFLAGS="-Wall -Wextra -Werror -Wno-sign-conversion -Wno-unused-variable -Wno-sign-compare -Wno-writable-strings -Wno-write-strings -std=c++14 -fno-exceptions -fno-rtti"
-LDFLAGS_GCC="-lGL -lGLX -lX11"
+LDFLAGS_GCC="-lGL -lX11 -lXrandr"
 
 if [ "$#" -lt 2 ]; then
     echo "Usage:"

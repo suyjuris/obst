@@ -2289,6 +2289,12 @@ void webgl_init(Webgl_context* context) {
 
     // Note that the scale passed as attribute is not context->scale (ratio of pixels and
     // world->coordinates) but rather the factor between world-coordinates and device-coordinates.
+
+#ifdef OS_PLATFORM_EMSCRIPTEN
+#define OBST_SHADER_F_PREAMBLE "precision mediump float;\n"
+#else
+#define OBST_SHADER_F_PREAMBLE "\n"
+#endif    
     
     GLbyte shader_v_bdd[] =  
         "attribute vec2 pos;\n"
@@ -2318,7 +2324,7 @@ void webgl_init(Webgl_context* context) {
         "}\n";
     
     GLbyte shader_f_bdd[] =
-        "precision mediump float;\n"
+        OBST_SHADER_F_PREAMBLE
         "varying vec2 v_pos;\n"
         "varying vec2 v_x;\n"
         "varying vec2 v_r;\n"
@@ -2388,7 +2394,7 @@ void webgl_init(Webgl_context* context) {
         "}\n";
 
     GLbyte shader_f_edge[] =
-        "precision mediump float;\n"
+        OBST_SHADER_F_PREAMBLE
         "varying vec2 v_pos;\n"
         "varying vec2 v_p1;\n"
         "varying vec2 v_p2;\n"
@@ -2437,7 +2443,7 @@ void webgl_init(Webgl_context* context) {
         "}\n";
 
     GLbyte shader_f_arrow[] =
-        "precision mediump float;\n"
+        OBST_SHADER_F_PREAMBLE
         "varying vec4 v_fill;\n"
         "void main() {\n"
         "    gl_FragColor = v_fill;\n"
@@ -2458,7 +2464,7 @@ void webgl_init(Webgl_context* context) {
         "}\n";
 
     GLbyte shader_f_text[] =
-        "precision mediump float;\n"
+        OBST_SHADER_F_PREAMBLE
         "varying vec2 v_tpos;\n"
         "varying float v_alpha;\n"
         "uniform sampler2D sampler;\n"
@@ -2467,6 +2473,8 @@ void webgl_init(Webgl_context* context) {
         "    col.a *= v_alpha;\n"
         "    gl_FragColor = col;\n"
         "}\n";
+
+#undef OBST_SHADER_F_PREAMBLE
 
     // Yeah, sorry about the macros, but I do not think this code would be more readable without them.
 
@@ -3192,19 +3200,19 @@ void layout_render(Array_t<Bdd_layout>* layouts, float* max_x, float* max_y, s64
     float mx = -INFINITY;
     float my = 0.f;
     for (s64 i = 0; i < layouts->size; ++i) {
-        for (Pos_id i: (*layouts)[i].bdd_pos) {
-            if (nx > i.x) nx = i.x;
-            if (mx < i.x) mx = i.x;
-            if (my < i.y) my = i.y;
+        for (Pos_id j: (*layouts)[i].bdd_pos) {
+            if (nx > j.x) nx = j.x;
+            if (mx < j.x) mx = j.x;
+            if (my < j.y) my = j.y;
         }
     }
     
     for (s64 i = 0; i < layouts->size; ++i) {
-        for (Pos_id& i: (*layouts)[i].bdd_pos) {
-            i.x -= nx;
+        for (Pos_id& j: (*layouts)[i].bdd_pos) {
+            j.x -= nx;
         }
-        for (Pos& i: (*layouts)[i].edge_data) {
-            i.x -= nx;
+        for (Pos& j: (*layouts)[i].edge_data) {
+            j.x -= nx;
         }
     }
     mx -= nx;

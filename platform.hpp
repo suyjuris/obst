@@ -6,7 +6,7 @@ struct Key {
     };
     enum Key_special: u8 {
         INVALID, ESCAPE, ARROW_L, ARROW_R, ARROW_D, ARROW_U,
-        HOME, END, PAGE_U, PAGE_D, TAB, SHIFT_TAB,
+        HOME, END, PAGE_U, PAGE_D, TAB, SHIFT_TAB, DELETE, BACKSPACE,
         C_COPY, C_PASTE, C_SELECTALL, C_UNDO, C_REDO, C_QUIT, C_SAVE,
         F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
         SPECIAL_COUNT
@@ -16,7 +16,7 @@ struct Key {
     };
     static constexpr char const* key_special_names[] = {
         "invalid", "escape", "arrow_l", "arrow_r", "arrow_d", "arrow_u",
-        "home", "end", "page_u", "page_d",
+        "home", "end", "page_u", "page_d", "tab", "shift_tab", "delete", "backspace",
         "c_copy", "c_paste", "c_selectall", "c_undo", "c_redo", "c_quit", "c_save",
         "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"
     };
@@ -73,7 +73,7 @@ void print_key(Key key) {
     } else if (key.type == Key::TEXT) {
         printf("{\"%s\" %02x}", key.text, (u8)key.text[0]);
     } else if (key.type == Key::SPECIAL) {
-        assert(0 <= key.special and key.special < Key::SPECIAL_COUNT);
+        assert(key.special < Key::SPECIAL_COUNT);
         printf("{%s}", Key::key_special_names[key.special]);
     } else {
         assert(false);

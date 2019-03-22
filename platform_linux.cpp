@@ -7,13 +7,10 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <X11/extensions/Xrandr.h>
 #include <GL/glx.h>
 #include <time.h>
 #include <locale.h>
-
-#ifndef X_HAVE_UTF8_STRING
-#error "There is no Xutf8LookupString! You are on an old version of X."
-#endif
 
 typedef GLXContext (*glXCreateContextAttribsARB_t) (
     Display *dpy, GLXFBConfig config, GLXContext share_context, Bool direct, const int *attrib_list
@@ -124,8 +121,11 @@ struct Text_box_lookup {
 struct Text_entry {
     Array_dyn<u8> text;
     s64 cursor, cursor_row, cursor_col;
-    float offset_row, offset_col;
+    s64 offset_x, offset_y;
+    s64 draw_w, draw_h;
     s64 slot;
+    s64 selection;
+    bool cursor_draw;
 };
 
 struct Rect {
@@ -239,22 +239,31 @@ struct Lui_context {
     // Buffer
     Array_dyn<u8> lui_buffer;
 
+    enum Entry_names: u8 {
+        ENTRY_NUMBERS, ENTRY_BASE, ENTRY_BITORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE,
+        ENTRY_COUNT
+    };
+    static constexpr double CURSOR_BLINK_DELAY = 0.5;
+    
     // State of the ui elements
-    Text_entry entry_numbers, entry_base, entry_bitorder, entry_firstnode, entry_secondnode;
+    Array_t<Text_entry> entries;
     Array_t<u64> elem_flags;
     Array_t<Rect> elem_bb;
     s64 elem_focused = 0;
     s64 elem_tabindex = 0;
     s64 panel_left_width = 475; //@Cleanup: Make this DPI aware
+    double cursor_next_blink = 0.f;
+    bool cursor_blinked = false;
 
     // Input state
     s64 pointer_x, pointer_y;
     Array_dyn<Key> input_queue;
+
+    // Main loop flag
+    bool main_loop_active = false;
 };
 
 struct Platform_state {
-    bool is_active = true;
-
     Display* display = nullptr;
     Window window;
     GLXWindow window_glx;
@@ -263,6 +272,10 @@ struct Platform_state {
     Cursor cursor_text;
 
     Lui_context gl_context; //@Cleanup: Rename to lui_context
+
+    double redraw_next = -1;
+    double redraw_last = 0.f;
+    s64 rate = -1;
 };
 Platform_state global_platform;
 
@@ -277,8 +290,12 @@ void platform_mouse_position(float* out_x, float* out_y) {}
 void platform_ui_button_help () {}
 void platform_operations_enable(u32 bdd) {}
 
-void platform_main_loop_active(bool is_active) {
-    global_platform.is_active = is_active;
+void platform_main_loop_active(bool active) {
+    global_platform.gl_context.main_loop_active = active;
+}
+
+void platform_redraw(double t) {
+    global_platform.redraw_next = std::min(global_platform.redraw_next, t);
 }
 
 double platform_now() {
@@ -300,8 +317,6 @@ void _platform_handle_resize(s64 width, s64 height) {
     
     application_handle_resize();
 }
-
-void test_init();
 
 void _platform_init_gl(Platform_state* platform) {
     assert(platform);
@@ -330,7 +345,6 @@ void _platform_init_gl(Platform_state* platform) {
         "}\n";
 
     GLbyte shader_f_uirect[] =
-        "precision mediump float;\n"
         "varying vec4 v_fill;\n"
         "void main() {\n"
         "    gl_FragColor = v_fill;\n"
@@ -351,7 +365,6 @@ void _platform_init_gl(Platform_state* platform) {
         "}\n";
 
     GLbyte shader_f_uitext[] =
-        "precision mediump float;\n"
         "varying vec2 v_tpos;\n"
         "varying vec4 v_fill;\n"
         "uniform sampler2D sampler;\n"
@@ -787,35 +800,49 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     }
 }
 
-void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u8 font, u8* fill) {
+void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u8 font, bool disabled, bool cursor) {
     auto font_inst = context->fonts[font];
     
     float tx = (float)text_bb.x, ty = (float)text_bb.y, tw = (float)text_bb.w, th = (float)text_bb.h;
     float y = std::round(ty + font_inst.ascent);
 
     s64 c_i = 0;
-    
-    for (s64 row = 0; row < (s64)std::floor(entry.offset_row); ++row) {
+
+    s64 offset_rows = std::floor(entry.offset_y / font_inst.newline);
+    for (s64 row = 0; row < offset_rows; ++row) {
         while (c_i < entry.text.size and entry.text[c_i++] != '\n');
     }
-    y -= (entry.offset_row - std::floor(entry.offset_row)) * font_inst.newline;
-    if (c_i == entry.text.size) return;
+    y -= std::round((float)entry.offset_y - (float)offset_rows * font_inst.newline);
 
+    s64 sel0 = -1, sel1 = -1;
+    if (entry.selection != -1) {
+        sel0 = std::min(entry.selection, entry.cursor);
+        sel1 = std::max(entry.selection, entry.cursor);
+    }
+
+    u8 gray1[] = { 20,  20,  20, 255};
+    u8 gray2[] = {140, 140, 140, 255};
+    u8 sel_f[] = {255, 255, 255, 255};
+    u8 sel_b[] = {140, 140, 140, 255};
+    u8* normal = disabled ? gray2 : gray1;
+    
     while (true) {
-        if (c_i >= entry.text.size) break;
         if (y - font_inst.ascent >= ty + th) break;
 
-        float x = tx - entry.offset_col;
+        float x = tx - (float)entry.offset_x;
         while (true) {
-            if (c_i == entry.cursor) {
+            u8* fill = normal;
+            if (sel0 <= c_i and c_i < sel1) {
+                fill = sel_f;
+            }
+            if (entry.selection == -1 and cursor and c_i == entry.cursor) {
                 lui_draw_rect(context, x-1, y-font_inst.ascent+font_inst.height*0.1f, 1, font_inst.height*0.8f, Lui_context::LAYER_FRONT, fill);
             }
             
             if (c_i >= entry.text.size) break;
-            if (entry.text[c_i] == '\n') break;
             // Not entirely accurate, due to left-side-bearing, but should not matter
             if (x >= tx + tw) {
-                while (c_i < entry.text.size and entry.text[++c_i] != '\n');
+                while (c_i < entry.text.size and entry.text[c_i] != '\n') c_i++;
                 break;
             }
 
@@ -825,14 +852,25 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
             lui_text_prepare_word(context, font, array_subarray(entry.text, c_i, c_i+c_len), &box);
             box.x0 += x; box.x1 += x; box.y0 += y; box.y1 += y;
 
+            if (sel0 <= c_i and c_i < sel1) {
+                float rx0 = std::max(tx, x);
+                float ry0 = y - font_inst.ascent - 0.5*(font_inst.newline - font_inst.ascent);
+                float rx1 = std::min(tx + tw, x + (entry.text[c_i] == '\n' ? font_inst.space : box.advance));
+                if (rx0 < rx1) {
+                    lui_draw_rect(context, rx0, ry0, rx1 - rx0, font_inst.newline, Lui_context::LAYER_MIDDLE, sel_b);
+                }
+            }
+            
+            if (entry.text[c_i] == '\n') break;
+            
             x = std::round(x + box.advance);
             c_i += c_len;
-            
+
             if (box.x1 <= tx     ) continue;
             if (box.x0 >= tx + tw) continue;
             if (box.y1 <= ty     ) continue;
             if (box.y0 >= ty + th) continue;
-
+            
             if (box.x0 < tx and tx < box.x1) {
                 box.s0 += (tx - box.x0) / (box.x1 - box.x0) * (box.s1 - box.s0);
                 box.x0 = tx;
@@ -862,10 +900,11 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
                 array_append(&context->buf_uitext_fill, {fill, 4});
             }
         }
-        
+        if (c_i >= entry.text.size) break;
+
         y = std::round(y + font_inst.newline);
-        c_i++;
-    }    
+        ++c_i;
+    }
 }
 
 void platform_fmt_init() {
@@ -990,26 +1029,26 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
     if (w_out) *w_out = w - bb.w;
 }
 
-void lui_draw_entry(Lui_context* context, Text_entry entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, bool only_measure=false) {
+void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, bool only_measure=false) {
     u8 font = Lui_context::FONT_LUI_SANS;
     auto font_inst = context->fonts[font];
     Padding pad {7, 5, 3, 3};
 
     Rect bb {x, y, w, -1};
     bb.h = rows * (s64)std::round(font_inst.newline) + pad.mar_y*2 + pad.pad_y*2;
-    context->elem_bb[entry.slot] = bb;
+    context->elem_bb[entry->slot] = bb;
 
-    context->elem_flags[entry.slot] |= Lui_context::DRAW_ENTRY;
-    u64 flags = context->elem_flags[entry.slot];
+    context->elem_flags[entry->slot] |= Lui_context::DRAW_ENTRY;
+    u64 flags = context->elem_flags[entry->slot];
     
     Rect text_bb;
     lui_draw_buttonlike(context, bb, pad, flags, &text_bb, only_measure);
 
+    entry->draw_w = text_bb.w;
+    entry->draw_h = text_bb.h;
+
     if (not only_measure) {
-        u8 gray1[] = { 20,  20,  20, 255};
-        u8 gray2[] = {140, 140, 140, 255};
-        u8* fill = flags & Lui_context::DRAW_DISABLED ? gray2 : gray1;
-        lui_draw_entry_text(context, entry, text_bb, font, fill);
+        lui_draw_entry_text(context, *entry, text_bb, font, flags & Lui_context::DRAW_DISABLED, entry->cursor_draw);
     }
     
     if (x_out) *x_out = bb.x + bb.w;
@@ -1162,12 +1201,14 @@ void _platform_init(Platform_state* platform) {
     // Initialise elements
     context->elem_flags = array_create<u64> (Lui_context::SLOT_COUNT);
     context->elem_bb    = array_create<Rect>(Lui_context::SLOT_COUNT);
-    
-    context->entry_numbers.slot = Lui_context::SLOT_ENTRY_NUMBERS;
-    context->entry_base.slot = Lui_context::SLOT_ENTRY_BASE;
-    context->entry_bitorder.slot = Lui_context::SLOT_ENTRY_BITORDER;
-    context->entry_firstnode.slot = Lui_context::SLOT_ENTRY_FIRSTNODE;
-    context->entry_secondnode.slot = Lui_context::SLOT_ENTRY_SECONDNODE;
+
+    context->entries = array_create<Text_entry>(Lui_context::ENTRY_COUNT);
+    for (Text_entry& i: context->entries) i.selection = -1;
+    context->entries[Lui_context::ENTRY_NUMBERS].slot    = Lui_context::SLOT_ENTRY_NUMBERS;
+    context->entries[Lui_context::ENTRY_BASE].slot       = Lui_context::SLOT_ENTRY_BASE;
+    context->entries[Lui_context::ENTRY_BITORDER].slot   = Lui_context::SLOT_ENTRY_BITORDER;
+    context->entries[Lui_context::ENTRY_FIRSTNODE].slot  = Lui_context::SLOT_ENTRY_FIRSTNODE;
+    context->entries[Lui_context::ENTRY_SECONDNODE].slot = Lui_context::SLOT_ENTRY_SECONDNODE;
 
     context->elem_flags[Lui_context::SLOT_LABEL_NEXT] |= Lui_context::DRAW_COMPACT;
     context->elem_flags[Lui_context::SLOT_LABEL_PREV] |= Lui_context::DRAW_COMPACT;
@@ -1177,6 +1218,14 @@ void _platform_init(Platform_state* platform) {
 
     // Set initial radiobutton
     context->elem_flags[Lui_context::SLOT_LABEL_UNION] |= Lui_context::DRAW_PRESSED;
+
+    // @Cleanup: Remove
+    char const* str = "\n2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52p, 61, 62\nA reaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaally loooooooooooooooooooooooong line\nthat should be clipped\nand\nnow\nmore\nlines!!!\n\n";
+    Array_dyn<u8> arr;
+    array_append(&arr, {(u8*)str, (s64)strlen(str)});
+    array_push_back(&arr, (u8)0);
+    arr.size -= 1;
+    context->entries[Lui_context::ENTRY_NUMBERS].text = arr;
 }
     
 void platform_operations_disable() {return;
@@ -1288,6 +1337,12 @@ void _platform_render(Platform_state* platform) {
     auto in_rect = [](Rect r, s64 x, s64 y) {
         return r.x <= x and x < r.x+r.w and r.y <= y and y < r.y+r.h;
     };
+    auto get_entry = [context](s64 id) {
+        for (Text_entry& i: context->entries) {
+            if (i.slot == id) return &i;
+        }
+        assert(false);
+    };
 
     for (Key key: context->input_queue) {
         if (key.type == Key::SPECIAL and key.special == Key::C_QUIT) {
@@ -1315,6 +1370,9 @@ void _platform_render(Platform_state* platform) {
                             context->elem_flags[slot_j] &= ~Lui_context::DRAW_PRESSED;
                         for (s64 slot_j = slot+1; context->elem_flags[slot_j] & Lui_context::DRAW_RADIO; ++slot_j)
                             context->elem_flags[slot_j] &= ~Lui_context::DRAW_PRESSED;
+                    } else if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
+                        context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
+                        context->cursor_blinked = false;
                     }
                 } else if (action == Key::LEFT_UP) {
                     if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
@@ -1334,7 +1392,7 @@ void _platform_render(Platform_state* platform) {
 
             if (consumed) continue;
         } else if (key.type == Key::SPECIAL) {
-            bool consumed;
+            bool consumed = false;
             if (key.special == Key::TAB or key.special == Key::SHIFT_TAB) {
                 if (context->elem_focused != 0 or context->elem_tabindex == 0) {
                     context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
@@ -1379,24 +1437,29 @@ void _platform_render(Platform_state* platform) {
         } 
 
         if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
-            Text_entry* entry;
-            switch (context->elem_focused) {
-            case Lui_context::SLOT_ENTRY_NUMBERS:    entry = &context->entry_numbers; break;
-            case Lui_context::SLOT_ENTRY_BASE:       entry = &context->entry_base; break;
-            case Lui_context::SLOT_ENTRY_BITORDER:   entry = &context->entry_bitorder; break;
-            case Lui_context::SLOT_ENTRY_FIRSTNODE:  entry = &context->entry_firstnode; break;
-            case Lui_context::SLOT_ENTRY_SECONDNODE: entry = &context->entry_secondnode; break;
-            default: assert(false);
-            }
+            Text_entry* entry = get_entry(context->elem_focused);
 
             enum Move_mode: u8 {
                 SINGLE, LINE, WORD, FOREVER
+            };
+            enum Move_dir: u8 {
+                MOVE_R, MOVE_L, MOVE_D, MOVE_U
             };
 
             auto isalnum = [](u8 c) {
                 return ('0' <= c and c <= '9') or ('a' <= c and c <= 'z') or ('A' <= c and c <= 'Z');
             };
-            auto move_r = [entry, &isalnum](u8 mode) {
+            auto reset_selection = [entry](bool shift) {
+                if (shift) {
+                    entry->selection = entry->selection == -1 ? entry->cursor : entry->selection;
+                } else {
+                    entry->selection = -1;
+                }
+                
+            };
+            auto move_r = [entry, &isalnum, &reset_selection](u8 mode, bool shift) {
+                reset_selection(shift);
+                
                 while (entry->cursor < entry->text.size) {
                     if (entry->text[entry->cursor] == '\n') {
                         if (mode == LINE) break;
@@ -1405,19 +1468,21 @@ void _platform_render(Platform_state* platform) {
                     }
                     do {
                         ++entry->cursor_col; ++entry->cursor;
-                    } while (entry->cursor < entry->text.size and entry->text[entry->cursor] & 0x80);
+                    } while (entry->cursor < entry->text.size and (entry->text[entry->cursor] >> 6) == 2);
                     if (mode == SINGLE) break;
                     if (mode == WORD and entry->cursor < entry->text.size and isalnum(entry->text[entry->cursor-1])
                         and not isalnum(entry->text[entry->cursor])) break;
                 }
             };
-            auto move_l = [entry, &isalnum](u8 mode) {
+            auto move_l = [entry, &isalnum, &reset_selection](u8 mode, bool shift) {
+                reset_selection(shift);
+                
                 while (entry->cursor > 0) {
                     if (mode == LINE and entry->text[entry->cursor-1] == '\n') break;
                     
                     do {
                         --entry->cursor_col; --entry->cursor;
-                    } while (entry->cursor >= 0 and entry->text[entry->cursor] & 0x80);
+                    } while (entry->cursor < entry->text.size and (entry->text[entry->cursor] >> 6) == 2);
                     
                     if (entry->text[entry->cursor] == '\n') {
                         assert(entry->cursor_col < 0);
@@ -1466,8 +1531,9 @@ void _platform_render(Platform_state* platform) {
                 }
             };
             
-            auto move_d = [context, entry, &get_width, &move_width](s64 amount) {
+            auto move_d = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
                 assert(amount >= 0);
+                reset_selection(shift);
 
                 s64 width = get_width();
                 
@@ -1483,8 +1549,9 @@ void _platform_render(Platform_state* platform) {
                 
                 move_width(width);
             };
-            auto move_u = [context, entry, &get_width, &move_width](s64 amount) {
+            auto move_u = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
                 assert(amount >= 0);
+                reset_selection(shift);
 
                 s64 width = get_width();
 
@@ -1504,30 +1571,90 @@ void _platform_render(Platform_state* platform) {
 
                 move_width(width);
             };
+            auto del = [entry, move_l, move_r, move_d, move_u](u8 dir, u8 mode) {
+                s64 i = entry->cursor;
+                s64 i_row = entry->cursor_row;
+                s64 i_col = entry->cursor_col;
+
+                s64 j;
+                if (entry->selection != -1) {
+                    j = entry->selection;
+                    entry->selection = -1;
+                } else {
+                    if      (dir == MOVE_L) move_l(mode, false);
+                    else if (dir == MOVE_R) move_r(mode, false);
+                    else if (dir == MOVE_D) move_d(1, false);
+                    else if (dir == MOVE_U) move_u(1, false);
+                    else assert(false);
+                    j = entry->cursor;
+                }
+
+                if (i < j) {
+                    entry->cursor = i;
+                    entry->cursor_row = i_row;
+                    entry->cursor_col = i_col;
+                } else {
+                    std::swap(i, j);
+                }
+
+                memmove(entry->text.data + i, entry->text.data + j, entry->text.size - j);
+                entry->text.size -= j - i;
+            };
 
             bool consumed = true;
             if (key.type == Key::SPECIAL) {
                 if (key.special == Key::ARROW_R) {
-                    move_r(key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+                    move_r(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
                 } else if (key.special == Key::ARROW_L) {
-                    move_l(key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+                    move_l(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
                 } else if (key.special == Key::ARROW_D and (~key.flags & Key::MOD_CTRL)) {
-                    move_d(1);
+                    move_d(1, key.flags & Key::MOD_SHIFT);
                 } else if (key.special == Key::ARROW_U and (~key.flags & Key::MOD_CTRL)) {
-                    move_u(1);
+                    move_u(1, key.flags & Key::MOD_SHIFT);
                 } else if (key.special == Key::HOME) {
-                    move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE);
+                    move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
                 } else if (key.special == Key::END) {
-                    move_r(key.flags & Key::MOD_CTRL ? FOREVER : LINE);
+                    move_r(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
+                } else if (key.special == Key::DELETE) {
+                    del(MOVE_R, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+                } else if (key.special == Key::BACKSPACE) {
+                    del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
                 } else {
                     consumed = false;
                 }
+            } else if (key.type == Key::TEXT) {
+                s64 len = (u64)strlen((char*)key.text);
+                s64 i = entry->cursor;
+                array_reserve(&entry->text, entry->text.size + len);
+                memmove(entry->text.data + i + len, entry->text.data + i, entry->text.size - i);
+                memcpy(entry->text.data + i, key.text, len);
+                entry->text.size += len;
+                entry->cursor += len;
+                entry->cursor_col += len;
             }
 
-            //if (consumed) {
-            //    s64 width = get_width();
-            //    
-            //}
+            if (consumed) {
+                // Adjust offset, to put cursor in view
+                s64 width = get_width();
+                if (width < entry->offset_x) {
+                    entry->offset_x = width;
+                } else if (width > entry->offset_x + entry->draw_w) {
+                    entry->offset_x = width - entry->draw_w;
+                }
+                s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_SANS].newline);
+                s64 height = entry->cursor_row * line;
+                if (height < entry->offset_y) {
+                    entry->offset_y = height;
+                } else if (height + line > entry->offset_y + entry->draw_h) {
+                    entry->offset_y = height+line - entry->draw_h;
+                }
+
+                // Reset blinking cycle
+                context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
+                context->cursor_blinked = false;
+
+                //printf("text=%p,%lld cursor=%lld,%lld,%lld offset=%lld,%lld draw=%lld,%lld selection=%lld slot=%lld cursor_draw=%d\n", entry->text.data, entry->text.size, entry->cursor, entry->cursor_row, entry->cursor_col, entry->offset_x, entry->offset_y, entry->draw_w, entry->draw_h, entry->selection, entry->slot, (int)entry->cursor_draw);
+            }
 
             if (consumed) continue;
         }
@@ -1535,7 +1662,8 @@ void _platform_render(Platform_state* platform) {
         ui_key_press(key);
     }
     context->input_queue.size = 0;
-    
+
+    // Figure out mouse cursor
     bool cursor_is_text = false;
     for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
         if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
@@ -1554,6 +1682,35 @@ void _platform_render(Platform_state* platform) {
         }
     }
     platform_set_cursor(cursor_is_text);
+
+    // Decide whether and where to draw the text cursor, normalise text entry data
+    bool cursor_blinking = false;
+    for (Text_entry& entry: context->entries) {
+        u64 flags = context->elem_flags[entry.slot];
+        if (flags & Lui_context::DRAW_FOCUSED) {
+            cursor_blinking = true;
+        } else {
+            entry.cursor_draw = false;
+        }
+        if ((~flags & Lui_context::DRAW_FOCUSED) or entry.selection == entry.cursor) {
+            entry.selection = -1;
+        }
+    }
+    if (cursor_blinking) {
+        if (context->cursor_next_blink == INFINITY) {
+            context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
+            context->cursor_blinked = false;
+        }
+        if (platform_now() >= context->cursor_next_blink) {
+            context->cursor_next_blink += Lui_context::CURSOR_BLINK_DELAY;
+            context->cursor_blinked ^= 1;
+        }
+        platform_redraw(context->cursor_next_blink);
+        get_entry(context->elem_focused)->cursor_draw = not context->cursor_blinked;
+    } else {
+        context->cursor_next_blink = INFINITY;
+        context->cursor_blinked = false;
+    }
     
     // Now draw the UI
     
@@ -1575,21 +1732,19 @@ void _platform_render(Platform_state* platform) {
     platform_fmt_draw(Lui_context::SLOT_INITTEXT, x, y, w, &x, &y);
     hsep();
 
-    char const* str = "2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52p, 61, 62\nA reaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaally loooooooooooooooooooooooong line\nthat should be clipped";
-    context->entry_numbers.text = {(u8*)str, (s64)strlen(str)};
-    lui_draw_entry(context, context->entry_numbers, x, y, w, 3, nullptr, &y, nullptr);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_NUMBERS], x, y, w, 3, nullptr, &y, nullptr);
     y += std::round(font_inst.height - font_inst.ascent);
 
     {s64 x_orig = x, ha_line;
-    lui_draw_entry(context, context->entry_base, x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
+        lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_LABEL_BASE, x, y, -1, &x, &y);
     y -= ha_line;
-    lui_draw_entry(context, context->entry_base, x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
     y += ha_line; x += 10;
     platform_fmt_draw(Lui_context::SLOT_LABEL_BITORDER, x, y, -1, &x, &y);
     y -= ha_line;
-    lui_draw_entry(context, context->entry_bitorder, x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BITORDER], x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
     
     {s64 w_line, ha_line;
@@ -1609,15 +1764,15 @@ void _platform_render(Platform_state* platform) {
     y += std::round(font_inst.height - font_inst.ascent);
 
     {s64 x_orig = x, ha_line;
-    lui_draw_entry(context, context->entry_firstnode, x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
+        lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_LABEL_FIRSTNODE, x, y, -1, &x, &y);
     y -= ha_line;
-    lui_draw_entry(context, context->entry_firstnode, x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
     y += ha_line; x += 10;
     platform_fmt_draw(Lui_context::SLOT_LABEL_SECONDNODE, x, y, -1, &x, &y);
     y -= ha_line;
-    lui_draw_entry(context, context->entry_secondnode, x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, &y, nullptr);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_SECONDNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, &y, nullptr);
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
 
     {s64 w_line, ha_line;
@@ -1667,8 +1822,6 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     Array_t<char> buffer {buffer_, sizeof(buffer)};
     buffer.size = XLookupString(&e, buffer.data, buffer.size, &keysym, NULL);
     
-    keys->size = 0;
-
     s64 special = Key::INVALID;
     u64 mod = 0;
     u64 shiftctrl = ShiftMask | ControlMask;
@@ -1676,26 +1829,28 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     case XK_Escape:       special = Key::ESCAPE; break;
     case XK_Page_Up:      special = Key::PAGE_U; break;
     case XK_Page_Down:    special = Key::PAGE_D; break;
-    case XK_Tab:          special = Key::TAB; break;
-    case XK_F1:           special = Key::F1; break;
-    case XK_F2:           special = Key::F2; break;
-    case XK_F3:           special = Key::F3; break;
-    case XK_F4:           special = Key::F4; break;
-    case XK_F5:           special = Key::F5; break;
-    case XK_F6:           special = Key::F6; break;
-    case XK_F7:           special = Key::F7; break;
-    case XK_F8:           special = Key::F8; break;
-    case XK_F9:           special = Key::F9; break;
-    case XK_F10:          special = Key::F10; break;
-    case XK_F11:          special = Key::F11; break;
-    case XK_F12:          special = Key::F12; break;
-    case XK_Left:         special = Key::ARROW_L; mod = e.state & shiftctrl; break;
-    case XK_Right:        special = Key::ARROW_R; mod = e.state & shiftctrl; break;
-    case XK_Down:         special = Key::ARROW_D; mod = e.state & shiftctrl; break;
-    case XK_Up:           special = Key::ARROW_U; mod = e.state & shiftctrl; break;
-    case XK_Home:         special = Key::HOME;    mod = e.state & shiftctrl; break;
-    case XK_End:          special = Key::END;     mod = e.state & shiftctrl; break;
-    case XK_ISO_Left_Tab: special = Key::SHIFT_TAB;   mod = ShiftMask; break;
+    case XK_Tab:          special = Key::TAB;    break;
+    case XK_F1:           special = Key::F1;     break;
+    case XK_F2:           special = Key::F2;     break;
+    case XK_F3:           special = Key::F3;     break;
+    case XK_F4:           special = Key::F4;     break;
+    case XK_F5:           special = Key::F5;     break;
+    case XK_F6:           special = Key::F6;     break;
+    case XK_F7:           special = Key::F7;     break;
+    case XK_F8:           special = Key::F8;     break;
+    case XK_F9:           special = Key::F9;     break;
+    case XK_F10:          special = Key::F10;    break;
+    case XK_F11:          special = Key::F11;    break;
+    case XK_F12:          special = Key::F12;    break;
+    case XK_Left:         special = Key::ARROW_L;   mod = e.state & shiftctrl; break;
+    case XK_Right:        special = Key::ARROW_R;   mod = e.state & shiftctrl; break;
+    case XK_Down:         special = Key::ARROW_D;   mod = e.state & shiftctrl; break;
+    case XK_Up:           special = Key::ARROW_U;   mod = e.state & shiftctrl; break;
+    case XK_Home:         special = Key::HOME;      mod = e.state & shiftctrl; break;
+    case XK_End:          special = Key::END;       mod = e.state & shiftctrl; break;
+    case XK_Delete:       special = Key::DELETE;    mod = e.state & shiftctrl; break;
+    case XK_BackSpace:    special = Key::BACKSPACE; mod = e.state & shiftctrl; break;
+    case XK_ISO_Left_Tab: special = Key::SHIFT_TAB;   mod = ShiftMask;   break;
     case XK_c:            special = Key::C_COPY;      mod = ControlMask; break;
     case XK_v:            special = Key::C_PASTE;     mod = ControlMask; break;
     case XK_a:            special = Key::C_SELECTALL; mod = ControlMask; break;
@@ -1855,10 +2010,23 @@ int main(int argc, char** argv) {
     window_attrs.colormap = XCreateColormap(display, DefaultRootWindow(display), visual->visual, AllocNone); // Apparently you need the colormap, else XCreateWindow gives a BadMatch error. No worries, this fact features prominently in the documentation and it was no bother at all.
     window_attrs.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask | ButtonPressMask
         | ButtonReleaseMask | StructureNotifyMask | PointerMotionMask;
-    
+
     Window window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, 1300, 800, 0,
         visual->depth, InputOutput, visual->visual, CWColormap | CWEventMask, &window_attrs); // We pass a type of InputOutput explicitly, as visual->c_class is an illegal value for some reason. A good reason, I hope.
     global_platform.window = window;
+
+    // Set up xrandr
+    int xrandr_event, xrandr_error;
+    if (XRRQueryExtension(display, &xrandr_event, &xrandr_error)) {
+        XRRSelectInput(display, window, RRScreenChangeNotifyMask);
+
+        XRRScreenConfiguration* config = XRRGetScreenInfo(display, window);
+        global_platform.rate = XRRConfigCurrentRate(config);
+        XRRFreeScreenConfigInfo(config);
+    } else {
+        fprintf(stderr, "Warning: Xrandr extension not present on X server, assuming refresh rate of 60 Hz.\n");
+        global_platform.rate = 60;
+    }
 
     // Initialise window properties
     linux_set_wm_prop(display, window, "WM_NAME", "obst - Binary Decision Diagrams");
@@ -1884,38 +2052,84 @@ int main(int argc, char** argv) {
     // Do application-specific initialisation
     _platform_init(&global_platform);
 
+    // Show the window
     XMapWindow(display, window);
 
-    bool redraw = false;
+    int x_fd = ConnectionNumber(display);
+
+    double dbg = platform_now();
     while (true) {
-        XEvent event;
-        
-        if (XPending(display) <= 0 and redraw) {
-            redraw = false;
-            _platform_render(&global_platform);
+        bool redraw = false;
+        if (XPending(display) <= 0) {
+            // No events left to process, now we redraw or wait
+            
+            double wait = global_platform.redraw_next - platform_now();
+            if (wait == INFINITY) {
+                // Wait for next event
+            } else if (wait * (double)global_platform.rate > 0.5f) {
+                fd_set fds;
+                FD_ZERO(&fds);
+                FD_SET(x_fd, &fds);
+                
+                timeval t;
+                t.tv_sec = (long)wait;
+                t.tv_usec = (long)((wait - (double)t.tv_sec)*1e6);
+                
+                int num = select(x_fd+1, &fds, nullptr, nullptr, &t);
+                if (num == -1) {
+                    fprintf(stderr, "Error: while executing select()\n");
+                    perror("Error");
+                    exit(105);
+                } else if (num == 0) {
+                    // Got timeout, redraw
+                    redraw = true;
+                } else {
+                    // Check whether there is really an event there, or this is just one of select's
+                    // classic wakeup pranks.
+                    if (XPending(display) <= 0) continue;
+                    
+                    // An event arrived, process.
+                }
+            } else {
+                // Next frame is imminent, draw
+                redraw = true;
+            }
         }
-        XNextEvent(display, &event);
         
+        if (redraw) {
+            global_platform.redraw_last = global_platform.redraw_next;
+            global_platform.redraw_next = INFINITY;
+            _platform_render(&global_platform);
+            continue;
+        }
+        
+        XEvent event;
+        XNextEvent(display, &event);
+
         switch (event.type) {
         case Expose:
-            redraw = true;
+            platform_redraw(0);
             break;
         case KeyPress:
             linux_get_event_key(&global_platform.gl_context.input_queue, event.xkey);
-            redraw = true;
+            platform_redraw(0);
             break;
         case ButtonPress:
+            global_platform.gl_context.pointer_x = event.xmotion.x;
+            global_platform.gl_context.pointer_y = event.xmotion.y;
             if (event.xbutton.button == Button1) {
                 Key key = Key::create_mouse(Key::LEFT_DOWN, event.xbutton.x, event.xbutton.y);
                 array_push_back(&global_platform.gl_context.input_queue, key);
-                redraw = true;
+                platform_redraw(0);
             }
             break;
         case ButtonRelease:
+            global_platform.gl_context.pointer_x = event.xmotion.x;
+            global_platform.gl_context.pointer_y = event.xmotion.y;
             if (event.xbutton.button == Button1) {
                 Key key = Key::create_mouse(Key::LEFT_UP, event.xbutton.x, event.xbutton.y);
                 array_push_back(&global_platform.gl_context.input_queue, key);
-                redraw = true;
+                platform_redraw(0);
             }
             break;
         case MappingNotify:
@@ -1926,7 +2140,7 @@ int main(int argc, char** argv) {
         case ClientMessage:
             if (event.xclient.message_type == wm_protocols and event.xclient.data.l[0] - wm_delete_window == 0) {
                 array_push_back(&global_platform.gl_context.input_queue, Key::create_special(Key::C_QUIT, 0));
-                redraw = true;
+                platform_redraw(0);
             }
             break;
         case ConfigureNotify:
@@ -1935,10 +2149,17 @@ int main(int argc, char** argv) {
         case MotionNotify:
             global_platform.gl_context.pointer_x = event.xmotion.x;
             global_platform.gl_context.pointer_y = event.xmotion.y;
-            redraw = true;
+            platform_redraw(0);
             break;
         default:
             break;
+        }
+
+        if (event.type == xrandr_event + RRScreenChangeNotify) {
+            assert(XRRUpdateConfiguration(&event));
+            XRRScreenConfiguration* config = XRRGetScreenInfo(display, window);
+            global_platform.rate = XRRConfigCurrentRate(config);
+            XRRFreeScreenConfigInfo(config);
         }
     }
 
