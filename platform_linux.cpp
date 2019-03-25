@@ -124,12 +124,16 @@ struct Text_entry {
     s64 offset_x, offset_y;
     s64 draw_w, draw_h;
     s64 slot;
-    s64 selection;
+    s64 selection, selection_row, selection_col;
     bool cursor_draw;
 };
 
 struct Rect {
     s64 x, y, w, h;
+};
+
+struct Padding {
+    s64 pad_x = 0, pad_y = 0, mar_x = 0, mar_y = 0;
 };
 
 // Keeps the necessary data to manage OpenGL and other data for the uil layer
@@ -254,6 +258,7 @@ struct Lui_context {
     s64 panel_left_width = 475; //@Cleanup: Make this DPI aware
     double cursor_next_blink = 0.f;
     bool cursor_blinked = false;
+    Padding padding_entry;
 
     // Input state
     s64 pointer_x, pointer_y;
@@ -715,10 +720,6 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
     if (y_out) *y_out = (s64)std::round(y);
 }
 
-struct Padding {
-    s64 pad_x, pad_y, mar_x, mar_y;
-};
-
 void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, Rect* text_bb, bool only_measure=false) {
     assert(context);
 
@@ -808,7 +809,7 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
 
     s64 c_i = 0;
 
-    s64 offset_rows = std::floor(entry.offset_y / font_inst.newline);
+    s64 offset_rows = (s64)std::floor(entry.offset_y / font_inst.newline);
     for (s64 row = 0; row < offset_rows; ++row) {
         while (c_i < entry.text.size and entry.text[c_i++] != '\n');
     }
@@ -1032,7 +1033,8 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
 void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, bool only_measure=false) {
     u8 font = Lui_context::FONT_LUI_SANS;
     auto font_inst = context->fonts[font];
-    Padding pad {7, 5, 3, 3};
+    Padding pad = {7, 5, 3, 3};
+    context->padding_entry = pad;
 
     Rect bb {x, y, w, -1};
     bb.h = rows * (s64)std::round(font_inst.newline) + pad.mar_y*2 + pad.pad_y*2;
@@ -1320,6 +1322,262 @@ void _platform_frame_draw() {
     glDrawArrays(GL_TRIANGLES, 0, context->buf_uitext_pos.size / 2);
 }
 
+bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
+    enum Move_mode: u8 {
+        SINGLE, LINE, WORD, FOREVER
+    };
+    enum Move_dir: u8 {
+        MOVE_R, MOVE_L, MOVE_D, MOVE_U
+    };
+
+    auto isalnum = [](u8 c) {
+        return ('0' <= c and c <= '9') or ('a' <= c and c <= 'z') or ('A' <= c and c <= 'Z');
+    };
+    auto reset_selection = [entry](bool shift) {
+        if (shift) {
+            if (entry->selection == -1) {
+                entry->selection = entry->cursor;
+                entry->selection_row = entry->cursor_row;
+                entry->selection_col = entry->cursor_col;
+            }
+        } else {
+            entry->selection = -1;
+        }
+        
+    };
+    auto move_r = [entry, &isalnum, &reset_selection](u8 mode, bool shift) {
+        reset_selection(shift);
+        
+        while (entry->cursor < entry->text.size) {
+            if (entry->text[entry->cursor] == '\n') {
+                if (mode == LINE) break;
+                entry->cursor_col = -1;
+                ++entry->cursor_row;
+            }
+            do {
+                ++entry->cursor_col; ++entry->cursor;
+            } while (entry->cursor < entry->text.size and (entry->text[entry->cursor] >> 6) == 2);
+            if (mode == SINGLE) break;
+            if (mode == WORD and entry->cursor < entry->text.size and isalnum(entry->text[entry->cursor-1])
+                and not isalnum(entry->text[entry->cursor])) break;
+        }
+    };
+    auto move_l = [entry, &isalnum, &reset_selection](u8 mode, bool shift) {
+        reset_selection(shift);
+        
+        while (entry->cursor > 0) {
+            if (mode == LINE and entry->text[entry->cursor-1] == '\n') break;
+            
+            do {
+                --entry->cursor_col; --entry->cursor;
+            } while (entry->cursor < entry->text.size and (entry->text[entry->cursor] >> 6) == 2);
+            
+            if (entry->text[entry->cursor] == '\n') {
+                assert(entry->cursor_col < 0);
+                --entry->cursor_row;
+            }
+            if (mode == SINGLE) break;
+            if (mode == WORD and entry->cursor > 0 and not isalnum(entry->text[entry->cursor-1])
+                and isalnum(entry->text[entry->cursor])) break;
+        }
+        if (entry->cursor_col < 0) {
+            entry->cursor_col = 0;
+            while (true) {
+                if (entry->cursor - entry->cursor_col - 1 < 0) break;
+                if (entry->text[entry->cursor - entry->cursor_col - 1] == '\n') break;
+                ++entry->cursor_col;
+            }
+        }
+    };
+    
+    auto get_width = [context, entry]() {
+        s64 width = 0;
+        for (s64 c_i = entry->cursor - entry->cursor_col; c_i < entry->cursor;) {
+            s64 c_len = _decode_utf8(array_subarray(entry->text, c_i, entry->text.size));
+            Text_box box;
+            lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, array_subarray(entry->text, c_i, c_i+c_len), &box);
+            width += (s64)std::round(box.advance);
+            c_i += c_len;
+        }
+        return width;
+    };
+    auto move_width = [context, entry](s64 width) {
+        while (entry->cursor < entry->text.size and width > 0) {
+            if (entry->text[entry->cursor] == '\n') break;
+            
+            s64 c_len = _decode_utf8(array_subarray(entry->text, entry->cursor, entry->text.size));
+            Text_box box;
+            auto c_arr = array_subarray(entry->text, entry->cursor, entry->cursor+c_len);
+            lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, c_arr, &box);
+            s64 advance = (s64)std::round(box.advance);
+
+            if (advance >= 2 * width) break;
+
+            entry->cursor += c_len;
+            entry->cursor_col += c_len;
+            width -= advance;
+        }
+    };
+    
+    auto move_d = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
+        assert(amount >= 0);
+        reset_selection(shift);
+
+        s64 width = get_width();
+        
+        while (entry->cursor < entry->text.size and amount > 0) {
+            if (entry->text[entry->cursor] == '\n') {
+                --amount;
+                ++entry->cursor_row;
+                entry->cursor_col = -1;
+            }
+            ++entry->cursor;
+            ++entry->cursor_col;
+        }
+        
+        move_width(width);
+    };
+    auto move_u = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
+        assert(amount >= 0);
+        reset_selection(shift);
+
+        s64 width = get_width();
+
+        while (entry->cursor > 0 and amount > 0) {
+            --entry->cursor;
+            
+            if (entry->text[entry->cursor] == '\n') {
+                --amount;
+                --entry->cursor_row;
+            }
+        }
+        while (entry->cursor > 0 and entry->text[entry->cursor-1] != '\n') {
+            --entry->cursor;
+        }
+        entry->cursor_col = 0;
+        if (amount > 0) return;
+
+        move_width(width);
+    };
+    auto del = [entry, move_l, move_r](u8 dir, u8 mode) {
+        s64 i = entry->cursor;
+        s64 i_row = entry->cursor_row;
+        s64 i_col = entry->cursor_col;
+
+        if (entry->selection != -1) {
+            entry->cursor = entry->selection;
+            entry->cursor_row = entry->selection_row;
+            entry->cursor_col = entry->selection_col;
+            entry->selection = -1;
+        } else {
+            if      (dir == MOVE_L) move_l(mode, false);
+            else if (dir == MOVE_R) move_r(mode, false);
+            else assert(false);
+        }
+        s64 j = entry->cursor;
+
+        if (i < j) {
+            entry->cursor = i;
+            entry->cursor_row = i_row;
+            entry->cursor_col = i_col;
+        } else {
+            std::swap(i, j);
+        }
+
+        memmove(entry->text.data + i, entry->text.data + j, entry->text.size - j);
+        entry->text.size -= j - i;
+    };
+    auto ins = [entry](Array_t<u8> text) {
+        s64 i = entry->cursor;
+        array_reserve(&entry->text, entry->text.size + text.size);
+        memmove(entry->text.data + i + text.size, entry->text.data + i, entry->text.size - i);
+        memcpy(entry->text.data + i, text.data, text.size);
+        entry->text.size += text.size;
+        entry->cursor += text.size;
+        for (u8 c: text) {
+            entry->cursor_col += 1;
+            if (c == '\n') {
+                entry->cursor_col = 0;
+                entry->cursor_row += 1;
+            }
+        }
+    };
+
+    bool consumed = true;
+    if (key.type == Key::SPECIAL) {
+        if (key.special == Key::ARROW_R) {
+            move_r(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
+        } else if (key.special == Key::ARROW_L) {
+            move_l(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
+        } else if (key.special == Key::ARROW_D and (~key.flags & Key::MOD_CTRL)) {
+            move_d(1, key.flags & Key::MOD_SHIFT);
+        } else if (key.special == Key::ARROW_U and (~key.flags & Key::MOD_CTRL)) {
+            move_u(1, key.flags & Key::MOD_SHIFT);
+        } else if (key.special == Key::HOME) {
+            move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
+        } else if (key.special == Key::END) {
+            move_r(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
+        } else if (key.special == Key::DELETE) {
+            del(MOVE_R, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+        } else if (key.special == Key::BACKSPACE) {
+            del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+        } else if (key.special == Key::RETURN) {
+            ins({(u8*)"\n", 1});
+        } else {
+            consumed = false;
+        }
+    } else if (key.type == Key::TEXT) {
+        ins({(u8*)key.text, (s64)strlen((char*)key.text)});
+    } else if (key.type == Key::MOUSE) {
+        u8 action; s64 x, y;
+        key.get_mouse_param(&action, &x, &y);
+
+        if (action == Key::LEFT_DOWN) {
+            Rect bb = context->elem_bb[entry->slot];
+            Padding pad = context->padding_entry;
+            auto font_inst = context->fonts[Lui_context::FONT_LUI_SANS];
+            
+            s64 tx = x - bb.x - pad.mar_x - pad.pad_x + entry->offset_x;
+            s64 ty = y - bb.y - pad.mar_y - pad.pad_y + entry->offset_y;
+            s64 row = (s64)std::floor(ty / font_inst.newline);
+            
+            entry->cursor -= entry->cursor_col;
+            entry->cursor_col = 0;
+            if (entry->cursor_row < row) {
+                move_d(row - entry->cursor_row, false);
+            } else if (entry->cursor_row > row) {
+                move_u(entry->cursor_row - row, false);
+            }
+            move_width(tx);
+        }
+    }
+
+    if (consumed) {
+        // Adjust offset, to put cursor in view
+        s64 width = get_width();
+        if (width < entry->offset_x) {
+            entry->offset_x = width;
+        } else if (width > entry->offset_x + entry->draw_w) {
+            entry->offset_x = width - entry->draw_w;
+        }
+        s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_SANS].newline);
+        s64 height = entry->cursor_row * line;
+        if (height < entry->offset_y) {
+            entry->offset_y = height;
+        } else if (height + line > entry->offset_y + entry->draw_h) {
+            entry->offset_y = height+line - entry->draw_h;
+        }
+
+        // Reset blinking cycle
+        context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
+        context->cursor_blinked = false;
+
+        //printf("text=%p,%lld cursor=%lld,%lld,%lld offset=%lld,%lld draw=%lld,%lld selection=%lld,%lld,%lld slot=%lld cursor_draw=%d\n", entry->text.data, entry->text.size, entry->cursor, entry->cursor_row, entry->cursor_col, entry->offset_x, entry->offset_y, entry->draw_w, entry->draw_h, entry->selection, entry->selection_row, entry->selection_col, entry->slot, (int)entry->cursor_draw);
+    }
+
+    return consumed;
+}
+
 void _platform_render(Platform_state* platform) {
     assert(platform);
     
@@ -1354,9 +1612,19 @@ void _platform_render(Platform_state* platform) {
             key.get_mouse_param(&action, &x, &y);
 
             bool consumed = false;
+            bool cursor_is_text = false;
             for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
                 if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
-                if (not in_rect(context->elem_bb[slot], context->pointer_x, context->pointer_y)) continue;
+                
+                if (not in_rect(context->elem_bb[slot], x, y)) {
+                    context->elem_flags[slot] &= ~Lui_context::DRAW_ACTIVE;
+                    // This is a bit hacky. Due to the way we only get the correct flags after drawing once,
+                    // we run the risk of resetting the initial radiobutton selection here.
+                    if (context->elem_flags[slot] & (Lui_context::DRAW_BUTTON | Lui_context::DRAW_ENTRY)) {
+                        context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
+                    }
+                    continue;
+                }
                 
                 if (action == Key::LEFT_DOWN) {
                     context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
@@ -1373,15 +1641,24 @@ void _platform_render(Platform_state* platform) {
                     } else if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
                         context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
                         context->cursor_blinked = false;
+                        _platform_process_key_entry(context, get_entry(slot), key);
                     }
                 } else if (action == Key::LEFT_UP) {
                     if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
                         context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
                     }
+                } else if (action == Key::MOTION) {
+                    context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
+                    if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
+                        cursor_is_text = true;
+                    }
                 }
                 
                 consumed = true;
                 break;
+            }
+            if (action == Key::MOTION) {
+                platform_set_cursor(cursor_is_text);
             }
 
             if (not consumed and action == Key::LEFT_DOWN) {
@@ -1438,224 +1715,7 @@ void _platform_render(Platform_state* platform) {
 
         if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
             Text_entry* entry = get_entry(context->elem_focused);
-
-            enum Move_mode: u8 {
-                SINGLE, LINE, WORD, FOREVER
-            };
-            enum Move_dir: u8 {
-                MOVE_R, MOVE_L, MOVE_D, MOVE_U
-            };
-
-            auto isalnum = [](u8 c) {
-                return ('0' <= c and c <= '9') or ('a' <= c and c <= 'z') or ('A' <= c and c <= 'Z');
-            };
-            auto reset_selection = [entry](bool shift) {
-                if (shift) {
-                    entry->selection = entry->selection == -1 ? entry->cursor : entry->selection;
-                } else {
-                    entry->selection = -1;
-                }
-                
-            };
-            auto move_r = [entry, &isalnum, &reset_selection](u8 mode, bool shift) {
-                reset_selection(shift);
-                
-                while (entry->cursor < entry->text.size) {
-                    if (entry->text[entry->cursor] == '\n') {
-                        if (mode == LINE) break;
-                        entry->cursor_col = -1;
-                        ++entry->cursor_row;
-                    }
-                    do {
-                        ++entry->cursor_col; ++entry->cursor;
-                    } while (entry->cursor < entry->text.size and (entry->text[entry->cursor] >> 6) == 2);
-                    if (mode == SINGLE) break;
-                    if (mode == WORD and entry->cursor < entry->text.size and isalnum(entry->text[entry->cursor-1])
-                        and not isalnum(entry->text[entry->cursor])) break;
-                }
-            };
-            auto move_l = [entry, &isalnum, &reset_selection](u8 mode, bool shift) {
-                reset_selection(shift);
-                
-                while (entry->cursor > 0) {
-                    if (mode == LINE and entry->text[entry->cursor-1] == '\n') break;
-                    
-                    do {
-                        --entry->cursor_col; --entry->cursor;
-                    } while (entry->cursor < entry->text.size and (entry->text[entry->cursor] >> 6) == 2);
-                    
-                    if (entry->text[entry->cursor] == '\n') {
-                        assert(entry->cursor_col < 0);
-                        --entry->cursor_row;
-                    }
-                    if (mode == SINGLE) break;
-                    if (mode == WORD and entry->cursor > 0 and not isalnum(entry->text[entry->cursor-1])
-                        and isalnum(entry->text[entry->cursor])) break;
-                }
-                if (entry->cursor_col < 0) {
-                    entry->cursor_col = 0;
-                    while (true) {
-                        if (entry->cursor - entry->cursor_col - 1 < 0) break;
-                        if (entry->text[entry->cursor - entry->cursor_col - 1] == '\n') break;
-                        ++entry->cursor_col;
-                    }
-                }
-            };
-            
-            auto get_width = [context, entry]() {
-                s64 width = 0;
-                for (s64 c_i = entry->cursor - entry->cursor_col; c_i < entry->cursor;) {
-                    s64 c_len = _decode_utf8(array_subarray(entry->text, c_i, entry->text.size));
-                    Text_box box;
-                    lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, array_subarray(entry->text, c_i, c_i+c_len), &box);
-                    width += (s64)std::round(box.advance);
-                    c_i += c_len;
-                }
-                return width;
-            };
-            auto move_width = [context, entry](s64 width) {
-                while (entry->cursor < entry->text.size and width > 0) {
-                    if (entry->text[entry->cursor] == '\n') break;
-                    
-                    s64 c_len = _decode_utf8(array_subarray(entry->text, entry->cursor, entry->text.size));
-                    Text_box box;
-                    auto c_arr = array_subarray(entry->text, entry->cursor, entry->cursor+c_len);
-                    lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, c_arr, &box);
-                    s64 advance = (s64)std::round(box.advance);
-
-                    if (advance >= 2 * width) break;
-
-                    entry->cursor += c_len;
-                    entry->cursor_col += c_len;
-                    width -= advance;
-                }
-            };
-            
-            auto move_d = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
-                assert(amount >= 0);
-                reset_selection(shift);
-
-                s64 width = get_width();
-                
-                while (entry->cursor < entry->text.size and amount > 0) {
-                    if (entry->text[entry->cursor] == '\n') {
-                        --amount;
-                        ++entry->cursor_row;
-                        entry->cursor_col = -1;
-                    }
-                    ++entry->cursor;
-                    ++entry->cursor_col;
-                }
-                
-                move_width(width);
-            };
-            auto move_u = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
-                assert(amount >= 0);
-                reset_selection(shift);
-
-                s64 width = get_width();
-
-                while (entry->cursor > 0 and amount > 0) {
-                    --entry->cursor;
-                    
-                    if (entry->text[entry->cursor] == '\n') {
-                        --amount;
-                        --entry->cursor_row;
-                    }
-                }
-                while (entry->cursor > 0 and entry->text[entry->cursor-1] != '\n') {
-                    --entry->cursor;
-                }
-                entry->cursor_col = 0;
-                if (amount > 0) return;
-
-                move_width(width);
-            };
-            auto del = [entry, move_l, move_r, move_d, move_u](u8 dir, u8 mode) {
-                s64 i = entry->cursor;
-                s64 i_row = entry->cursor_row;
-                s64 i_col = entry->cursor_col;
-
-                s64 j;
-                if (entry->selection != -1) {
-                    j = entry->selection;
-                    entry->selection = -1;
-                } else {
-                    if      (dir == MOVE_L) move_l(mode, false);
-                    else if (dir == MOVE_R) move_r(mode, false);
-                    else if (dir == MOVE_D) move_d(1, false);
-                    else if (dir == MOVE_U) move_u(1, false);
-                    else assert(false);
-                    j = entry->cursor;
-                }
-
-                if (i < j) {
-                    entry->cursor = i;
-                    entry->cursor_row = i_row;
-                    entry->cursor_col = i_col;
-                } else {
-                    std::swap(i, j);
-                }
-
-                memmove(entry->text.data + i, entry->text.data + j, entry->text.size - j);
-                entry->text.size -= j - i;
-            };
-
-            bool consumed = true;
-            if (key.type == Key::SPECIAL) {
-                if (key.special == Key::ARROW_R) {
-                    move_r(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
-                } else if (key.special == Key::ARROW_L) {
-                    move_l(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
-                } else if (key.special == Key::ARROW_D and (~key.flags & Key::MOD_CTRL)) {
-                    move_d(1, key.flags & Key::MOD_SHIFT);
-                } else if (key.special == Key::ARROW_U and (~key.flags & Key::MOD_CTRL)) {
-                    move_u(1, key.flags & Key::MOD_SHIFT);
-                } else if (key.special == Key::HOME) {
-                    move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
-                } else if (key.special == Key::END) {
-                    move_r(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
-                } else if (key.special == Key::DELETE) {
-                    del(MOVE_R, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
-                } else if (key.special == Key::BACKSPACE) {
-                    del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
-                } else {
-                    consumed = false;
-                }
-            } else if (key.type == Key::TEXT) {
-                s64 len = (u64)strlen((char*)key.text);
-                s64 i = entry->cursor;
-                array_reserve(&entry->text, entry->text.size + len);
-                memmove(entry->text.data + i + len, entry->text.data + i, entry->text.size - i);
-                memcpy(entry->text.data + i, key.text, len);
-                entry->text.size += len;
-                entry->cursor += len;
-                entry->cursor_col += len;
-            }
-
-            if (consumed) {
-                // Adjust offset, to put cursor in view
-                s64 width = get_width();
-                if (width < entry->offset_x) {
-                    entry->offset_x = width;
-                } else if (width > entry->offset_x + entry->draw_w) {
-                    entry->offset_x = width - entry->draw_w;
-                }
-                s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_SANS].newline);
-                s64 height = entry->cursor_row * line;
-                if (height < entry->offset_y) {
-                    entry->offset_y = height;
-                } else if (height + line > entry->offset_y + entry->draw_h) {
-                    entry->offset_y = height+line - entry->draw_h;
-                }
-
-                // Reset blinking cycle
-                context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
-                context->cursor_blinked = false;
-
-                //printf("text=%p,%lld cursor=%lld,%lld,%lld offset=%lld,%lld draw=%lld,%lld selection=%lld slot=%lld cursor_draw=%d\n", entry->text.data, entry->text.size, entry->cursor, entry->cursor_row, entry->cursor_col, entry->offset_x, entry->offset_y, entry->draw_w, entry->draw_h, entry->selection, entry->slot, (int)entry->cursor_draw);
-            }
-
+            bool consumed = _platform_process_key_entry(context, entry, key);
             if (consumed) continue;
         }
         
@@ -1664,24 +1724,24 @@ void _platform_render(Platform_state* platform) {
     context->input_queue.size = 0;
 
     // Figure out mouse cursor
-    bool cursor_is_text = false;
-    for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
-        if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
-        if (in_rect(context->elem_bb[slot], context->pointer_x, context->pointer_y)) {
-            context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
-            if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
-                cursor_is_text = true;
-            }
-        } else {
-            context->elem_flags[slot] &= ~Lui_context::DRAW_ACTIVE;
-            // This is a bit hacky. Due to the way we only get the correct flags after drawing once,
-            // we run the risk of resetting the initial radiobutton selection here.
-            if (context->elem_flags[slot] & (Lui_context::DRAW_BUTTON | Lui_context::DRAW_ENTRY)) {
-                context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
-            }
-        }
-    }
-    platform_set_cursor(cursor_is_text);
+    //bool cursor_is_text = false;
+    //for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
+    //    if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
+    //    if (in_rect(context->elem_bb[slot], context->pointer_x, context->pointer_y)) {
+    //        context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
+    //        if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
+    //            cursor_is_text = true;
+    //        }
+    //    } else {
+    //        context->elem_flags[slot] &= ~Lui_context::DRAW_ACTIVE;
+    //        // This is a bit hacky. Due to the way we only get the correct flags after drawing once,
+    //        // we run the risk of resetting the initial radiobutton selection here.
+    //        if (context->elem_flags[slot] & (Lui_context::DRAW_BUTTON | Lui_context::DRAW_ENTRY)) {
+    //            context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
+    //        }
+    //    }
+    //}
+    //platform_set_cursor(cursor_is_text);
 
     // Decide whether and where to draw the text cursor, normalise text entry data
     bool cursor_blinking = false;
@@ -1842,6 +1902,7 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     case XK_F10:          special = Key::F10;    break;
     case XK_F11:          special = Key::F11;    break;
     case XK_F12:          special = Key::F12;    break;
+    case XK_Return:       special = Key::RETURN; break;
     case XK_Left:         special = Key::ARROW_L;   mod = e.state & shiftctrl; break;
     case XK_Right:        special = Key::ARROW_R;   mod = e.state & shiftctrl; break;
     case XK_Down:         special = Key::ARROW_D;   mod = e.state & shiftctrl; break;
@@ -2132,6 +2193,13 @@ int main(int argc, char** argv) {
                 platform_redraw(0);
             }
             break;
+        case MotionNotify: {
+            global_platform.gl_context.pointer_x = event.xmotion.x;
+            global_platform.gl_context.pointer_y = event.xmotion.y;
+            Key key = Key::create_mouse(Key::MOTION, event.xmotion.x, event.xmotion.y);
+            array_push_back(&global_platform.gl_context.input_queue, key);
+            platform_redraw(0);
+        } break;
         case MappingNotify:
             if (event.xmapping.request == MappingModifier or event.xmapping.request == MappingKeyboard) {
                 XRefreshKeyboardMapping(&event.xmapping);
@@ -2145,11 +2213,6 @@ int main(int argc, char** argv) {
             break;
         case ConfigureNotify:
             _platform_handle_resize(event.xconfigure.width, event.xconfigure.height);
-            break;
-        case MotionNotify:
-            global_platform.gl_context.pointer_x = event.xmotion.x;
-            global_platform.gl_context.pointer_y = event.xmotion.y;
-            platform_redraw(0);
             break;
         default:
             break;
