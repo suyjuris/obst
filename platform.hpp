@@ -27,7 +27,7 @@ struct Key {
     u8 type = Key::NONE;
     union {
         u8 text[15];
-        struct { u8 special; u8 flags; };
+        struct { u8 special; u8 flags; s64 data; };
         s32 mouse[3];
     };
 
@@ -39,12 +39,13 @@ struct Key {
         result.text[text_.size] = 0;
         return result;
     }
-    static Key create_special(u8 special, u8 flags) {
+    static Key create_special(u8 special, u8 flags, s32 data = -1) {
         assert(special != INVALID and special < SPECIAL_COUNT);
         Key result;
         result.type = Key::SPECIAL;
         result.special = special;
         result.flags = flags;
+        result.data = data;
         return result;
     }
     static Key create_mouse(u8 action, s64 x, s64 y) {

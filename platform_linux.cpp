@@ -263,15 +263,23 @@ struct Lui_context {
     // Input state
     s64 pointer_x, pointer_y;
     Array_dyn<Key> input_queue;
+    s64 drag_el = -1;
 
     // Main loop flag
     bool main_loop_active = false;
 };
 
+namespace Platform_clipboard {
+enum Types: u8 {
+    CONTROL_C, MIDDLE_BUTTON, COUNT
+};
+}
+
 struct Platform_state {
     Display* display = nullptr;
     Window window;
     GLXWindow window_glx;
+    Atom sel_primary, sel_clipboard, sel_target, sel_utf8str, sel_string, sel_incr;
 
     bool cursor_is_text = false;
     Cursor cursor_text;
@@ -281,6 +289,9 @@ struct Platform_state {
     double redraw_next = -1;
     double redraw_last = 0.f;
     s64 rate = -1;
+
+    Array_dyn<u8> clipboard_recv;
+    Array_dyn<u8> clipboard_send[Platform_clipboard::COUNT] = {};
 };
 Platform_state global_platform;
 
@@ -294,7 +305,11 @@ void platform_ui_context_set(Array_t<u8> text, int frame, int frame_max) {}
 void platform_mouse_position(float* out_x, float* out_y) {}
 void platform_ui_button_help () {}
 void platform_operations_enable(u32 bdd) {}
+Array_t<u8> platform_clipboard_get(s64 index);
+void platform_clipboard_free(s64 index);
+void platform_clipboard_set(u8 type, Array_t<u8> data);
 
+    
 void platform_main_loop_active(bool active) {
     global_platform.gl_context.main_loop_active = active;
 }
@@ -854,11 +869,13 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
             box.x0 += x; box.x1 += x; box.y0 += y; box.y1 += y;
 
             if (sel0 <= c_i and c_i < sel1) {
+                float y0 = y - font_inst.ascent - 0.5*(font_inst.newline - font_inst.ascent);
                 float rx0 = std::max(tx, x);
-                float ry0 = y - font_inst.ascent - 0.5*(font_inst.newline - font_inst.ascent);
+                float ry0 = std::max(ty, y0);
                 float rx1 = std::min(tx + tw, x + (entry.text[c_i] == '\n' ? font_inst.space : box.advance));
-                if (rx0 < rx1) {
-                    lui_draw_rect(context, rx0, ry0, rx1 - rx0, font_inst.newline, Lui_context::LAYER_MIDDLE, sel_b);
+                float ry1 = std::min(ty + th, y0 + font_inst.newline);
+                if (rx0 < rx1 and ry0 < ry1) {
+                    lui_draw_rect(context, rx0, ry0, rx1 - rx0, ry1 - ry0, Lui_context::LAYER_MIDDLE, sel_b);
                 }
             }
             
@@ -1418,47 +1435,41 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             width -= advance;
         }
     };
-    
-    auto move_d = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
-        assert(amount >= 0);
-        reset_selection(shift);
 
-        s64 width = get_width();
-        
-        while (entry->cursor < entry->text.size and amount > 0) {
-            if (entry->text[entry->cursor] == '\n') {
-                --amount;
-                ++entry->cursor_row;
-                entry->cursor_col = -1;
+    auto move_row = [context, entry](s64 amount) {
+        if (amount > 0) {
+            while (entry->cursor < entry->text.size and amount > 0) {
+                if (entry->text[entry->cursor] == '\n') {
+                    --amount;
+                    ++entry->cursor_row;
+                    entry->cursor_col = -1;
+                }
+                ++entry->cursor;
+                ++entry->cursor_col;
             }
-            ++entry->cursor;
-            ++entry->cursor_col;
-        }
-        
-        move_width(width);
-    };
-    auto move_u = [context, entry, &get_width, &move_width, &reset_selection](s64 amount, bool shift) {
-        assert(amount >= 0);
-        reset_selection(shift);
-
-        s64 width = get_width();
-
-        while (entry->cursor > 0 and amount > 0) {
-            --entry->cursor;
+        } else if (amount < 0) {
+            amount = -amount;
+            while (entry->cursor > 0 and amount > 0) {
+                --entry->cursor;
             
-            if (entry->text[entry->cursor] == '\n') {
-                --amount;
-                --entry->cursor_row;
+                if (entry->text[entry->cursor] == '\n') {
+                    --amount;
+                    --entry->cursor_row;
+                }
             }
+            while (entry->cursor > 0 and entry->text[entry->cursor-1] != '\n') {
+                --entry->cursor;
+            }
+            entry->cursor_col = 0;
         }
-        while (entry->cursor > 0 and entry->text[entry->cursor-1] != '\n') {
-            --entry->cursor;
-        }
-        entry->cursor_col = 0;
-        if (amount > 0) return;
-
-        move_width(width);
+        return amount == 0;
+    };    
+    auto move_du = [context, entry, &get_width, &move_row, &move_width, &reset_selection](s64 amount, bool shift) {
+        reset_selection(shift);
+        s64 width = get_width();
+        if (move_row(amount)) move_width(width);
     };
+    
     auto del = [entry, move_l, move_r](u8 dir, u8 mode) {
         s64 i = entry->cursor;
         s64 i_row = entry->cursor_row;
@@ -1487,7 +1498,11 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
         memmove(entry->text.data + i, entry->text.data + j, entry->text.size - j);
         entry->text.size -= j - i;
     };
-    auto ins = [entry](Array_t<u8> text) {
+    auto ins = [entry, del](Array_t<u8> text) {
+        if (entry->selection != -1) {
+            del(0, 0);
+        }
+        
         s64 i = entry->cursor;
         array_reserve(&entry->text, entry->text.size + text.size);
         memmove(entry->text.data + i + text.size, entry->text.data + i, entry->text.size - i);
@@ -1510,9 +1525,9 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
         } else if (key.special == Key::ARROW_L) {
             move_l(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
         } else if (key.special == Key::ARROW_D and (~key.flags & Key::MOD_CTRL)) {
-            move_d(1, key.flags & Key::MOD_SHIFT);
+            move_du( 1, key.flags & Key::MOD_SHIFT);
         } else if (key.special == Key::ARROW_U and (~key.flags & Key::MOD_CTRL)) {
-            move_u(1, key.flags & Key::MOD_SHIFT);
+            move_du(-1, key.flags & Key::MOD_SHIFT);
         } else if (key.special == Key::HOME) {
             move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
         } else if (key.special == Key::END) {
@@ -1523,6 +1538,13 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
         } else if (key.special == Key::RETURN) {
             ins({(u8*)"\n", 1});
+        } else if (key.special == Key::C_PASTE) {
+            ins(platform_clipboard_get(key.data));
+            platform_clipboard_free(key.data);
+        } else if (key.special == Key::C_COPY and entry->selection != -1) {
+            s64 i = entry->cursor, j = entry->selection;
+            if (i > j) std::swap(i, j);
+            platform_clipboard_set(Platform_clipboard::CONTROL_C, array_subarray(entry->text, i, j));
         } else {
             consumed = false;
         }
@@ -1532,22 +1554,35 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
         u8 action; s64 x, y;
         key.get_mouse_param(&action, &x, &y);
 
+        bool shift;
         if (action == Key::LEFT_DOWN) {
+            shift = false;
+        } else if (action == Key::MOTION and context->drag_el == entry->slot) {
+            shift = true;
+        } else {
+            consumed = false;
+        }
+
+        if (action == Key::LEFT_UP and context->drag_el == entry->slot) {
+            // Note that we receive this event even if the cursor is not over the entry
+            s64 i = entry->cursor, j = entry->selection;
+            if (i > j) std::swap(i, j);
+            platform_clipboard_set(Platform_clipboard::MIDDLE_BUTTON, array_subarray(entry->text, i, j));
+        }
+
+        if (consumed) {
             Rect bb = context->elem_bb[entry->slot];
             Padding pad = context->padding_entry;
             auto font_inst = context->fonts[Lui_context::FONT_LUI_SANS];
-            
+                
             s64 tx = x - bb.x - pad.mar_x - pad.pad_x + entry->offset_x;
             s64 ty = y - bb.y - pad.mar_y - pad.pad_y + entry->offset_y;
             s64 row = (s64)std::floor(ty / font_inst.newline);
-            
+
+            reset_selection(shift);
             entry->cursor -= entry->cursor_col;
             entry->cursor_col = 0;
-            if (entry->cursor_row < row) {
-                move_d(row - entry->cursor_row, false);
-            } else if (entry->cursor_row > row) {
-                move_u(entry->cursor_row - row, false);
-            }
+            move_row(row - entry->cursor_row);
             move_width(tx);
         }
     }
@@ -1625,6 +1660,8 @@ void _platform_render(Platform_state* platform) {
                     }
                     continue;
                 }
+
+                if (consumed) continue;
                 
                 if (action == Key::LEFT_DOWN) {
                     context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
@@ -1632,6 +1669,7 @@ void _platform_render(Platform_state* platform) {
                     context->elem_tabindex = slot;
                     context->elem_flags[slot] |= Lui_context::DRAW_PRESSED;
                     context->elem_flags[slot] |= Lui_context::DRAW_FOCUSED;
+                    context->drag_el = slot;
 
                     if (context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
                         for (s64 slot_j = slot-1; context->elem_flags[slot_j] & Lui_context::DRAW_RADIO; --slot_j)
@@ -1648,17 +1686,26 @@ void _platform_render(Platform_state* platform) {
                         context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
                     }
                 } else if (action == Key::MOTION) {
+                    if (context->drag_el == slot and (context->elem_flags[slot] & Lui_context::DRAW_BUTTON)) {
+                        context->elem_flags[slot] |= Lui_context::DRAW_PRESSED;
+                    }
+                    
                     context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
                     if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
                         cursor_is_text = true;
+                        _platform_process_key_entry(context, get_entry(slot), key);
                     }
                 }
                 
                 consumed = true;
-                break;
             }
             if (action == Key::MOTION) {
                 platform_set_cursor(cursor_is_text);
+            } else if (action == Key::LEFT_UP) {
+                if (context->drag_el != -1 and context->elem_flags[context->drag_el] & Lui_context::DRAW_ENTRY) {
+                    _platform_process_key_entry(context, get_entry(context->drag_el), key);
+                }
+                context->drag_el = -1;
             }
 
             if (not consumed and action == Key::LEFT_DOWN) {
@@ -1988,6 +2035,88 @@ void linux_set_wm_class(Display* display, Window window, int argc, char** argv) 
     linux_set_wm_prop(display, window, "WM_CLASS", buf);
 }
 
+Array_t<u8> platform_clipboard_get(s64 index) {
+    s64 size = *(s64*)&global_platform.clipboard_recv[index];
+    index += sizeof(s64);
+    return array_subarray(global_platform.clipboard_recv, index, index+size);
+}
+void platform_clipboard_free(s64 index) {
+    auto arr = platform_clipboard_get(index);
+    if (arr.end() == global_platform.clipboard_recv.end()) {
+        global_platform.clipboard_recv.size = 0;
+    }
+}
+void platform_clipboard_set(u8 type, Array_t<u8> data) {
+    assert(type <= Platform_clipboard::COUNT);
+    global_platform.clipboard_send[type].size = 0;
+    array_append(&global_platform.clipboard_send[type], data);
+    auto type_x = type == Platform_clipboard::CONTROL_C ? global_platform.sel_clipboard : global_platform.sel_primary;
+    XSetSelectionOwner(global_platform.display, type_x, global_platform.window, CurrentTime);
+}
+void linux_handle_selection_request(Platform_state* platform, XSelectionRequestEvent* ev) {
+    XSelectionEvent ev_out;
+    ev_out.type = SelectionNotify;
+    ev_out.requestor = ev->requestor;
+    ev_out.selection = ev->selection;
+    ev_out.target    = ev->target;
+    ev_out.time      = ev->time;
+
+    if (ev->target == platform->sel_utf8str or ev->target == platform->sel_string) {
+        Atom property = ev->property;
+        if (property == None) {
+            property = ev->target;
+        }
+
+        u8 sel_type = ev->selection == platform->sel_primary ? Platform_clipboard::MIDDLE_BUTTON : Platform_clipboard::CONTROL_C;
+        auto buf = platform->clipboard_send[sel_type];
+        XChangeProperty(platform->display, ev->requestor, property, ev->target, 8, PropModeReplace, buf.data, buf.size);
+        
+        ev_out.property = property;
+    } else {
+        ev_out.property = None;
+    }
+
+    XSendEvent(platform->display, ev_out.requestor, false, 0, (XEvent*)&ev_out);
+}
+    
+void linux_handle_selection_response(Platform_state* platform, XSelectionEvent* ev) {
+    if (ev->property == None) {
+        // Try to fall back to STRING type
+        XConvertSelection(platform->display, ev->selection, platform->sel_target, platform->sel_string, platform->window, ev->time);
+    } else {
+        Atom actual_type;
+        int actual_format;
+        unsigned long n_items, bytes_after;
+        u8* prop;
+        XGetWindowProperty(platform->display, platform->window, platform->sel_target, 0, -1, 0,
+            AnyPropertyType, &actual_type, &actual_format, &n_items, &bytes_after, &prop);
+
+        if (actual_type == platform->sel_incr) {
+            fprintf(stderr, "Warning: Received clipboard of type INCR, which obst does not implement.\n");
+            return;
+        } else if (actual_type == None or actual_format != 8) {
+            return;
+        }
+        
+        s64 index = global_platform.clipboard_recv.size;
+        s64 n_items_ = n_items;
+        array_append(&global_platform.clipboard_recv, {(u8*)&n_items_, sizeof(s64)});
+        array_append(&global_platform.clipboard_recv, {prop, (s64)n_items});
+
+        XFree(prop);
+        XDeleteProperty(platform->display, platform->window, platform->sel_target);
+
+        if (ev->selection == platform->sel_primary) {
+            Key key1 = Key::create_mouse(Key::LEFT_DOWN, platform->gl_context.pointer_x, platform->gl_context.pointer_y);
+            Key key2 = Key::create_mouse(Key::LEFT_UP,   platform->gl_context.pointer_x, platform->gl_context.pointer_y);
+            array_append(&global_platform.gl_context.input_queue, {key1, key2});
+        }
+        
+        Key key = Key::create_special(Key::C_PASTE, 0, index);
+        array_push_back(&global_platform.gl_context.input_queue, key);
+    }
+}
+
 int main(int argc, char** argv) {
     // Do the OpenGL and X dance. I would recommend everyone to not read this code, if at all
     // possible, to preserve sanity. This should have been a single function call. If you must,
@@ -2103,11 +2232,24 @@ int main(int argc, char** argv) {
 
     // Initialise cursor
     global_platform.cursor_text = XCreateFontCursor(display, 152);
+
+    // Query some atom we will later need for the clipboard
+    Atom sel_primary   = XInternAtom(display, "PRIMARY", true);
+    Atom sel_clipboard = XInternAtom(display, "CLIPBOARD", true);
+    Atom sel_utf8str   = XInternAtom(display, "UTF8_STRING", true);
+    Atom sel_string    = XInternAtom(display, "STRING", true);
+    Atom sel_target    = XInternAtom(display, "SELECTION_TARGET", false); // This one is arbitrary
+    Atom sel_incr      = XInternAtom(display, "INCR", true);
+    global_platform.sel_primary   = sel_primary;
+    global_platform.sel_clipboard = sel_clipboard;
+    global_platform.sel_utf8str   = sel_utf8str;
+    global_platform.sel_string    = sel_string;
+    global_platform.sel_target    = sel_target;
+    global_platform.sel_incr      = sel_incr;
     
+    // Map the context to the window
     GLXWindow window_glx = glXCreateWindow(display, *config, window, nullptr);
     global_platform.window_glx = window_glx;
-
-    // Map the context to the window
     glXMakeContextCurrent(display, window_glx, window_glx, context); // This returns a bool, but I cannot find what it means in the spec, so just ignore it. The greatness continues.
 
     // Do application-specific initialisation
@@ -2171,10 +2313,17 @@ int main(int argc, char** argv) {
         case Expose:
             platform_redraw(0);
             break;
-        case KeyPress:
-            linux_get_event_key(&global_platform.gl_context.input_queue, event.xkey);
-            platform_redraw(0);
-            break;
+        case KeyPress: {
+            auto* iq = &global_platform.gl_context.input_queue;
+            linux_get_event_key(iq, event.xkey);
+            if (iq->size and (*iq)[iq->size-1].type == Key::SPECIAL and (*iq)[iq->size-1].special == Key::C_PASTE) {
+                // Query the contents of the clipboard, we need to wait for them to arrive
+                XConvertSelection(display, sel_clipboard, sel_utf8str, sel_target, window, event.xkey.time);
+                --iq->size;
+            } else {
+                platform_redraw(0);
+            }
+        } break;
         case ButtonPress:
             global_platform.gl_context.pointer_x = event.xmotion.x;
             global_platform.gl_context.pointer_y = event.xmotion.y;
@@ -2182,6 +2331,8 @@ int main(int argc, char** argv) {
                 Key key = Key::create_mouse(Key::LEFT_DOWN, event.xbutton.x, event.xbutton.y);
                 array_push_back(&global_platform.gl_context.input_queue, key);
                 platform_redraw(0);
+            } else if (event.xbutton.button == Button2) {
+                XConvertSelection(display, sel_primary, sel_utf8str, sel_target, window, event.xbutton.time);
             }
             break;
         case ButtonRelease:
@@ -2200,6 +2351,15 @@ int main(int argc, char** argv) {
             array_push_back(&global_platform.gl_context.input_queue, key);
             platform_redraw(0);
         } break;
+            
+        case SelectionNotify:
+            linux_handle_selection_response(&global_platform, &event.xselection);
+            platform_redraw(0);
+            break;
+        case SelectionRequest:
+            linux_handle_selection_request(&global_platform, &event.xselectionrequest);
+            break;
+            
         case MappingNotify:
             if (event.xmapping.request == MappingModifier or event.xmapping.request == MappingKeyboard) {
                 XRefreshKeyboardMapping(&event.xmapping);
