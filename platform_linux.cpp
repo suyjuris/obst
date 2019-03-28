@@ -113,9 +113,26 @@ struct Text_box {
     u32 flags = 0; // Same as the spacing flags in Text_fmt::Flags
     
     static_assert(Text_fmt::GROUP_SPACING >> 32 == 0, "32-bit not sufficient or Text_box flags");
-}; //@Cleanup: Move
+};
 struct Text_box_lookup {
     u64 hash = 0; s64 index = -1;
+};
+
+struct Undo_item {
+    enum Type: u8 {
+        NONE, INSERT, DELETE
+    };
+    enum Flags: u8 {
+        COMMITTED = 1, REVERSED = 2, GROUPED = 4
+    };
+    u8 type = 0;
+    u8 flags = 0;
+    union {
+        struct { s64 ins_offset, ins_beg; };
+        struct { s64 del_beg, del_end; };
+    };
+
+    Undo_item(u8 type = 0, u8 flags = 0): type{type}, flags{flags}, ins_offset{}, ins_beg{} {}
 };
 
 struct Text_entry {
@@ -126,6 +143,8 @@ struct Text_entry {
     s64 slot;
     s64 selection, selection_row, selection_col;
     bool cursor_draw;
+    Array_dyn<Undo_item> undo_stack, redo_stack;
+    Array_dyn<u8> undo_data, redo_data;
 };
 
 struct Rect {
@@ -1339,12 +1358,47 @@ void _platform_frame_draw() {
     glDrawArrays(GL_TRIANGLES, 0, context->buf_uitext_pos.size / 2);
 }
 
+// Debug funtionality
+void _print_undo_stack(Array_t<Undo_item> undo_stack, Array_t<u8> undo_data) {
+    for (s64 it = 0; it < undo_stack.size; ++it) {
+        Undo_item i = undo_stack[it];
+        if (i.type == Undo_item::INSERT) {
+            printf("%2lld ins ins_beg=%lld ins_off=%lld flags=", it, i.ins_beg, i.ins_offset);
+            bool sep = false;
+            if (i.flags & Undo_item::COMMITTED) {printf("%scom", sep ? "|" : ""); sep = true;}
+            if (i.flags & Undo_item::REVERSED) {printf("%srev", sep ? "|" : ""); sep = true;}
+            if (i.flags & Undo_item::GROUPED) {printf("%sgrp", sep ? "|" : ""); sep = true;}
+            printf(" data=");
+            s64 end = undo_data.size;
+            for (s64 j = it+1; j < undo_stack.size; ++j) {
+                if (undo_stack[j].type == Undo_item::INSERT) {
+                    end = undo_stack[j].ins_offset; break;
+                }
+            }
+            for (u8 c: array_subarray(undo_data, i.ins_offset, end)) printf("%c", (char)c);
+            puts("");
+        } else if (i.type == Undo_item::DELETE) {
+            printf("%2lld del del_beg=%lld del_end=%lld flags=", it, i.del_beg, i.del_end);
+            bool sep = false;
+            if (i.flags & Undo_item::COMMITTED) {printf("com%s", sep ? "|" : ""); sep = true;}
+            if (i.flags & Undo_item::REVERSED) {printf("rev%s", sep ? "|" : ""); sep = true;}
+            if (i.flags & Undo_item::GROUPED) {printf("grp%s", sep ? "|" : ""); sep = true;}
+            puts("");
+        } else {
+            printf("%2lld none\n", it);
+        }
+    }
+};
+
 bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
     enum Move_mode: u8 {
         SINGLE, LINE, WORD, FOREVER
     };
     enum Move_dir: u8 {
         MOVE_R, MOVE_L, MOVE_D, MOVE_U
+    };
+    enum Undo_mode: u8 {
+        USE_REDO_STACK = 1, RETAIN_REDO = 2
     };
 
     auto isalnum = [](u8 c) {
@@ -1464,22 +1518,36 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
         }
         return amount == 0;
     };    
-    auto move_du = [context, entry, &get_width, &move_row, &move_width, &reset_selection](s64 amount, bool shift) {
+    auto move_du = [entry, &get_width, &move_row, &move_width, &reset_selection](s64 amount, bool shift) {
         reset_selection(shift);
         s64 width = get_width();
         if (move_row(amount)) move_width(width);
     };
+    auto move_jump = [entry](s64 i) {
+        entry->cursor_row = 0;
+        entry->cursor_col = 0;
+        entry->selection = -1;
+        for (entry->cursor = 0; entry->cursor < i; ++entry->cursor) {
+            ++entry->cursor_col;
+            if (entry->text[entry->cursor] == '\n') {
+                ++entry->cursor_row;
+                entry->cursor_col = 0;
+            }
+        }
+    };
     
-    auto del = [entry, move_l, move_r](u8 dir, u8 mode) {
+    auto del = [entry, move_l, move_r](u8 dir, u8 mode, u8 undo_mode=0) {
         s64 i = entry->cursor;
         s64 i_row = entry->cursor_row;
         s64 i_col = entry->cursor_col;
+        bool commit = false;
 
         if (entry->selection != -1) {
             entry->cursor = entry->selection;
             entry->cursor_row = entry->selection_row;
             entry->cursor_col = entry->selection_col;
             entry->selection = -1;
+            commit = true;
         } else {
             if      (dir == MOVE_L) move_l(mode, false);
             else if (dir == MOVE_R) move_r(mode, false);
@@ -1491,14 +1559,59 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             entry->cursor = i;
             entry->cursor_row = i_row;
             entry->cursor_col = i_col;
-        } else {
+        } else if (i > j) {
             std::swap(i, j);
+        } else {
+            return;
         }
 
+        if (~undo_mode & RETAIN_REDO) {
+            entry->redo_stack.size = 0;
+            entry->redo_data.size = 0;
+        }
+        auto* undo_stack = ~undo_mode & USE_REDO_STACK ? &entry->undo_stack : &entry->redo_stack;
+        auto* undo_data  = ~undo_mode & USE_REDO_STACK ? &entry->undo_data  : &entry->redo_data;
+            
+        bool consumed_undo = false;
+        if (undo_stack->size) {
+            auto* last = &(*undo_stack)[undo_stack->size-1];
+            bool maybe_update = last->type == Undo_item::INSERT and (~last->flags & Undo_item::COMMITTED);
+            if (maybe_update and last->ins_beg == i and (~last->flags & Undo_item::REVERSED)) {
+                array_append(undo_data, array_subarray(entry->text, i, j));
+                consumed_undo = true;
+            } else if (maybe_update and last->ins_beg == j and (last->flags & Undo_item::REVERSED)) {
+                array_resize(undo_data, undo_data->size + j-i);
+                for (s64 k = 0; k < j-i; ++k) {
+                    (*undo_data)[undo_data->size-1 - k] = entry->text[i + k];
+                }
+                last->ins_beg -= j - i;
+                consumed_undo = true;
+            } else {
+                last->flags |= Undo_item::COMMITTED;
+            }
+        }
+            
+        if (not consumed_undo) {
+            Undo_item undo {Undo_item::INSERT, 0};
+            if (commit) undo.flags |= Undo_item::COMMITTED;
+            undo.ins_beg = i;
+            undo.ins_offset = undo_data->size;
+            if (dir == MOVE_R) {
+                array_append(undo_data, array_subarray(entry->text, i, j));
+            } else {
+                undo.flags |= Undo_item::REVERSED;
+                array_resize(undo_data, undo_data->size + j-i);
+                for (s64 k = 0; k < j-i; ++k) {
+                    (*undo_data)[undo_data->size-1 - k] = entry->text[i + k];
+                }
+            }
+            array_push_back(undo_stack, undo);
+        }
+        
         memmove(entry->text.data + i, entry->text.data + j, entry->text.size - j);
         entry->text.size -= j - i;
     };
-    auto ins = [entry, del](Array_t<u8> text) {
+    auto ins = [entry, del](Array_t<u8> text, u8 undo_mode=0) {
         if (entry->selection != -1) {
             del(0, 0);
         }
@@ -1514,11 +1627,67 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             if (c == '\n') {
                 entry->cursor_col = 0;
                 entry->cursor_row += 1;
+                
             }
         }
-    };
 
+        if (~undo_mode & RETAIN_REDO) {
+            entry->redo_stack.size = 0;
+            entry->redo_data.size = 0;
+        }
+        auto* undo_stack = ~undo_mode & USE_REDO_STACK ? &entry->undo_stack : &entry->redo_stack;
+        auto* undo_data  = ~undo_mode & USE_REDO_STACK ? &entry->undo_data  : &entry->redo_data;
+        
+        s64 s = undo_stack->size;
+        if (s and (*undo_stack)[s-1].type == Undo_item::DELETE
+            and (~(*undo_stack)[s-1].flags & Undo_item::COMMITTED)
+            and (*undo_stack)[s-1].del_end == i)
+        {
+            (*undo_stack)[s-1].del_end += text.size;
+        } else {
+            if (s) {
+                (*undo_stack)[s-1].flags |= Undo_item::COMMITTED;
+            }
+            Undo_item undo {Undo_item::DELETE, 0};
+            undo.del_beg = i;
+            undo.del_end = i + text.size;
+            array_push_back(undo_stack, undo);
+        }
+    };
+    
+    auto undo_or_redo = [entry, move_jump, ins, del](bool undo) {
+        auto* undo_stack = undo ? &entry->undo_stack : &entry->redo_stack;
+        auto* undo_data  = undo ? &entry->undo_data  : &entry->redo_data;
+        u8 undo_mode = undo ? USE_REDO_STACK : 0;
+        
+        if (undo_stack->size == 0) return;
+
+        (*undo_stack)[undo_stack->size-1].flags |= Undo_item::COMMITTED;
+
+        Undo_item i = (*undo_stack)[undo_stack->size - 1];
+        if (i.type == Undo_item::INSERT) {
+            auto arr = array_subarray(*undo_data, i.ins_offset, undo_data->size);
+            if (i.flags & Undo_item::REVERSED) {
+                for (s64 k = 0; 2*k < arr.size; ++k) {
+                    std::swap(arr[k], arr[arr.size-1 - k]);
+                }
+            }
+            move_jump(i.ins_beg);
+            ins(arr, undo_mode | RETAIN_REDO);
+            undo_data->size = i.ins_offset;
+            --undo_stack->size;
+        } else if (i.type == Undo_item::DELETE) {
+            move_jump(i.del_beg);
+            entry->selection = i.del_end; // Note: selection_row and _col are irrelevant here, leave them
+            del(0, 0, undo_mode | RETAIN_REDO);
+            --undo_stack->size;
+        } else {
+            assert(false);
+        }
+    };
+    
     bool consumed = true;
+    bool commit = true;
     if (key.type == Key::SPECIAL) {
         if (key.special == Key::ARROW_R) {
             move_r(key.flags & Key::MOD_CTRL ? WORD : SINGLE, key.flags & Key::MOD_SHIFT);
@@ -1532,12 +1701,15 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             move_l(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
         } else if (key.special == Key::END) {
             move_r(key.flags & Key::MOD_CTRL ? FOREVER : LINE, key.flags & Key::MOD_SHIFT);
+
         } else if (key.special == Key::DELETE) {
-            del(MOVE_R, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+            del(MOVE_R, key.flags & Key::MOD_CTRL ? WORD : SINGLE); commit = false;
         } else if (key.special == Key::BACKSPACE) {
-            del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE);
+            del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE); commit = false;
+
         } else if (key.special == Key::RETURN) {
-            ins({(u8*)"\n", 1});
+            ins({(u8*)"\n", 1}); commit = false;
+
         } else if (key.special == Key::C_PASTE) {
             ins(platform_clipboard_get(key.data));
             platform_clipboard_free(key.data);
@@ -1545,11 +1717,27 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             s64 i = entry->cursor, j = entry->selection;
             if (i > j) std::swap(i, j);
             platform_clipboard_set(Platform_clipboard::CONTROL_C, array_subarray(entry->text, i, j));
+        } else if (key.special == Key::C_CUT and entry->selection != -1) {
+            s64 i = entry->cursor, j = entry->selection;
+            if (i > j) std::swap(i, j);
+            platform_clipboard_set(Platform_clipboard::CONTROL_C, array_subarray(entry->text, i, j));
+            del(0, 0);
+            
+        } else if (key.special == Key::C_SELECTALL) {
+            move_jump(0);
+            // Note that selection_row and _col are only relevant when the selection is before the cursor
+            entry->selection = entry->text.size;
+        } else if (key.special == Key::C_UNDO) {
+            undo_or_redo(true); commit = false;
+        } else if (key.special == Key::C_REDO) {
+            undo_or_redo(false); commit = false;
+            
         } else {
             consumed = false;
         }
+        
     } else if (key.type == Key::TEXT) {
-        ins({(u8*)key.text, (s64)strlen((char*)key.text)});
+        ins({(u8*)key.text, (s64)strlen((char*)key.text)}); commit = false;
     } else if (key.type == Key::MOUSE) {
         u8 action; s64 x, y;
         key.get_mouse_param(&action, &x, &y);
@@ -1563,7 +1751,7 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
             consumed = false;
         }
 
-        if (action == Key::LEFT_UP and context->drag_el == entry->slot) {
+        if (action == Key::LEFT_UP and context->drag_el == entry->slot and entry->selection != -1) {
             // Note that we receive this event even if the cursor is not over the entry
             s64 i = entry->cursor, j = entry->selection;
             if (i > j) std::swap(i, j);
@@ -1587,6 +1775,10 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
         }
     }
 
+    if (commit and entry->undo_stack.size) {
+        entry->undo_stack[entry->undo_stack.size-1].flags |= Undo_item::COMMITTED;
+    }
+    
     if (consumed) {
         // Adjust offset, to put cursor in view
         s64 width = get_width();
@@ -1608,6 +1800,11 @@ bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key ke
         context->cursor_blinked = false;
 
         //printf("text=%p,%lld cursor=%lld,%lld,%lld offset=%lld,%lld draw=%lld,%lld selection=%lld,%lld,%lld slot=%lld cursor_draw=%d\n", entry->text.data, entry->text.size, entry->cursor, entry->cursor_row, entry->cursor_col, entry->offset_x, entry->offset_y, entry->draw_w, entry->draw_h, entry->selection, entry->selection_row, entry->selection_col, entry->slot, (int)entry->cursor_draw);
+        //printf("-- undo\n");
+        //print_undo_stack(entry->undo_stack, entry->undo_data);
+        //printf("-- redo\n");
+        //print_undo_stack(entry->redo_stack, entry->redo_data);
+        //puts("");
     }
 
     return consumed;
@@ -1961,6 +2158,7 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     case XK_ISO_Left_Tab: special = Key::SHIFT_TAB;   mod = ShiftMask;   break;
     case XK_c:            special = Key::C_COPY;      mod = ControlMask; break;
     case XK_v:            special = Key::C_PASTE;     mod = ControlMask; break;
+    case XK_x:            special = Key::C_CUT;       mod = ControlMask; break;
     case XK_a:            special = Key::C_SELECTALL; mod = ControlMask; break;
     case XK_q:            special = Key::C_QUIT;      mod = ControlMask; break;
     case XK_s:            special = Key::C_SAVE;      mod = ControlMask; break;
