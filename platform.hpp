@@ -2,7 +2,7 @@
 
 struct Key {
     enum Key_type: u8 {
-        NONE, TEXT, SPECIAL, MOUSE,
+        NONE, TEXT, SPECIAL, MOUSE, GENERAL
     };
     enum Key_special: u8 {
         INVALID, ESCAPE, ARROW_L, ARROW_R, ARROW_D, ARROW_U,
@@ -24,11 +24,16 @@ struct Key {
         LEFT_DOWN, LEFT_UP, MOTION
     };
 
+    enum General_type: u8 {
+        FOCUS_IN, FOCUS_OUT, GENERAL_COUNT
+    };
+
     u8 type = Key::NONE;
     union {
         u8 text[15];
         struct { u8 special; u8 flags; s64 data; };
         s32 mouse[3];
+        u8 general;
     };
 
     static Key create_text(Array_t<char> text_) {
@@ -55,6 +60,13 @@ struct Key {
         result.mouse[0] = (s32)action;
         result.mouse[1] = (s32)x;
         result.mouse[2] = (s32)y;
+        return result;
+    }
+    static Key create_general(u8 general) {
+        assert(general < GENERAL_COUNT);
+        Key result;
+        result.type = Key::GENERAL;
+        result.general = general;
         return result;
     }
 

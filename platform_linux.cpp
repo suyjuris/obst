@@ -283,6 +283,7 @@ struct Lui_context {
     s64 pointer_x, pointer_y;
     Array_dyn<Key> input_queue;
     s64 drag_el = -1;
+    bool window_has_focus = false;
 
     // Main loop flag
     bool main_loop_active = false;
@@ -835,7 +836,7 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
     }
 }
 
-void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u8 font, bool disabled, bool cursor) {
+void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u8 font, bool cursor) {
     auto font_inst = context->fonts[font];
     
     float tx = (float)text_bb.x, ty = (float)text_bb.y, tw = (float)text_bb.w, th = (float)text_bb.h;
@@ -858,8 +859,10 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
     u8 gray1[] = { 20,  20,  20, 255};
     u8 gray2[] = {140, 140, 140, 255};
     u8 sel_f[] = {255, 255, 255, 255};
-    u8 sel_b[] = {140, 140, 140, 255};
-    u8* normal = disabled ? gray2 : gray1;
+    u8 sel_1[] = {140, 140, 140, 255};
+    u8 sel_2[] = {242, 152,  51, 255};
+    u8* normal = context->elem_flags[entry.slot] & Lui_context::DRAW_DISABLED ? gray2 : gray1;
+    u8* sel_b = context->elem_flags[entry.slot] & Lui_context::DRAW_FOCUSED ? sel_2 : sel_1;
     
     while (true) {
         if (y - font_inst.ascent >= ty + th) break;
@@ -1086,7 +1089,7 @@ void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w
     entry->draw_h = text_bb.h;
 
     if (not only_measure) {
-        lui_draw_entry_text(context, *entry, text_bb, font, flags & Lui_context::DRAW_DISABLED, entry->cursor_draw);
+        lui_draw_entry_text(context, *entry, text_bb, font, entry->cursor_draw);
     }
     
     if (x_out) *x_out = bb.x + bb.w;
@@ -1390,7 +1393,7 @@ void _print_undo_stack(Array_t<Undo_item> undo_stack, Array_t<u8> undo_data) {
     }
 };
 
-bool _platform_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
+bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
     enum Move_mode: u8 {
         SINGLE, LINE, WORD, FOREVER
     };
@@ -1835,10 +1838,6 @@ void _platform_render(Platform_state* platform) {
     };
 
     for (Key key: context->input_queue) {
-        if (key.type == Key::SPECIAL and key.special == Key::C_QUIT) {
-            exit(0);
-        }
-
         if (key.type == Key::MOUSE) {
             u8 action; s64 x, y;
             key.get_mouse_param(&action, &x, &y);
@@ -1876,7 +1875,7 @@ void _platform_render(Platform_state* platform) {
                     } else if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
                         context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
                         context->cursor_blinked = false;
-                        _platform_process_key_entry(context, get_entry(slot), key);
+                        _lui_process_key_entry(context, get_entry(slot), key);
                     }
                 } else if (action == Key::LEFT_UP) {
                     if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
@@ -1890,7 +1889,7 @@ void _platform_render(Platform_state* platform) {
                     context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
                     if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
                         cursor_is_text = true;
-                        _platform_process_key_entry(context, get_entry(slot), key);
+                        _lui_process_key_entry(context, get_entry(slot), key);
                     }
                 }
                 
@@ -1900,7 +1899,7 @@ void _platform_render(Platform_state* platform) {
                 platform_set_cursor(cursor_is_text);
             } else if (action == Key::LEFT_UP) {
                 if (context->drag_el != -1 and context->elem_flags[context->drag_el] & Lui_context::DRAW_ENTRY) {
-                    _platform_process_key_entry(context, get_entry(context->drag_el), key);
+                    _lui_process_key_entry(context, get_entry(context->drag_el), key);
                 }
                 context->drag_el = -1;
             }
@@ -1914,7 +1913,10 @@ void _platform_render(Platform_state* platform) {
             if (consumed) continue;
         } else if (key.type == Key::SPECIAL) {
             bool consumed = false;
-            if (key.special == Key::TAB or key.special == Key::SHIFT_TAB) {
+
+            if (key.special == Key::C_QUIT) {
+                exit(0);
+            } else if (key.special == Key::TAB or key.special == Key::SHIFT_TAB) {
                 if (context->elem_focused != 0 or context->elem_tabindex == 0) {
                     context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
                     s64 diff = (key.special == Key::TAB) - (key.special == Key::SHIFT_TAB)  + Lui_context::SLOT_COUNT;
@@ -1928,6 +1930,11 @@ void _platform_render(Platform_state* platform) {
                 }
                 context->elem_focused = context->elem_tabindex;
                 context->elem_flags[context->elem_focused] |= Lui_context::DRAW_FOCUSED;
+
+                if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
+                    _lui_process_key_entry(context, get_entry(context->elem_focused), Key::create_special(Key::C_SELECTALL, 0));
+                }
+                
                 consumed = true;
             }
 
@@ -1955,11 +1962,17 @@ void _platform_render(Platform_state* platform) {
             }
 
             if (consumed) continue;
-        } 
+        } else if (key.type == Key::GENERAL) {
+            if (key.general == Key::FOCUS_IN) {
+                context->window_has_focus = true;
+            } else if (key.general == Key::FOCUS_OUT) {
+                context->window_has_focus = false;
+            }
+        }
 
         if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
             Text_entry* entry = get_entry(context->elem_focused);
-            bool consumed = _platform_process_key_entry(context, entry, key);
+            bool consumed = _lui_process_key_entry(context, entry, key);
             if (consumed) continue;
         }
         
@@ -1967,26 +1980,15 @@ void _platform_render(Platform_state* platform) {
     }
     context->input_queue.size = 0;
 
-    // Figure out mouse cursor
-    //bool cursor_is_text = false;
-    //for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
-    //    if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
-    //    if (in_rect(context->elem_bb[slot], context->pointer_x, context->pointer_y)) {
-    //        context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
-    //        if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
-    //            cursor_is_text = true;
-    //        }
-    //    } else {
-    //        context->elem_flags[slot] &= ~Lui_context::DRAW_ACTIVE;
-    //        // This is a bit hacky. Due to the way we only get the correct flags after drawing once,
-    //        // we run the risk of resetting the initial radiobutton selection here.
-    //        if (context->elem_flags[slot] & (Lui_context::DRAW_BUTTON | Lui_context::DRAW_ENTRY)) {
-    //            context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
-    //        }
-    //    }
-    //}
-    //platform_set_cursor(cursor_is_text);
-
+    // If we are not in focus, draw everything unfocused
+    if (not context->window_has_focus) {
+        for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
+            context->elem_flags[slot] &= ~Lui_context::DRAW_FOCUSED;
+        }
+    } else {
+        context->elem_flags[context->elem_focused] |= Lui_context::DRAW_FOCUSED;
+    }
+    
     // Decide whether and where to draw the text cursor, normalise text entry data
     bool cursor_blinking = false;
     for (Text_entry& entry: context->entries) {
@@ -2000,6 +2002,10 @@ void _platform_render(Platform_state* platform) {
             entry.selection = -1;
         }
     }
+    if (not context->window_has_focus) {
+        cursor_blinking = false;
+    }
+    
     if (cursor_blinking) {
         if (context->cursor_next_blink == INFINITY) {
             context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
@@ -2010,10 +2016,12 @@ void _platform_render(Platform_state* platform) {
             context->cursor_blinked ^= 1;
         }
         platform_redraw(context->cursor_next_blink);
-        get_entry(context->elem_focused)->cursor_draw = not context->cursor_blinked;
     } else {
         context->cursor_next_blink = INFINITY;
         context->cursor_blinked = false;
+    }
+    if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
+        get_entry(context->elem_focused)->cursor_draw = not context->cursor_blinked;
     }
     
     // Now draw the UI
@@ -2040,7 +2048,7 @@ void _platform_render(Platform_state* platform) {
     y += std::round(font_inst.height - font_inst.ascent);
 
     {s64 x_orig = x, ha_line;
-        lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_LABEL_BASE, x, y, -1, &x, &y);
     y -= ha_line;
@@ -2397,7 +2405,7 @@ int main(int argc, char** argv) {
     XSetWindowAttributes window_attrs = {};
     window_attrs.colormap = XCreateColormap(display, DefaultRootWindow(display), visual->visual, AllocNone); // Apparently you need the colormap, else XCreateWindow gives a BadMatch error. No worries, this fact features prominently in the documentation and it was no bother at all.
     window_attrs.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask | ButtonPressMask
-        | ButtonReleaseMask | StructureNotifyMask | PointerMotionMask;
+        | ButtonReleaseMask | StructureNotifyMask | PointerMotionMask | FocusChangeMask;
 
     Window window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, 1300, 800, 0,
         visual->depth, InputOutput, visual->visual, CWColormap | CWEventMask, &window_attrs); // We pass a type of InputOutput explicitly, as visual->c_class is an illegal value for some reason. A good reason, I hope.
@@ -2557,6 +2565,17 @@ int main(int argc, char** argv) {
         case SelectionRequest:
             linux_handle_selection_request(&global_platform, &event.xselectionrequest);
             break;
+
+        case FocusIn: {
+            Key key = Key::create_general(Key::FOCUS_IN);
+            array_push_back(&global_platform.gl_context.input_queue, key);
+            platform_redraw(0);
+        } break;
+        case FocusOut: {
+            Key key = Key::create_general(Key::FOCUS_OUT);
+            array_push_back(&global_platform.gl_context.input_queue, key);
+            platform_redraw(0);
+        } break;
             
         case MappingNotify:
             if (event.xmapping.request == MappingModifier or event.xmapping.request == MappingKeyboard) {
