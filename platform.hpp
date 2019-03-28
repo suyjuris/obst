@@ -93,15 +93,37 @@ void print_key(Key key) {
     }
 }
 
+namespace Text_fmt {
+
+//@Cleanup: Replace NOSPACE with SPACE
+enum Flags: u64 {
+    PARAGRAPH = 1, // Indicates a paragraph break at the end of the item
+    NEWLINE = 2,
+    NOSPACE = 4, // Do not leave a space after the word. Internal flag for lui_text_draw
+    HEADER = 8, // Corresponds to <h4>, draw text as title
+    BOLD = 16,
+    ITALICS = 32,
+    SMALL = 64,
+    SANS = 128,
+    COMPACT = 256,
+    RED = 512,
+    GROUP_SPACING = PARAGRAPH | NEWLINE | NOSPACE,
+};
+enum Slots: s64 {
+    SLOT_CONTEXT, SLOT_CONTEXT_FRAME, SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_ERRORINFO,
+    SLOT_PLATFORM_FIRST
+};
+
+};
 
 // Forward declarations for the application layer
 void platform_ui_error_report(Array_t<u8> msg);
 void platform_ui_error_clear();
 int platform_text_prepare(int size, int w, float* offsets);
-Array_t<u8> platform_ui_get_value(u8 elem);
+Array_t<u8> platform_ui_value_get(u8 elem);
+void platform_ui_value_free(Array_t<u8> data);
 void platform_ui_bddinfo_hide();
 void platform_ui_bddinfo_show(float x, float y, Array_t<u8> text);
-void platform_ui_context_set(Array_t<u8> text, int frame, int frame_max);
 double platform_now();
 void platform_mouse_position(float* out_x, float* out_y);
 void platform_ui_button_help ();
@@ -109,3 +131,17 @@ void platform_operations_enable(u32 bdd);
 void platform_operations_disable();
 void platform_main_loop_active(bool is_active);
 void platform_set_cursor(bool is_text);
+Array_t<u8> platform_clipboard_get(s64 index);
+void platform_clipboard_free(s64 index);
+void platform_clipboard_set(u8 type, Array_t<u8> data);
+
+void platform_fmt_init();
+void platform_fmt_begin(u64 flags);
+void platform_fmt_end(u64 flags);
+void platform_fmt_text(u64 flags, Array_t<u8> text);
+void platform_fmt_text(u64 flags, char const* s);
+void platform_fmt_store(s64 slot);
+void platform_fmt_store_simple(u64 flags, char const* str, s64 slot);
+void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot);
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false);
+

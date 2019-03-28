@@ -245,6 +245,11 @@ void array_printf(Array_dyn<u8>* arr, char const* fmt, Args... args) {
     array_reserve(arr, snprintf(0, 0, fmt, args...)+1);
     arr->size += snprintf((char*)arr->end(), arr->capacity - arr->size, fmt, args...);
 }
+void array_printf(Array_dyn<u8>* arr, char const* str) {
+    assert(arr);
+    array_append(arr, {(u8*)str, (s64)strlen(str) + 1});
+    --arr->size;
+}
 
 // These two functions implement a bitset.
 void bitset_set(Array_t<u64>* bitset, u64 bit, u8 val) {

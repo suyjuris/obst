@@ -122,7 +122,7 @@ EM_JS(char*, _platform_get_radio_value_js, (char* element), {
     stringToUTF8(s, s_, l+1);
     return s_;
 })
-Array_t<u8> platform_ui_get_value(u8 elem) {
+Array_t<u8> platform_ui_value_get(u8 elem) {
     assert(elem < Ui_elem::NAME_COUNT);
     char* s;
     if (elem != Ui_elem::OPERATION) {
@@ -133,6 +133,9 @@ Array_t<u8> platform_ui_get_value(u8 elem) {
         s = _platform_get_radio_value_js(Ui_elem::name[elem]);
     }
     return {(u8*)s, strlen(s)};
+}
+void platform_ui_value_free(Array_t<u8> data) {
+    array_free(&data);
 }
 
 // bddinfo is the hover text telling you what a node is about

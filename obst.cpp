@@ -30,10 +30,10 @@ void ui_error_report(char const* msg, Args... args) {
     );
     ui_error_buf.size += len+1;
 
-    platform_ui_error_report(ui_error_buf);
+    platform_fmt_store_simple(Text_fmt::PARAGRAPH | Text_fmt::RED, ui_error_buf, Text_fmt::SLOT_ERRORINFO);
 }
 void ui_error_report(char const* msg) {
-    platform_ui_error_report({(u8*)msg, (s64)strlen(msg)});
+    platform_fmt_store_simple(Text_fmt::PARAGRAPH | Text_fmt::RED, msg, Text_fmt::SLOT_ERRORINFO);
 }
 
 // These are used for the parser.
@@ -3816,25 +3816,21 @@ void ui_context_refresh() {
     if (frame + 1 >= global_store.snapshots.size) {
         frame = global_store.snapshots.size - 2;
     }
-    
-    global_ui.ui_buf.size = 0;
-    array_append(&global_ui.ui_buf, {(u8*)"<p class=\"spaced\">", 18});
+
+    platform_fmt_init();
+    s64 last = global_store.snapshots[frame].offset_context;
     for (s64 i = global_store.snapshots[frame].offset_context;
-         i+1 < global_store.snapshots[frame+1].offset_context; ++i)
+         i < global_store.snapshots[frame+1].offset_context; ++i)
     {
-        u8 c = global_store.snapshot_data_context[i];
-        if (c == 0) {
-            array_append(&global_ui.ui_buf, {(u8*)"</p><p class=\"spaced\">", 22});
-        } else {
-            array_push_back(&global_ui.ui_buf, c);
+        if (global_store.snapshot_data_context[i] == 0) {
+            platform_fmt_text(Text_fmt::PARAGRAPH, array_subarray(global_store.snapshot_data_context, last, i));
         }
     }
-    array_append(&global_ui.ui_buf, {(u8*)"</p>", 4});
+    platform_fmt_store(Text_fmt::SLOT_CONTEXT);
 
-    array_reserve(&global_ui.ui_buf, 1);
-    *global_ui.ui_buf.end() = 0;
-
-    platform_ui_context_set(global_ui.ui_buf, frame, global_layouts.size-1);
+    global_ui.ui_buf.size = 0;
+    array_printf(&global_ui.ui_buf, "%lld/%lld", frame, global_layouts.size-1);
+    platform_fmt_store_simple(Text_fmt::NOSPACE, global_ui.ui_buf, Text_fmt::SLOT_CONTEXT_FRAME);
 }
 
 // Get all numbers stored by a node
@@ -4110,16 +4106,20 @@ void ui_commit_store() {
     ui_frame_draw();
     
     ui_context_refresh();
-    platform_ui_error_clear();
+    platform_fmt_store_simple(0, "", Text_fmt::SLOT_ERRORINFO);
 }
 
 // Called when the user presses the button responsible for union, intersection and negation.
 void ui_button_op() {
     if (not global_context.not_completely_empty) return;
 
-    Array_t<u8> op_str = platform_ui_get_value(Ui_elem::OPERATION);
-    Array_t<u8> arg0_str = platform_ui_get_value(Ui_elem::OP_NODE0);
-    Array_t<u8> arg1_str = platform_ui_get_value(Ui_elem::OP_NODE1);
+    Array_t<u8> op_str   = platform_ui_value_get(Ui_elem::OPERATION);
+    Array_t<u8> arg0_str = platform_ui_value_get(Ui_elem::OP_NODE0);
+    Array_t<u8> arg1_str = platform_ui_value_get(Ui_elem::OP_NODE1);
+
+    defer { platform_ui_value_free(op_str); };
+    defer { platform_ui_value_free(arg0_str); };
+    defer { platform_ui_value_free(arg1_str); };
     
     assert(op_str.size == 1);
 
@@ -4164,13 +4164,13 @@ void ui_button_op() {
 
 // Callback for the 'Create and add' button
 void ui_button_create() {
-    Array_t<u8> nums_str = platform_ui_get_value(Ui_elem::CREATE_NUMS);
-    Array_t<u8> base_str = platform_ui_get_value(Ui_elem::CREATE_BASE);
-    Array_t<u8> bits_str = platform_ui_get_value(Ui_elem::CREATE_BITS);
+    Array_t<u8> nums_str = platform_ui_value_get(Ui_elem::CREATE_NUMS);
+    Array_t<u8> base_str = platform_ui_value_get(Ui_elem::CREATE_BASE);
+    Array_t<u8> bits_str = platform_ui_value_get(Ui_elem::CREATE_BITS);
 
-    defer { array_free(&nums_str); };
-    defer { array_free(&base_str); };
-    defer { array_free(&bits_str); };
+    defer { platform_ui_value_free(nums_str); };
+    defer { platform_ui_value_free(base_str); };
+    defer { platform_ui_value_free(bits_str); };
     
     s32 base;
     if (u8 code = jup_stoi(base_str, &base, 10)) {
@@ -4244,8 +4244,9 @@ void ui_button_removeall() {
     platform_operations_disable();
 
     ui_frame_draw();
-    platform_ui_context_set({(u8*)"", 0}, 0, 0);
-    platform_ui_error_clear();
+    platform_fmt_store_simple(0, "", Text_fmt::SLOT_CONTEXT);
+    platform_fmt_store_simple(Text_fmt::NOSPACE, "0/0", Text_fmt::SLOT_CONTEXT_FRAME);
+    platform_fmt_store_simple(0, "", Text_fmt::SLOT_ERRORINFO);
 }
 
 // This is called whenever the canvas/window resizes. The new dimensions are already applied in
@@ -4272,7 +4273,6 @@ void application_render() {
         }
     }
 
-    // Smoothstep nonlinearity. Make the transitions a tiny bit more seamless.
     global_ui.frame_cur = (1.f-time_t) * global_ui.frame_begin + time_t * global_ui.frame_end;
 
     ui_frame_draw();

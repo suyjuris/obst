@@ -85,26 +85,6 @@ Array_t<u8> array_load_from_file(char const* path) {
     return array_load_from_file({(u8*)path, (s64)strlen(path)});
 }
 
-namespace Text_fmt {
-
-enum Flags: u64 {
-    PARAGRAPH = 1, // Indicates a paragraph break at the end of the item
-    NEWLINE = 2,
-    NOSPACE = 4, // Do not leave a space after the word. Internal flag for lui_text_draw
-    HEADER = 8, // Corresponds to <h4>, draw text as title
-    BOLD = 16,
-    ITALICS = 32,
-    SMALL = 64,
-    SANS = 128,
-    COMPACT = 256,
-    GROUP_SPACING = PARAGRAPH | NEWLINE | NOSPACE,
-};
-enum Slots: s64 {
-    SLOT_CONTEXT, SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_PLATFORM_FIRST
-};
-
-};
-
 struct Text_box {
     float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
     float s0 = 0.f, t0 = 0.f, s1 = 0.f, t1 = 0.f;
@@ -234,12 +214,12 @@ struct Lui_context {
     enum Fmt_slots_lui: s64 {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
         SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT, SLOT_LABEL_BASE,
-        SLOT_LABEL_BITORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_FRAME,
-        SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_LABEL_CREATE,
+        SLOT_LABEL_BITORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE,
+        SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_BUTTON_CREATE,
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
-        SLOT_ENTRY_SECONDNODE, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
-        SLOT_LABEL_OPERATION, SLOT_LABEL_REMOVEALL, SLOT_LABEL_HELP, SLOT_LABEL_PREV,
-        SLOT_LABEL_NEXT,
+        SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
+        SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
+        SLOT_BUTTON_NEXT,
         SLOT_COUNT
     };
     
@@ -315,20 +295,10 @@ struct Platform_state {
 };
 Platform_state global_platform;
 
-void platform_ui_error_report(Array_t<u8> msg) {}
-void platform_ui_error_clear() {}
 int platform_text_prepare(int size, int w, float* offsets) {return 0;}
-Array_t<u8> platform_ui_get_value(u8 elem) {return {};}
 void platform_ui_bddinfo_hide() {}
 void platform_ui_bddinfo_show(float x, float y, Array_t<u8> text) {}
-void platform_ui_context_set(Array_t<u8> text, int frame, int frame_max) {}
-void platform_mouse_position(float* out_x, float* out_y) {}
 void platform_ui_button_help () {}
-void platform_operations_enable(u32 bdd) {}
-Array_t<u8> platform_clipboard_get(s64 index);
-void platform_clipboard_free(s64 index);
-void platform_clipboard_set(u8 type, Array_t<u8> data);
-
     
 void platform_main_loop_active(bool active) {
     global_platform.gl_context.main_loop_active = active;
@@ -706,7 +676,8 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
     float orig_x = x, orig_y = y;
     if (w_ == -1) w = INFINITY;
 
-    u8 black[] = {0, 0, 0, 255};
+    u8 black[] = {  0,  0,   0, 255};
+    u8 red[]   = {112, 10,  19, 255};
     if (not fill) fill = black;
 
     y = std::round(y + context->fonts[boxes[0].font].ascent);
@@ -719,6 +690,8 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
             y = std::round(y + font_inst.newline);
         }
 
+        u8* box_fill = box.flags & Text_fmt::RED ? red : fill;
+
         if (not only_measure) {
             array_append(&context->buf_uitext_pos, {
                 x+box.x0, y+box.y0, x+box.x1, y+box.y0, x+box.x1, y+box.y1,
@@ -729,7 +702,7 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
             });
             
             for (s64 j = 0; j < 6; ++j) {
-                array_append(&context->buf_uitext_fill, {fill, 4});
+                array_append(&context->buf_uitext_fill, {box_fill, 4});
             }
         }
 
@@ -874,7 +847,8 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
                 fill = sel_f;
             }
             if (entry.selection == -1 and cursor and c_i == entry.cursor) {
-                lui_draw_rect(context, x-1, y-font_inst.ascent+font_inst.height*0.1f, 1, font_inst.height*0.8f, Lui_context::LAYER_FRONT, fill);
+                lui_draw_rect(context, x-1, y-font_inst.ascent+font_inst.height*0.1f, 1,
+                    font_inst.height*0.8f, Lui_context::LAYER_FRONT, fill);
             }
             
             if (c_i >= entry.text.size) break;
@@ -993,6 +967,8 @@ void platform_fmt_text(u64 flags, Array_t<u8> text) {
         Text_box box;
         lui_text_prepare_word(&global_platform.gl_context, font, array_subarray(text, last, i), &box, letter_fac);
         if (isdigit) box.flags |= Text_fmt::NOSPACE;
+
+        box.flags |= flags & Text_fmt::RED;
         
         array_push_back(&global_platform.gl_context.fmt_boxes, box);
         last = i + not isdigit;
@@ -1022,12 +998,17 @@ void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot) {
     platform_fmt_text(flags, str);
     platform_fmt_store(slot);
 }
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false) {
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure) {
     Lui_context* context = &global_platform.gl_context;
     u8 black[] = {0, 0, 0, 255};
     u8 gray[] = {120, 120, 120, 255};
     u8* fill = context->elem_flags[slot] & Lui_context::DRAW_DISABLED ? gray : black;
     lui_text_draw(context, context->fmt_slots[slot], x, y, w, fill, x_out, y_out, only_measure);
+}
+void platform_fmt_store_copy(s64 slot_into, s64 slot_from) {
+    Lui_context* context = &global_platform.gl_context;
+    context->fmt_slots[slot_into].size = 0;
+    array_append(&context->fmt_slots[slot_into], context->fmt_slots[slot_from]);
 }
 
 void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, s64* ha_out, s64* w_out) {
@@ -1225,18 +1206,20 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(0, "Second node:", Lui_context::SLOT_LABEL_SECONDNODE);
 
     u64 button_flag = Text_fmt::SANS | Text_fmt::COMPACT | Text_fmt::NOSPACE;
-    platform_fmt_store_simple(button_flag, "Create and add", Lui_context::SLOT_LABEL_CREATE);
+    platform_fmt_store_simple(button_flag, "Create and add", Lui_context::SLOT_BUTTON_CREATE);
     platform_fmt_store_simple(button_flag, "Calculate union", Lui_context::SLOT_LABEL_OP_U);
     platform_fmt_store_simple(button_flag, "Calculate intersection", Lui_context::SLOT_LABEL_OP_I);
     platform_fmt_store_simple(button_flag, "Calculate complement", Lui_context::SLOT_LABEL_OP_C);
-    platform_fmt_store_simple(button_flag, "Remove all", Lui_context::SLOT_LABEL_REMOVEALL);
-    platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_LABEL_HELP);
-    platform_fmt_store_simple(button_flag, u8"◁", Lui_context::SLOT_LABEL_PREV);
-    platform_fmt_store_simple(button_flag, u8"▷", Lui_context::SLOT_LABEL_NEXT);
+    platform_fmt_store_simple(button_flag, "Remove all", Lui_context::SLOT_BUTTON_REMOVEALL);
+    platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_BUTTON_HELP);
+    platform_fmt_store_simple(button_flag, u8"◁", Lui_context::SLOT_BUTTON_PREV);
+    platform_fmt_store_simple(button_flag, u8"▷", Lui_context::SLOT_BUTTON_NEXT);
 
+    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_U);
+    
     platform_fmt_init();
     platform_fmt_text(Text_fmt::BOLD, "Step-by-step");
-    platform_fmt_text(Text_fmt::SMALL, "(Move using arrow keys)");
+    platform_fmt_text(Text_fmt::SMALL | Text_fmt::PARAGRAPH, "(Move using arrow keys)");
     platform_fmt_store(Lui_context::SLOT_BUTTON_DESC_CONTEXT);
 
     // Initialise elements
@@ -1251,8 +1234,12 @@ void _platform_init(Platform_state* platform) {
     context->entries[Lui_context::ENTRY_FIRSTNODE].slot  = Lui_context::SLOT_ENTRY_FIRSTNODE;
     context->entries[Lui_context::ENTRY_SECONDNODE].slot = Lui_context::SLOT_ENTRY_SECONDNODE;
 
-    context->elem_flags[Lui_context::SLOT_LABEL_NEXT] |= Lui_context::DRAW_COMPACT;
-    context->elem_flags[Lui_context::SLOT_LABEL_PREV] |= Lui_context::DRAW_COMPACT;
+    context->elem_flags[Lui_context::SLOT_BUTTON_NEXT] |= Lui_context::DRAW_COMPACT;
+    context->elem_flags[Lui_context::SLOT_BUTTON_PREV] |= Lui_context::DRAW_COMPACT;
+
+    array_printf(&context->entries[Lui_context::ENTRY_NUMBERS].text, "2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62");
+    array_printf(&context->entries[Lui_context::ENTRY_BASE].text, "10");
+    array_printf(&context->entries[Lui_context::ENTRY_BITORDER].text, "auto");
 
     // Initialise application
     application_init();
@@ -1260,16 +1247,21 @@ void _platform_init(Platform_state* platform) {
     // Set initial radiobutton
     context->elem_flags[Lui_context::SLOT_LABEL_UNION] |= Lui_context::DRAW_PRESSED;
 
-    // @Cleanup: Remove
-    char const* str = "\n2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52p, 61, 62\nA reaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaally loooooooooooooooooooooooong line\nthat should be clipped\nand\nnow\nmore\nlines!!!\n\n";
-    Array_dyn<u8> arr;
-    array_append(&arr, {(u8*)str, (s64)strlen(str)});
-    array_push_back(&arr, (u8)0);
-    arr.size -= 1;
-    context->entries[Lui_context::ENTRY_NUMBERS].text = arr;
 }
-    
-void platform_operations_disable() {return;
+
+void lui_entry_clear(Lui_context* context, Text_entry* entry) {
+    entry->cursor = 0;
+    entry->cursor_row = 0;
+    entry->cursor_col = 0;
+    entry->text.size = 0;
+    entry->selection = -1;
+    entry->undo_stack.size = 0;
+    entry->undo_data.size = 0;
+    entry->redo_stack.size = 0;
+    entry->redo_data.size = 0;
+}
+
+void _platform_operations_able(bool set) {
     Lui_context* context = &global_platform.gl_context;
         
     s64 elem_disable[] = {
@@ -1282,20 +1274,74 @@ void platform_operations_disable() {return;
         Lui_context::SLOT_LABEL_COMPLEMENT,
         Lui_context::SLOT_LABEL_FIRSTNODE,
         Lui_context::SLOT_LABEL_SECONDNODE,
-        Lui_context::SLOT_LABEL_FRAME,
-        Lui_context::SLOT_LABEL_OP_U,
-        Lui_context::SLOT_LABEL_OP_I,
-        Lui_context::SLOT_LABEL_OP_C,
-        Lui_context::SLOT_LABEL_REMOVEALL,
-        Lui_context::SLOT_LABEL_PREV,
-        Lui_context::SLOT_LABEL_NEXT,
+        Lui_context::SLOT_BUTTON_OP,
+        Lui_context::SLOT_BUTTON_REMOVEALL,
+        Lui_context::SLOT_BUTTON_PREV,
+        Lui_context::SLOT_BUTTON_NEXT,
         Lui_context::SLOT_ENTRY_FIRSTNODE,
-        Lui_context::SLOT_ENTRY_SECONDNODE
+        Lui_context::SLOT_ENTRY_SECONDNODE,
+        Text_fmt::SLOT_CONTEXT,
+        Text_fmt::SLOT_CONTEXT_FRAME
     };
 
     for (s64 i: elem_disable) {
-        context->elem_flags[i] |= Lui_context::DRAW_DISABLED;
+        if (set) {
+            context->elem_flags[i] |= Lui_context::DRAW_DISABLED;
+        } else {
+            context->elem_flags[i] &= ~Lui_context::DRAW_DISABLED;
+        }
     }
+}
+void platform_operations_disable() {
+    _platform_operations_able(true);
+}
+void platform_operations_enable(u32 bdd) {
+    if (bdd > 1) {
+        auto context = &global_platform.gl_context;
+
+        auto set_entry_bdd = [context](u8 entry_id, u32 bdd) {
+            Text_entry* entry = &context->entries[entry_id];
+            lui_entry_clear(context, entry);
+            if (bdd > 1) {
+                array_printf(&entry->text, "%ldd", bdd);
+            } else {
+                array_printf(&entry->text, "%s", bdd ? "F" : "T");
+            }
+        };
+
+        set_entry_bdd(Lui_context::ENTRY_FIRSTNODE,  global_store.bdd_data[bdd].child0);
+        set_entry_bdd(Lui_context::ENTRY_SECONDNODE, global_store.bdd_data[bdd].child1);
+    }
+    
+    _platform_operations_able(false);
+}
+
+Array_t<u8> platform_ui_value_get(u8 elem) {
+    auto context = &global_platform.gl_context;
+    
+    switch (elem) {
+    case Ui_elem::OP_NODE0: return context->entries[Lui_context::ENTRY_FIRSTNODE].text;
+    case Ui_elem::OP_NODE1: return context->entries[Lui_context::ENTRY_SECONDNODE].text;
+    case Ui_elem::CREATE_NUMS:  return context->entries[Lui_context::ENTRY_NUMBERS].text;
+    case Ui_elem::CREATE_BASE:  return context->entries[Lui_context::ENTRY_BASE].text;
+    case Ui_elem::CREATE_BITS:  return context->entries[Lui_context::ENTRY_BITORDER].text;
+    case Ui_elem::OPERATION: {
+        char const* c = "u";
+        if (context->elem_flags[Lui_context::SLOT_LABEL_UNION]        & Lui_context::DRAW_PRESSED) c = "u";
+        if (context->elem_flags[Lui_context::SLOT_LABEL_INTERSECTION] & Lui_context::DRAW_PRESSED) c = "i";
+        if (context->elem_flags[Lui_context::SLOT_LABEL_COMPLEMENT]   & Lui_context::DRAW_PRESSED) c = "c";
+        return {(u8*)c, 1};
+    }
+    default: assert(false);
+    }
+}
+void platform_ui_value_free(Array_t<u8> data) {}
+    
+void platform_mouse_position(float* out_x, float* out_y) {
+    auto context = &global_platform.gl_context;
+
+    if (out_x) *out_x = context->pointer_x - context->panel_left_width;
+    if (out_y) *out_y = context->pointer_y;
 }
 
 void _platform_frame_draw() {
@@ -1813,6 +1859,18 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
     return consumed;
 }
 
+void lui_button_press(s64 slot) {
+    switch (slot) {
+    case Lui_context::SLOT_BUTTON_CREATE:    ui_button_create(); break;
+    case Lui_context::SLOT_BUTTON_OP:        ui_button_op(); break;
+    case Lui_context::SLOT_BUTTON_REMOVEALL: ui_button_removeall(); break;
+    case Lui_context::SLOT_BUTTON_NEXT:      ui_button_move(1.f); break;
+    case Lui_context::SLOT_BUTTON_PREV:      ui_button_move(-1.f); break;
+    case Lui_context::SLOT_BUTTON_HELP:      platform_ui_button_help(); break;
+    default: assert(false);
+    }
+}
+
 void _platform_render(Platform_state* platform) {
     assert(platform);
     
@@ -1880,6 +1938,9 @@ void _platform_render(Platform_state* platform) {
                 } else if (action == Key::LEFT_UP) {
                     if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
                         context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
+                    }
+                    if (context->elem_flags[slot] & Lui_context::DRAW_BUTTON) {
+                        lui_button_press(slot);
                     }
                 } else if (action == Key::MOTION) {
                     if (context->drag_el == slot and (context->elem_flags[slot] & Lui_context::DRAW_BUTTON)) {
@@ -2033,7 +2094,6 @@ void _platform_render(Platform_state* platform) {
     s64 x = 10;
     s64 y = 10;
     s64 w = context->panel_left_width - 20;
-    s64 w_line, ha_line;
     
     auto hsep = [context, x, w, &y, font_inst]() {
         u8 gray[] = {153, 153, 153, 255};
@@ -2060,7 +2120,7 @@ void _platform_render(Platform_state* platform) {
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
     
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, Lui_context::SLOT_LABEL_CREATE, x, y, w, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_BUTTON_CREATE, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CREATE, x, y, w_line, &x, &y);
     y += ha_line;
@@ -2088,38 +2148,43 @@ void _platform_render(Platform_state* platform) {
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
 
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, Lui_context::SLOT_LABEL_OP_U, x, y, w, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_BUTTON_OP, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_OP, x, y, w_line, &x, &y);
     y += ha_line;
     hsep();}
 
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, Lui_context::SLOT_LABEL_REMOVEALL, x, y, w, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_BUTTON_REMOVEALL, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_REMOVEALL, x, y, w_line, &x, &y);
     y += ha_line;
     hsep();}
 
     {s64 w_line, ha_line;
-    lui_draw_button_right(context, Lui_context::SLOT_LABEL_HELP, x, y, w, &ha_line, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_BUTTON_HELP, x, y, w, &ha_line, &w_line);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_HELP, x, y, w_line, &x, &y);
     y += ha_line;
     hsep();}
+
+    if (context->fmt_slots[Text_fmt::SLOT_ERRORINFO].size) {
+        platform_fmt_draw(Text_fmt::SLOT_ERRORINFO, x, y, w, nullptr, &y);
+        hsep();
+    }
     
     {s64 w_line, ha_line, w_label, pad_x = 5;
-    lui_draw_button_right(context, Lui_context::SLOT_LABEL_NEXT, x, y, w, &ha_line, &w_line);
-    context->lui_buffer.size = 0;
-    array_printf(&context->lui_buffer, "%d/%d", 382, 929);
-    platform_fmt_store_simple(Text_fmt::NOSPACE, context->lui_buffer, Lui_context::SLOT_LABEL_FRAME);
-    platform_fmt_draw(Lui_context::SLOT_LABEL_FRAME, 0, 0, -1, &w_label, nullptr, true);
+    lui_draw_button_right(context, Lui_context::SLOT_BUTTON_NEXT, x, y, w, &ha_line, &w_line);
+    platform_fmt_draw(Text_fmt::SLOT_CONTEXT_FRAME, 0, 0, -1, &w_label, nullptr, true);
     y += ha_line; w_line -= w_label + pad_x;
-    platform_fmt_draw(Lui_context::SLOT_LABEL_FRAME, x+w_line, y, -1, nullptr, nullptr);
+    platform_fmt_draw(Text_fmt::SLOT_CONTEXT_FRAME, x+w_line, y, -1, nullptr, nullptr);
     y -= ha_line;
-    lui_draw_button_right(context, Lui_context::SLOT_LABEL_PREV, x, y, w_line-pad_x, nullptr, &w_line);
+    lui_draw_button_right(context, Lui_context::SLOT_BUTTON_PREV, x, y, w_line-pad_x, nullptr, &w_line);
     y += ha_line; 
-    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CONTEXT, x, y, w_line, &x, &y);}    
+    platform_fmt_draw(Lui_context::SLOT_BUTTON_DESC_CONTEXT, x, y, w_line, nullptr, &y);}
+
+    y += std::round(font_inst.newline * 0.5f);
+    platform_fmt_draw(Text_fmt::SLOT_CONTEXT, x, y, w, nullptr, &y);
     
     _platform_frame_draw();
     glXSwapBuffers(platform->display, platform->window_glx);
