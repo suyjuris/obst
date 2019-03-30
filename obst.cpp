@@ -2105,7 +2105,7 @@ struct Draw_param {
     float dash_length = 0.1f; // Length of the periodic segment of a dashed line (so between the start of one gap and the start of the next)
     float arrow_size = 0.1f; // Size of an arrow from the tip to the base
     float edge_point_merge = 0.05f; // How far apart to points on an edge can be in terms of y-axis and still be considered the same for linear interpolation
-    float font_frac = 0.8f; // Ratio between font size and node y radius (font_size = ry * font_frac)
+    float font_frac = 1.f; // Ratio between font size and node y radius (font_size = ry * font_frac)
 };
 
 // Data needed to draw a bdd
@@ -2128,7 +2128,7 @@ struct Webgl_context {
         BDD_POS = 0, BDD_X, BDD_R, BDD_STROKE, BDD_FILL, BDD_BORDER, BDD_ATTR_COUNT,
         EDGE_POS = 0, EDGE_P0, EDGE_P1, EDGE_P2, EDGE_A, EDGE_DASH, EDGE_STROKE, EDGE_ATTR_COUNT,
         ARROW_POS = 0, ARROW_FILL, ARROW_ATTR_COUNT,
-        TEXT_POS = 0, TEXT_TPOS, TEXT_ALPHA, TEXT_ATTR_COUNT,
+        TEXT_POS = 0, TEXT_TPOS, TEXT_FILL, TEXT_ATTR_COUNT,
         UI_POS = 0, UI_FILL, UI_ATTR_COUNT,
     };
     // Names for all uniforms
@@ -2152,6 +2152,7 @@ struct Webgl_context {
     
     Draw_param draw_param;
     float font_size_max; // Font size of a fully-sized node (i.e. rx == draw_param.node_radius)
+    float font_ascent; // The ascent of the font
     s64 font_regenerate; // Frames until font regenerates, after the user resizes the window
 
     bool not_completely_empty; // This is set if some graph is currently shown
@@ -2168,7 +2169,7 @@ struct Webgl_context {
     Array_t<GLint> uniforms;
 
     GLuint text_tex; // Id of the text glyph texture
-    Array_t<float> text_pos; // Array of positions mapping each character to a rectangle (x0, y0, x1, y1) of the text glyph texture
+    Array_t<Text_box> text_pos; // Array of positions mapping each character to a rectangle (x0, y0, x1, y1) of the text glyph texture
 
     // Buffers for the vertex attribute arrays
     Array_dyn<float> buf_bdd_pos;
@@ -2191,7 +2192,7 @@ struct Webgl_context {
     
     Array_dyn<float> buf_text_pos;
     Array_dyn<float> buf_text_tpos;
-    Array_dyn<float> buf_text_alpha;
+    Array_dyn<u8>    buf_text_fill;
 
     Array_dyn<float> buf_ui_pos;
     Array_dyn<u8>    buf_ui_fill;
@@ -2262,20 +2263,21 @@ void webgl_text_prepare(Webgl_context* context) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, context->text_tex);
 
-    array_free(&context->text_pos);
-    context->text_pos = array_create<float>(12*4);
+    if (context->text_pos.size == 0) {
+        context->text_pos = array_create<Text_box>(12);
+    }
 
     // @Cleanup: Texture size should not be computed here, also we need to have a more general way
     // to specify font mapping, and the platform_text_prepare interface should be more c-like
     int font_size = (int)std::round(
         context->draw_param.node_radius * context->draw_param.squish_fac * context->draw_param.font_frac * context->scale
     );
-    int texture_size = 1;
-    while (texture_size < 4*font_size+4) texture_size *= 2;
+
+    float ascent;
+    platform_text_prepare(font_size, &context->text_pos, &ascent);
     
-    int font_size_real = platform_text_prepare(font_size, texture_size, context->text_pos.data);
-    
-    context->font_size_max = (float)font_size_real / context->scale;
+    context->font_size_max = (float)font_size / context->scale;
+    context->font_ascent   = (float)ascent    / context->scale;
 
     glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -2448,29 +2450,28 @@ void webgl_init(Webgl_context* context) {
         "void main() {\n"
         "    gl_FragColor = v_fill;\n"
         "}\n";
-
+    
     GLbyte shader_v_text[] =
         "attribute vec2 pos;\n"
         "attribute vec2 tpos;\n"
-        "attribute float alpha;\n"
+        "attribute vec4 fill;\n"
         "varying vec2 v_tpos;\n"
-        "varying float v_alpha;\n"
+        "varying vec4 v_fill;\n"
         "uniform vec2 origin;\n"
         "uniform vec2 scale;\n"
         "void main() {\n"
         "    gl_Position = vec4((pos - origin)*scale, 0.5, 1);\n"
         "    v_tpos = tpos;\n"
-        "    v_alpha = alpha;\n"
+        "    v_fill = fill;\n"
         "}\n";
 
     GLbyte shader_f_text[] =
-        OBST_SHADER_F_PREAMBLE
         "varying vec2 v_tpos;\n"
-        "varying float v_alpha;\n"
+        "varying vec4 v_fill;\n"
         "uniform sampler2D sampler;\n"
         "void main() {\n"
-        "    vec4 col = texture2D(sampler, v_tpos);\n"
-        "    col.a *= v_alpha;\n"
+        "    vec4 col = v_fill;\n"
+        "    col.a *= texture2D(sampler, v_tpos).r;\n"
         "    gl_FragColor = col;\n"
         "}\n";
 
@@ -2541,7 +2542,7 @@ void webgl_init(Webgl_context* context) {
     OBST_PROGRAM_INIT(text);
     OBST_ATTRIB(TEXT_POS, pos);
     OBST_ATTRIB(TEXT_TPOS, tpos);
-    OBST_ATTRIB(TEXT_ALPHA, alpha);
+    OBST_ATTRIB(TEXT_FILL, fill);
     OBST_PROGRAM_LINK(text);
     OBST_UNIFORM(TEXT_ORIGIN, origin);
     OBST_UNIFORM(TEXT_SCALE, scale);
@@ -2581,7 +2582,7 @@ void webgl_draw_bdd(Webgl_context* context, Bdd_attr a) {
 }
 
 // Return the index of the character in the texture
-s64 _char_index(u8 c) {
+s64 webgl_bddlabel_char_index(u8 c) {
     if ('0' <= c and c <= '9') {
         return c - '0';
     } else if (c == 'F') {
@@ -2592,12 +2593,16 @@ s64 _char_index(u8 c) {
         return -1;
     }
 }
+u8 webgl_bddlabel_index_char(s64 index) {
+    assert(0 <= index and index < 12);
+    return "0123456789FT"[index];
+}
 
 //@Cleanup: This probably needs to be moved into emscripten
 void webgl_draw_text(
     Webgl_context* context,
     float x, float y,
-    Array_t<u8> text, // Note that only the characters mapped by _char_index will be drawn
+    Array_t<u8> text, // Note that only the characters mapped by webgl_bddlabel_char_index will be drawn
     float size, // font size in world-coordinates
     float alpha,
     float align // 1 is right-aligned, 0 centered, -1 left-aligned
@@ -2609,52 +2614,38 @@ void webgl_draw_text(
     // final font size (i.e. the maximum size) are rounded, for the others we interpolate as
     // usual. To get the pixels to line up, every transformation between here and the final
     // pixel-coordinates has to be taken into account by the rounding.
+
+    float fs = 1.f / context->scale     * size / context->font_size_max;
+    float ascent = context->font_ascent * size / context->font_size_max;
     
     float size_total = 0.f;
     for (u8 c: text) {
-        s64 index = _char_index(c);
+        s64 index = webgl_bddlabel_char_index(c);
         if (index == -1) continue;
-        float x0 = context->text_pos[index*4  ];
-        float y0 = context->text_pos[index*4+1];
-        float x1 = context->text_pos[index*4+2];
-        float y1 = context->text_pos[index*4+3];
-        float size_x = size / (y1 - y0) * (x1 - x0);
-        size_total += size_x;
+        size_total += std::round(context->text_pos[index].advance) * fs;
     }
 
     x += - size_total * (0.5f + align * 0.5f) - 0.5f / context->scale;
-    y -= 0.5f / context->scale;
+    y += - (ascent - size*0.5f)               - 0.5f / context->scale;
+    u8 fill[] = {0, 0, 0, (u8)(alpha * 255.f)};
 
     for (u8 c: text) {
-        s64 index = _char_index(c);
+        s64 index = webgl_bddlabel_char_index(c);
         if (index == -1) continue;
-        float x0 = context->text_pos[index*4  ];
-        float y0 = context->text_pos[index*4+1];
-        float x1 = context->text_pos[index*4+2];
-        float y1 = context->text_pos[index*4+3];
-        float size_x = size / (y1 - y0) * (x1 - x0);
+        Text_box box = context->text_pos[index];
     
         array_append(&context->buf_text_pos, {
-            x,          y - size * 0.5f,
-            x,          y + size * 0.5f,
-            x + size_x, y + size * 0.5f,
-            x,          y - size * 0.5f,
-            x + size_x, y + size * 0.5f,
-            x + size_x, y - size * 0.5f
+            x+box.x0*fs, y-box.y0*fs, x+box.x1*fs, y-box.y0*fs, x+box.x1*fs, y-box.y1*fs,
+            x+box.x0*fs, y-box.y0*fs, x+box.x1*fs, y-box.y1*fs, x+box.x0*fs, y-box.y1*fs
         });
         array_append(&context->buf_text_tpos, {
-            x0, y1,
-            x0, y0,
-            x1, y0,
-            x0, y1,
-            x1, y0,
-            x1, y1
+            box.s0, box.t0, box.s1, box.t0, box.s1, box.t1, box.s0, box.t0, box.s1, box.t1, box.s0, box.t1
         });
         for (s64 i = 0; i < 6; ++i) {
-            array_push_back(&context->buf_text_alpha, alpha);
+            array_append(&context->buf_text_fill, {fill, 4});
         }
 
-        x += size_x;
+        x += std::round(box.advance) * fs;
     };
 }
 
@@ -2688,23 +2679,21 @@ void webgl_bdd_text_round(Webgl_context* context, float* into_x, float* into_y, 
     u8 _buf[24];
     Array_t<u8> text = _get_bdd_text({_buf, sizeof(_buf)}, bdd);
 
+    float fs = 1.f / context->scale     * size / context->font_size_max;
+    float ascent = context->font_ascent * size / context->font_size_max;
+    
     float size_total = 0.f;
     for (u8 c: text) {
-        s64 index = _char_index(c);
+        s64 index = webgl_bddlabel_char_index(c);
         if (index == -1) continue;
-        float x0 = context->text_pos[index*4  ];
-        float y0 = context->text_pos[index*4+1];
-        float x1 = context->text_pos[index*4+2];
-        float y1 = context->text_pos[index*4+3];
-        float size_x = size / (y1 - y0) * (x1 - x0);
-        size_total += size_x;
+        size_total += std::round(context->text_pos[index].advance) * fs;
     }
 
     // Note that bdd labels do not use alignment
-    float x_diff = - size_total * 0.5f - 0.5f / context->scale - context->origin_x;
-    float y_diff = - size       * 0.5f - 0.5f / context->scale - context->origin_y;
-    *into_x = std::round((x + x_diff) * context->scale) / context->scale - x_diff;
-    *into_y = std::round((y + y_diff) * context->scale) / context->scale - y_diff;
+    float x_diff = - size_total * 0.5f    - 0.5f / context->scale - context->origin_x;
+    float y_diff = - (ascent - size*0.5f) - 0.5f / context->scale - context->origin_y;
+    if (into_x) *into_x = std::round((x + x_diff) * context->scale) / context->scale - x_diff;
+    if (into_y) *into_y = std::round((y + y_diff) * context->scale) / context->scale - y_diff;
 }
 
 // Calculates the length of the quadratic spline with control points p0, p1 and p2 using numerical
@@ -2859,7 +2848,7 @@ void webgl_draw_edge(
     // have made some significant adjustments to generally simplify the formula and put as much work
     // as possible into the vertex shader. See also the references in [1].
     //  I will not derive the detailed formulae here, but just give a rough overview on how it works
-    // and what step one has to do to end up at my solution.    
+    // and what steps one has to do to end up at my solution.    
     //  Solving the problem exactly requires you to solve third-degree polynomials, which uses cubic
     // roots and all sorts of nastiness. Instead, we proceed by inversion, taking a formula that
     // yields t exactly for a point p _on the curve_. However, the formula is continuous everywhere,
@@ -3019,6 +3008,8 @@ void webgl_frame_init(Webgl_context* context) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    glActiveTexture(GL_TEXTURE0);
+    
     context->buf_bdd_pos.size = 0;
     context->buf_bdd_x.size = 0;
     context->buf_bdd_r.size = 0;
@@ -3039,7 +3030,7 @@ void webgl_frame_init(Webgl_context* context) {
 
     context->buf_text_pos.size = 0;
     context->buf_text_tpos.size = 0;
-    context->buf_text_alpha.size = 0;
+    context->buf_text_fill.size = 0;
 
     context->origin_x = -1.f;
     context->origin_y = -1.f;
@@ -3073,8 +3064,8 @@ void webgl_frame_draw(Webgl_context* context) {
 #define OBST_DO_UNIFORM(name, type, ...) \
     glUniform##type(context->uniforms[context->name], __VA_ARGS__)
 
-    float ox = context->origin_x + (context->canvas_x + context->width /2.f) / context->scale;
-    float oy = context->origin_y + (context->canvas_y + context->height/2.f) / context->scale;
+    float ox = context->origin_x + (-context->canvas_x + context->width ) / 2.f / context->scale;
+    float oy = context->origin_y + (-context->canvas_y + context->height) / 2.f / context->scale;
     float sx = context->scale * 2.f / context->screen_w;
     float sy = context->scale * 2.f / context->screen_h;
 
@@ -3098,8 +3089,9 @@ void webgl_frame_draw(Webgl_context* context) {
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, context->buf_edge_pos.size / 2);
 
+    glEnable(GL_POLYGON_SMOOTH);
     glUseProgram(context->program_arrow);
-
+    
     OBST_DO_UNIFORM(ARROW_ORIGIN, 2f, ox, oy);
     OBST_DO_UNIFORM(ARROW_SCALE, 2f, sx, sy);
 
@@ -3108,6 +3100,7 @@ void webgl_frame_draw(Webgl_context* context) {
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_arrow_pos.size / 2);
     
+    glDisable(GL_POLYGON_SMOOTH);
     glEnable(GL_DEPTH_TEST);
     
     glUseProgram(context->program_bdd);
@@ -3134,7 +3127,7 @@ void webgl_frame_draw(Webgl_context* context) {
 
     OBST_DO_BUFFER(text, TEXT_POS,     buf_text_pos,     2, GL_FLOAT, 0);
     OBST_DO_BUFFER(text, TEXT_TPOS,    buf_text_tpos,    2, GL_FLOAT, 0);
-    OBST_DO_BUFFER(text, TEXT_ALPHA,   buf_text_alpha,   1, GL_FLOAT, 0);
+    OBST_DO_BUFFER(text, TEXT_FILL,    buf_text_fill,    4, GL_UNSIGNED_BYTE, 1);
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_text_pos.size / 2);
 
@@ -3817,14 +3810,33 @@ void ui_context_refresh() {
         frame = global_store.snapshots.size - 2;
     }
 
+    
     platform_fmt_init();
+    platform_fmt_begin(Text_fmt::INDENTED);
     s64 last = global_store.snapshots[frame].offset_context;
+    auto sd = global_store.snapshot_data_context;
     for (s64 i = global_store.snapshots[frame].offset_context;
          i < global_store.snapshots[frame+1].offset_context; ++i)
     {
-        if (global_store.snapshot_data_context[i] == 0) {
-            platform_fmt_text(Text_fmt::PARAGRAPH, array_subarray(global_store.snapshot_data_context, last, i));
-        }
+        bool flush = false;
+        if (strncmp((char*)&sd[i], "<b>", 3) == 0)  flush = true;
+        if (strncmp((char*)&sd[i], "<i>", 3) == 0)  flush = true;
+        if (strncmp((char*)&sd[i], "</b>", 4) == 0) flush = true;
+        if (strncmp((char*)&sd[i], "</i>", 4) == 0) flush = true;
+        if (sd[i] == 0) flush = true;
+
+        if (not flush) continue;
+
+        u64 nospace = last < i and sd[i-1] == ' ' ? 0 : (u64)Text_fmt::NOSPACE;
+        platform_fmt_text(nospace, array_subarray(sd, last, i));
+            
+        if (strncmp((char*)&sd[i], "<b>", 3) == 0)  { i += 3; platform_fmt_begin(Text_fmt::BOLD); }
+        if (strncmp((char*)&sd[i], "<i>", 3) == 0)  { i += 3; platform_fmt_begin(Text_fmt::ITALICS); }
+        if (strncmp((char*)&sd[i], "</b>", 4) == 0) { i += 4; platform_fmt_end(Text_fmt::BOLD); }
+        if (strncmp((char*)&sd[i], "</i>", 4) == 0) { i += 4; platform_fmt_end(Text_fmt::ITALICS); }
+        if (sd[i] == 0) platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+
+        last = i;
     }
     platform_fmt_store(Text_fmt::SLOT_CONTEXT);
 
@@ -3943,57 +3955,62 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     
     Array_dyn<u8> buf = global_ui.ui_buf;
     defer { global_ui.ui_buf = buf; };
-    array_reserve(&buf, 1024 + children.size * (2*bdd_bdd.level+4));
-    buf.size = buf.capacity;
-    char* p = (char*)buf.data;
 
-    //@Cleanup: Have to rework handling of formatted text
+    platform_fmt_init();
 
     auto print_children = [&]() {
         bool first = true;
         for (u32 child: children) {
             if (not first) {
-                p += snprintf(p, buf.end() - (u8*)p, ", ");
+                platform_fmt_text(0, ",");
             }
             first = false;
 
             for (s64 i = bdd_bdd.level-1; i >= 0; --i) {
-                *p++ = child >> i & 1 ? '1' : '0';
+                platform_fmt_text(Text_fmt::STICKY, child >> i & 1 ? "1" : "0");
             }
         }
-        p += snprintf(p, buf.end() - (u8*)p, "</p><p class=\"close\">(Decimal: ");
+        platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+        platform_fmt_text(0, "(Decimal:");
         first = true;
         for (u32 child: children) {
             if (not first) {
-                p += snprintf(p, buf.end() - (u8*)p, ", ");
+                platform_fmt_text(0, ",");
             }
             first = false;
-            p += snprintf(p, buf.end() - (u8*)p, "%d", child);
+            buf.size = 0;
+            array_printf(&buf, "%d", child);
+            platform_fmt_text(Text_fmt::STICKY, buf);
         }
-        p += snprintf(p, buf.end() - (u8*)p, ")");
+        platform_fmt_text(0, ")");
     };
     
     // Generate the info text
     if (bdd == 1) {
-        p += snprintf(p, buf.end() - (u8*)p, "<p class=\"close\"><b>Node T</b></p>\n<p>This node is special. It represents "
-            "the set containing only the number 0 (or, more precisely, the empty bitstring). Its sibling, F, is the empty "
-            "set and is omitted from the drawing.</p>");
+        platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH_CLOSE, "Node T");
+        platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH, "This node is special. It represents "
+            "the set containing only the number 0 (or, more precisely, the empty bitstring). Its "
+            "sibling, F, is the empty set and is omitted from the drawing.");
     } else {
-        p += snprintf(p, buf.end() - (u8*)p, "<p class=\"close\"><b>Node %d", bdd);
+        buf.size = 0;
+        array_printf(&buf, "Node %d", bdd);
         if (bdd_bdd.flags & Bdd::TEMPORARY) {
-            p += snprintf(p, buf.end() - (u8*)p, " (temporary)");
+            array_printf(&buf, "%s", " (temporary)");
         }
-        p += snprintf(p, buf.end() - (u8*)p, "</b></p>\n<p class=\"close\">");
+        platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH_CLOSE, buf);
+        
         if (children.size) {
-            p += snprintf(p, buf.end() - (u8*)p, "%s number%s ",
+            buf.size = 0;
+            array_printf(&buf, "%s number%s ",
                 bdd_bdd.flags & Bdd::TEMPORARY ? "Currently represents" : "Represents",
                 children.size > 1 ? "s" : "");
+            platform_fmt_text(0, buf);
             print_children();
         } else {
             if (bdd_bdd.flags & Bdd::TEMPORARY) {
-                p += snprintf(p, buf.end() - (u8*)p, "Does not represent any numbers (yet)");
+                platform_fmt_text(0, "Does not represent any numbers (yet)");
             } else {
-                p += snprintf(p, buf.end() - (u8*)p, "Empty set");
+                platform_fmt_text(0, "Empty set");
             }
         }
         if (bdd_bdd.flags & Bdd::TEMPORARY and id_map_end[bdd] != -1) {
@@ -4001,17 +4018,19 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
             
             children.size = 0;
             _collect_children(&children, id_map_end, bdds_end, bdd);
-            
-            p += snprintf(p, buf.end() - (u8*)p, "</p>\n<p class=\"close\">Eventually, it will represent number%s ",
-                children.size != 1 ? "s" : "");
+     
+            platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+            buf.size = 0;
+            array_printf(&buf, "Eventually, it will represent number%s ", children.size != 1 ? "s" : "");
+            platform_fmt_text(0, buf);
             print_children();
         }
 
     }
-    p += snprintf(p, buf.end() - (u8*)p, "</p>\n");
-
-    // Have the platform layer do the rest of the work.
-    platform_ui_bddinfo_show(x, y, buf);
+    platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+    
+    platform_fmt_store(Text_fmt::SLOT_BDDINFO);
+    platform_ui_bddinfo_show(x, y);
     
     return true;
 }
@@ -4025,6 +4044,7 @@ void ui_mouse_move(float world_x, float world_y) {
         float dx = (world_x - bdd.x) / bdd.rx;
         float dy = (world_y - bdd.y) / bdd.ry;
         float d = dx * dx + dy * dy;
+
         if (d <= 1.f) {
             // Important: Do not break the loop if the bdd was not valid and no hover text was generated.
             if (ui_bddinfo_show(bdd.x, bdd.y, i)) return;
@@ -4051,7 +4071,7 @@ void ui_frame_draw() {
         avg /= global_ui.time_diff_num;
         
         {u8 buf[32];
-        float x = -0.8f;
+        float x = -0.6f;
         float y = global_context.layout_max_y + 0.9f;
         float fs = 12.f / global_context.scale;
         snprintf((char*)buf, sizeof(buf), "%.0f", last * 1e4);
@@ -4063,7 +4083,7 @@ void ui_frame_draw() {
         snprintf((char*)buf, sizeof(buf), "%.0f", avg * 1e4);
         webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);}
 
-        float x = -0.8f + 5.f / global_context.scale;
+        float x = -0.6f + 5.f / global_context.scale;
         float y = global_context.layout_max_y + 0.9f - 30.f / global_context.scale;
         float yfac = 1000.f / global_context.scale;
         for (s64 i = 0; i+1 < global_ui.time_diff_num; ++i) {

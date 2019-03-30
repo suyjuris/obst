@@ -103,8 +103,12 @@ EM_JS(int, _platform_text_prepare, (int size, int w, float* offsets), {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
     return actualTop - actualBot;
 });
-int platform_text_prepare(int size, int w, float* offsets) {
-    return _platform_text_prepare(size, w, offsets);
+int platform_text_prepare(int font_size, Array_t<Quad>* offsets) {
+    int texture_size = 1;
+    while (texture_size < 4*font_size+4) texture_size *= 2;
+
+    static_assert(sizeof(Quad) == sizeof(float) * 4);
+    return _platform_text_prepare(font_size, texture_size, (float*)offsets->data);
 }
     
 // Query the value of an input element
@@ -203,7 +207,7 @@ double platform_now() {
 
 EM_BOOL _platform_ui_mouse_move(int, EmscriptenMouseEvent const* event, void*) {
     float x = (float)event->canvasX / global_context.scale + global_context.origin_x;
-    float y = (global_context.height - (float)event->canvasY) / global_context.scale + global_context.origin_y;
+    float y = (global_context.height-1 - (float)event->canvasY) / global_context.scale + global_context.origin_y;
     ui_mouse_move(x, y);
     return false;
 }

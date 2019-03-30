@@ -98,16 +98,20 @@ namespace Text_fmt {
 //@Cleanup: Replace NOSPACE with SPACE
 enum Flags: u64 {
     PARAGRAPH = 1, // Indicates a paragraph break at the end of the item
-    NEWLINE = 2,
-    NOSPACE = 4, // Do not leave a space after the word. Internal flag for lui_text_draw
-    HEADER = 8, // Corresponds to <h4>, draw text as title
-    BOLD = 16,
-    ITALICS = 32,
-    SMALL = 64,
-    SANS = 128,
-    COMPACT = 256,
-    RED = 512,
-    GROUP_SPACING = PARAGRAPH | NEWLINE | NOSPACE,
+    PARAGRAPH_CLOSE = 2,
+    NEWLINE = 4,
+    NOSPACE = 8, // Do not leave a space after the word. Internal flag for lui_text_draw
+    STICKY = 16, // Do not break up the word at this point
+    HEADER = 32, // Corresponds to <h4>, draw text as title
+    BOLD = 64,
+    ITALICS = 128,
+    SMALL = 256,
+    SANS = 512,
+    COMPACT = 1024,
+    RED = 2048,
+    INDENTED = 4096,
+    GROUP_SPACING = PARAGRAPH | PARAGRAPH_CLOSE | NEWLINE | NOSPACE | STICKY,
+    GROUP_DRAWING = INDENTED | RED,
 };
 enum Slots: s64 {
     SLOT_CONTEXT, SLOT_CONTEXT_FRAME, SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_ERRORINFO,
@@ -116,14 +120,24 @@ enum Slots: s64 {
 
 };
 
+struct Text_box {
+    float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
+    float s0 = 0.f, t0 = 0.f, s1 = 0.f, t1 = 0.f;
+    float advance = 0.f;
+    u8 font;
+    u32 flags = 0; // Same as the spacing flags in Text_fmt::Flags
+    
+    static_assert(Text_fmt::GROUP_SPACING >> 32 == 0, "32-bit not sufficient or Text_box flags");
+};
+
 // Forward declarations for the application layer
 void platform_ui_error_report(Array_t<u8> msg);
 void platform_ui_error_clear();
-int platform_text_prepare(int size, int w, float* offsets);
+void platform_text_prepare(int size, Array_t<Text_box>* offsets, float* ascent);
 Array_t<u8> platform_ui_value_get(u8 elem);
 void platform_ui_value_free(Array_t<u8> data);
 void platform_ui_bddinfo_hide();
-void platform_ui_bddinfo_show(float x, float y, Array_t<u8> text);
+void platform_ui_bddinfo_show(float x, float y);
 double platform_now();
 void platform_mouse_position(float* out_x, float* out_y);
 void platform_ui_button_help ();

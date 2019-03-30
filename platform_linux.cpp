@@ -85,15 +85,6 @@ Array_t<u8> array_load_from_file(char const* path) {
     return array_load_from_file({(u8*)path, (s64)strlen(path)});
 }
 
-struct Text_box {
-    float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
-    float s0 = 0.f, t0 = 0.f, s1 = 0.f, t1 = 0.f;
-    float advance = 0.f;
-    u8 font;
-    u32 flags = 0; // Same as the spacing flags in Text_fmt::Flags
-    
-    static_assert(Text_fmt::GROUP_SPACING >> 32 == 0, "32-bit not sufficient or Text_box flags");
-};
 struct Text_box_lookup {
     u64 hash = 0; s64 index = -1;
 };
@@ -133,6 +124,18 @@ struct Rect {
 
 struct Padding {
     s64 pad_x = 0, pad_y = 0, mar_x = 0, mar_y = 0;
+};
+
+struct Text_preparation {
+    Array_t<u8> image; // The current content of the font texture
+    s64 size = 0; // Size of the font texture
+    s64 x = 0, y = 0; // The next rectangle begins here (+1 padding)
+    s64 y_incr = 0; // How far to move y when moving into the next line
+    Array_dyn<int> glyph_buf; // Temporary storage to hold the glyphs
+    Array_dyn<u8>  image_buf; // Temporary storage to hold pixel data
+    bool dirty = false; // Whether we need to re-send the texture to the GPU
+    Array_dyn<Text_box> cache; // Holds a copy of everything we have already rendered
+    Array_t<Text_box_lookup> cache_lookup; // Hash table for the cache
 };
 
 // Keeps the necessary data to manage OpenGL and other data for the uil layer
@@ -200,16 +203,8 @@ struct Lui_context {
     Array_t<Font_instance> fonts;
 
     // Data for generating the texture containing the text (the text preparation)
-    Array_t<u8> prep_image; // The current content of the font texture
-    s64 prep_size = 0; // Size of the font texture
-    s64 prep_x = 0, prep_y = 0; // The next rectangle begins here (+1 padding)
-    s64 prep_y_incr = 0; // How far to move y when moving into the next line
-    Array_dyn<int> prep_glyph_buf; // Temporary storage to hold the glyphs
-    Array_dyn<u8>  prep_image_buf; // Temporary storage to hold pixel data
-    bool prep_dirty = false; // Whether we need to re-send the texture to the GPU
-    Array_dyn<Text_box> prep_cache; // Holds a copy of everything we have already rendered
-    Array_t<Text_box_lookup> prep_cache_lookup; // Hash table for the cache
-
+    Text_preparation prep_ui, prep_bdd;
+    
     // Additional slots for text belonging to the UI
     enum Fmt_slots_lui: s64 {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
@@ -219,7 +214,7 @@ struct Lui_context {
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
-        SLOT_BUTTON_NEXT,
+        SLOT_BUTTON_NEXT, SLOT_CANVAS,
         SLOT_COUNT
     };
     
@@ -267,6 +262,10 @@ struct Lui_context {
 
     // Main loop flag
     bool main_loop_active = false;
+
+    // State for bddinfo
+    bool bddinfo_active = false;
+    float bddinfo_x, bddinfo_y;
 };
 
 namespace Platform_clipboard {
@@ -295,11 +294,18 @@ struct Platform_state {
 };
 Platform_state global_platform;
 
-int platform_text_prepare(int size, int w, float* offsets) {return 0;}
-void platform_ui_bddinfo_hide() {}
-void platform_ui_bddinfo_show(float x, float y, Array_t<u8> text) {}
 void platform_ui_button_help () {}
-    
+
+void platform_ui_bddinfo_show(float x, float y) {
+    Lui_context* context = &global_platform.gl_context;
+    context->bddinfo_active = true;
+    context->bddinfo_x = x;
+    context->bddinfo_y = y;
+}
+void platform_ui_bddinfo_hide() {
+    global_platform.gl_context.bddinfo_active = false;
+}
+
 void platform_main_loop_active(bool active) {
     global_platform.gl_context.main_loop_active = active;
 }
@@ -318,7 +324,7 @@ void _platform_handle_resize(s64 width, s64 height) {
     global_context.screen_w = width;
     global_context.screen_h = height;
     
-    global_context.width = std::min(global_context.screen_w - global_platform.gl_context.panel_left_width, 800ll);
+    global_context.width = std::max(global_context.screen_w - global_platform.gl_context.panel_left_width, 400ll);
     global_context.height = global_context.screen_h;
     global_context.canvas_x = global_platform.gl_context.panel_left_width;
     global_context.canvas_y = 0;
@@ -326,6 +332,28 @@ void _platform_handle_resize(s64 width, s64 height) {
     glViewport(0.0, 0.0, global_context.screen_w, global_context.screen_h);
     
     application_handle_resize();
+}
+
+void _platform_init_font(s64 font_style, s64 index, float size) {
+    Lui_context* context = &global_platform.gl_context;
+
+    if (index == -1) index = context->fonts[font_style].info_index;
+    
+    Lui_context::Font_instance inst;
+    inst.info_index = index;
+    inst.scale = stbtt_ScaleForPixelHeight(&context->font_info[index], size);
+    
+    {int ascent, descent, linegap;
+    stbtt_GetFontVMetrics(&context->font_info[index], &ascent, &descent, &linegap);
+    inst.ascent = (float)ascent * inst.scale;
+    inst.height = (float)(ascent - descent) * inst.scale;
+    inst.newline = (float)(ascent - descent + linegap) * inst.scale;}
+
+    {int advance;
+    stbtt_GetCodepointHMetrics(&context->font_info[index], ' ', &advance, nullptr);
+    inst.space = (float)advance * inst.scale;}
+
+    context->fonts[font_style] = inst;
 }
 
 void _platform_init_gl(Platform_state* platform) {
@@ -480,6 +508,8 @@ void _platform_init_gl(Platform_state* platform) {
     OBST_GEN_BUFFERS(uibutton, UIBUTTON);
     
     //@Cleanup: Check max size using RECTANGLE_TEXTURE_SIZE
+
+    glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST);
 }
 
 void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, float z, u8* fill) {
@@ -522,28 +552,35 @@ s64 _decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
     return c_bytes;
 }
 
-void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text_box* box, float letter_fac=1.f) {
+void lui_text_prepare_init(Text_preparation* prep) {
+    prep->size = 512;
+    prep->image = array_create<u8>(prep->size * prep->size);
+    prep->cache_lookup = array_create<Text_box_lookup>(4096);
+    memset(prep->cache_lookup.data, -1, prep->cache_lookup.size * sizeof(Text_box_lookup));
+}
+
+void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font, Array_t<u8> word, Text_box* box, float letter_fac=1.f) {
     assert(box);
 
     // Lookup in hash table
-    u64 hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ (*(u64*)&letter_fac << 32);
+    u64 hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ ((u64)*(u32*)&letter_fac << 32);
     for (u8 c: word) {
         hash = hash * 1099511628211ull ^ c;
     }
-    s64 slot_i = hash % context->prep_cache_lookup.size;
+    s64 slot_i = hash % prep->cache_lookup.size;
     while (true) {
-        auto slot = context->prep_cache_lookup[slot_i];
+        auto slot = prep->cache_lookup[slot_i];
         if (slot.index == -1) break;
         if (slot.hash == hash) {
-            *box = context->prep_cache[slot.index];
+            *box = prep->cache[slot.index];
             return;
         }
-        slot_i = (slot_i + 1) % context->prep_cache_lookup.size;
+        slot_i = (slot_i + 1) % prep->cache_lookup.size;
     }
     // Note that slot_i now points at the next empty slot
 
-    Array_dyn<int> glyphs = context->prep_glyph_buf;
-    defer { context->prep_glyph_buf = glyphs; };
+    Array_dyn<int> glyphs = prep->glyph_buf;
+    defer { prep->glyph_buf = glyphs; };
     glyphs.size = 0;
     
     float f = context->fonts[font].scale;
@@ -560,12 +597,12 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
         i += c_bytes;
     }
 
-    s64 x = context->prep_x;
-    s64 y = context->prep_y;
-    s64 y_incr = context->prep_y_incr;
+    s64 x = prep->x;
+    s64 y = prep->y;
+    s64 y_incr = prep->y_incr;
     
-    Array_dyn<u8> buf = context->prep_image_buf;
-    defer { context->prep_image_buf = buf; };
+    Array_dyn<u8> buf = prep->image_buf;
+    defer { prep->image_buf = buf; };
 
     float shift = 0.f;
     bool draw = false;
@@ -573,7 +610,7 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
     s64 y_orig = y;
     s64 x_init_off = 0;
     s64 y_incr_new = 0;
-    s64 size = context->prep_size;
+    s64 size = prep->size;
     
     for (s64 k = 0; k < glyphs.size; ++k) {
         int ix0, iy0, ix1, iy1;
@@ -607,7 +644,7 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
 
             for (s64 row = 0; row < h; ++row) {
                 for (s64 col = 0; col < w; ++col) {
-                    u8* p = &context->prep_image[(x0 + col) + (y0 + row) * size];
+                    u8* p = &prep->image[(x0 + col) + (y0 + row) * size];
                     *p = (u8)std::min(255, *p + buf[col + row*w]);
                 }
             }
@@ -653,18 +690,38 @@ void lui_text_prepare_word(Lui_context* context, u8 font, Array_t<u8> word, Text
         }
     }
     
-    context->prep_x = x;
-    context->prep_y = y;
-    context->prep_y_incr = y_incr;
-    context->prep_dirty = true;
+    prep->x = x;
+    prep->y = y;
+    prep->y_incr = y_incr;
+    prep->dirty = true;
 
     // Insert element into hashtable
-    if (context->prep_cache.size*4 > context->prep_cache_lookup.size*3) {
+    if (prep->cache.size*4 > prep->cache_lookup.size*3) {
         fprintf(stderr, "Error: Text_box cache size limit exceeded.\n");
         exit(201);
     }
-    context->prep_cache_lookup[slot_i] = {hash, context->prep_cache.size};
-    array_push_back(&context->prep_cache, *box);
+    prep->cache_lookup[slot_i] = {hash, prep->cache.size};
+    array_push_back(&prep->cache, *box);
+}
+
+void platform_text_prepare(int font_size, Array_t<Text_box>* offsets, float* ascent) {
+    Lui_context* context = &global_platform.gl_context;
+    
+    _platform_init_font(Lui_context::FONT_BDD_LABEL, -1, font_size);
+    lui_text_prepare_init(&context->prep_bdd);
+
+    for (s64 i = 0; i < offsets->size; ++i) {
+        u8 c = webgl_bddlabel_index_char(i);
+        Text_box box;
+        lui_text_prepare_word(context, &context->prep_bdd, Lui_context::FONT_BDD_LABEL, {&c, 1}, &box);
+
+        (*offsets)[i] = box;
+    }
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, context->prep_bdd.size, context->prep_bdd.size, 0,
+        GL_RED, GL_UNSIGNED_BYTE, context->prep_bdd.image.data);
+
+    if (ascent) *ascent = context->fonts[Lui_context::FONT_BDD_LABEL].ascent;
 }
 
 void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out, bool only_measure=false) {
@@ -682,12 +739,25 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
 
     y = std::round(y + context->fonts[boxes[0].font].ascent);
 
-    for (Text_box box: boxes) {
+    for (s64 i = 0; i < boxes.size; ++i) {
+        Text_box box = boxes[i];
         auto font_inst = context->fonts[box.font];
-        
-        if (x > orig_x and x + box.x1 > w) {
+
+        float word_end = x;
+        for (s64 j = i; j < boxes.size; ++j) {
+            if (boxes[j].flags & Text_fmt::STICKY) {
+                word_end += std::round(box.flags & Text_fmt::NOSPACE ? boxes[j].advance : boxes[j].advance + context->fonts[boxes[j].font].space);
+            } else {
+                word_end += boxes[j].x1;
+                break;
+            }
+        }
+        if (x > orig_x and word_end > orig_x + w) {
             x = orig_x;
             y = std::round(y + font_inst.newline);
+            if (box.flags & Text_fmt::INDENTED) {
+                x += std::round(font_inst.space * 4);
+            }
         }
 
         u8* box_fill = box.flags & Text_fmt::RED ? red : fill;
@@ -715,6 +785,9 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
         if (box.flags & Text_fmt::PARAGRAPH) {
             x = orig_x;
             y = std::round(y + font_inst.newline * 1.5f);
+        } else if (box.flags & Text_fmt::PARAGRAPH_CLOSE) {
+            x = orig_x;
+            y = std::round(y + font_inst.newline * 1.2f);
         } else if (box.flags & Text_fmt::NEWLINE) {
             x = orig_x;
             y = std::round(y + font_inst.newline);
@@ -861,7 +934,7 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
             s64 c_len = _decode_utf8(array_subarray(entry.text, c_i, entry.text.size));
 
             Text_box box;
-            lui_text_prepare_word(context, font, array_subarray(entry.text, c_i, c_i+c_len), &box);
+            lui_text_prepare_word(context, &context->prep_ui, font, array_subarray(entry.text, c_i, c_i+c_len), &box);
             box.x0 += x; box.x1 += x; box.y0 += y; box.y1 += y;
 
             if (sel0 <= c_i and c_i < sel1) {
@@ -935,9 +1008,11 @@ void platform_fmt_end(u64 flags) {
     
     context->fmt_flags &= ~flags;
 }
-void platform_fmt_text(u64 flags, Array_t<u8> text) {
-    platform_fmt_begin(flags);
-    flags = global_platform.gl_context.fmt_flags;
+void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
+    Lui_context* context = &global_platform.gl_context;
+    
+    platform_fmt_begin(flags_add);
+    u64 flags = global_platform.gl_context.fmt_flags;
 
     u8 font;
     if (flags & Text_fmt::HEADER) {
@@ -965,16 +1040,16 @@ void platform_fmt_text(u64 flags, Array_t<u8> text) {
         if (last == i) continue;
 
         Text_box box;
-        lui_text_prepare_word(&global_platform.gl_context, font, array_subarray(text, last, i), &box, letter_fac);
-        if (isdigit) box.flags |= Text_fmt::NOSPACE;
+        lui_text_prepare_word(&global_platform.gl_context, &context->prep_ui, font, array_subarray(text, last, i), &box, letter_fac);
+        if (isdigit) box.flags |= Text_fmt::NOSPACE | Text_fmt::STICKY;
 
-        box.flags |= flags & Text_fmt::RED;
+        box.flags |= flags & Text_fmt::GROUP_DRAWING;
         
         array_push_back(&global_platform.gl_context.fmt_boxes, box);
         last = i + not isdigit;
     }
     
-    platform_fmt_end(flags);
+    platform_fmt_end(flags_add);
 }
 void platform_fmt_text(u64 flags, char const* s) {
     platform_fmt_text(flags, {(u8*)s, (s64)strlen(s)});
@@ -1148,36 +1223,18 @@ void _platform_init(Platform_state* platform) {
     }
 
     context->fonts = array_create<Lui_context::Font_instance>(Lui_context::FONT_COUNT);
-    auto set_font = [context](s64 font_style, s64 index, float size) {
-        Lui_context::Font_instance inst;
-        inst.info_index = index;
-        inst.scale = stbtt_ScaleForPixelHeight(&context->font_info[index], size);
-        
-        {int ascent, descent, linegap;
-        stbtt_GetFontVMetrics(&context->font_info[index], &ascent, &descent, &linegap);
-        inst.ascent = (float)ascent * inst.scale;
-        inst.height = (float)(ascent - descent) * inst.scale;
-        inst.newline = (float)(ascent - descent + linegap) * inst.scale;}
-
-        {int advance;
-        stbtt_GetCodepointHMetrics(&context->font_info[index], ' ', &advance, nullptr);
-        inst.space = (float)advance * inst.scale;}
-
-        context->fonts[font_style] = inst;
-    };
-    set_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
-    set_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
-    set_font(Lui_context::FONT_LUI_BOLD, 2, 20);
-    set_font(Lui_context::FONT_LUI_HEADER, 2, 26);
-    set_font(Lui_context::FONT_LUI_SMALL, 0, 15);
-    set_font(Lui_context::FONT_LUI_SANS, 4, 16.7);
-    set_font(Lui_context::FONT_BDD_LABEL, 3, 20);
+    
+    _platform_init_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
+    _platform_init_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
+    _platform_init_font(Lui_context::FONT_LUI_BOLD, 2, 20);
+    _platform_init_font(Lui_context::FONT_LUI_HEADER, 2, 26);
+    _platform_init_font(Lui_context::FONT_LUI_SMALL, 0, 15);
+    _platform_init_font(Lui_context::FONT_LUI_SANS, 4, 16.7);
+    _platform_init_font(Lui_context::FONT_BDD_LABEL, 3, 20);
 
     // Initialise font preparation
-    context->prep_size = 512;
-    context->prep_image = array_create<u8>(context->prep_size * context->prep_size);
-    context->prep_cache_lookup = array_create<Text_box_lookup>(4096);
-    memset(context->prep_cache_lookup.data, -1, context->prep_cache_lookup.size * sizeof(Text_box_lookup));
+    lui_text_prepare_init(&context->prep_ui);
+    // prep_bdd is initialised in platform_text_prepare
 
     // Initialise formatted font rendering
     array_resize(&context->fmt_slots, Lui_context::SLOT_COUNT);
@@ -1287,6 +1344,8 @@ void _platform_operations_able(bool set) {
     for (s64 i: elem_disable) {
         if (set) {
             context->elem_flags[i] |= Lui_context::DRAW_DISABLED;
+            context->elem_flags[i] &= ~Lui_context::DRAW_FOCUSED;
+            if (i == context->elem_focused) context->elem_focused = 0;
         } else {
             context->elem_flags[i] &= ~Lui_context::DRAW_DISABLED;
         }
@@ -1303,7 +1362,7 @@ void platform_operations_enable(u32 bdd) {
             Text_entry* entry = &context->entries[entry_id];
             lui_entry_clear(context, entry);
             if (bdd > 1) {
-                array_printf(&entry->text, "%ldd", bdd);
+                array_printf(&entry->text, "%d", bdd);
             } else {
                 array_printf(&entry->text, "%s", bdd ? "F" : "T");
             }
@@ -1339,9 +1398,13 @@ void platform_ui_value_free(Array_t<u8> data) {}
     
 void platform_mouse_position(float* out_x, float* out_y) {
     auto context = &global_platform.gl_context;
+    auto c = &global_context;
 
-    if (out_x) *out_x = context->pointer_x - context->panel_left_width;
-    if (out_y) *out_y = context->pointer_y;
+    float world_x = c->origin_x + (context->pointer_x - c->canvas_x) / c->scale;
+    float world_y = c->origin_y + (c->height-1 - context->pointer_y + c->canvas_y) / c->scale;
+
+    if (out_x) *out_x = world_x;
+    if (out_y) *out_y = world_y;
 }
 
 void _platform_frame_draw() {
@@ -1352,8 +1415,8 @@ void _platform_frame_draw() {
 
     auto context = &global_platform.gl_context; // The macros expect a local named context
 
-    if (context->prep_dirty) {
-        context->prep_dirty = false;
+    if (context->prep_ui.dirty) {
+        context->prep_ui.dirty = false;
         
         if (context->uitext_tex) {
             glDeleteTextures(1, &context->uitext_tex);
@@ -1361,7 +1424,8 @@ void _platform_frame_draw() {
         glGenTextures(1, &context->uitext_tex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, context->uitext_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, context->prep_size, context->prep_size, 0, GL_RED, GL_UNSIGNED_BYTE, context->prep_image.data);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, context->prep_ui.size, context->prep_ui.size, 0,
+            GL_RED, GL_UNSIGNED_BYTE, context->prep_ui.image.data);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     }
@@ -1515,7 +1579,11 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
         for (s64 c_i = entry->cursor - entry->cursor_col; c_i < entry->cursor;) {
             s64 c_len = _decode_utf8(array_subarray(entry->text, c_i, entry->text.size));
             Text_box box;
-            lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, array_subarray(entry->text, c_i, c_i+c_len), &box);
+
+            // This should basicall just do a lookup
+            lui_text_prepare_word(context, &context->prep_ui, Lui_context::FONT_LUI_SANS,
+                array_subarray(entry->text, c_i, c_i+c_len), &box);
+            
             width += (s64)std::round(box.advance);
             c_i += c_len;
         }
@@ -1528,9 +1596,11 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
             s64 c_len = _decode_utf8(array_subarray(entry->text, entry->cursor, entry->text.size));
             Text_box box;
             auto c_arr = array_subarray(entry->text, entry->cursor, entry->cursor+c_len);
-            lui_text_prepare_word(context, Lui_context::FONT_LUI_SANS, c_arr, &box);
-            s64 advance = (s64)std::round(box.advance);
 
+            // This should basicall just do a lookup
+            lui_text_prepare_word(context, &context->prep_ui, Lui_context::FONT_LUI_SANS, c_arr, &box);
+
+            s64 advance = (s64)std::round(box.advance);
             if (advance >= 2 * width) break;
 
             entry->cursor += c_len;
@@ -1871,14 +1941,18 @@ void lui_button_press(s64 slot) {
     }
 }
 
+void lui_radio_press(s64 slot) {
+    if (slot == Lui_context::SLOT_LABEL_UNION) {
+        platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_U);
+    } else if (slot == Lui_context::SLOT_LABEL_INTERSECTION) {
+        platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_I);
+    } else if (slot == Lui_context::SLOT_LABEL_COMPLEMENT) {
+        platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_C);
+    }
+}
+
 void _platform_render(Platform_state* platform) {
     assert(platform);
-    
-    application_render();
-    glClear(GL_COLOR_BUFFER_BIT);
-    glClear(GL_DEPTH_BUFFER_BIT);
-
-    _platform_frame_init();
     
     Lui_context* context = &global_platform.gl_context;
     auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
@@ -1941,6 +2015,8 @@ void _platform_render(Platform_state* platform) {
                     }
                     if (context->elem_flags[slot] & Lui_context::DRAW_BUTTON) {
                         lui_button_press(slot);
+                    } else if (context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
+                        lui_radio_press(slot);
                     }
                 } else if (action == Key::MOTION) {
                     if (context->drag_el == slot and (context->elem_flags[slot] & Lui_context::DRAW_BUTTON)) {
@@ -1951,11 +2027,18 @@ void _platform_render(Platform_state* platform) {
                     if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
                         cursor_is_text = true;
                         _lui_process_key_entry(context, get_entry(slot), key);
+                    } else if (slot == Lui_context::SLOT_CANVAS) {
+                        auto c = &global_context;
+
+                        float world_x = c->origin_x + (x - c->canvas_x) / c->scale;
+                        float world_y = c->origin_y + (c->height-1 - y + c->canvas_y) / c->scale;
+                        ui_mouse_move(world_x, world_y);
                     }
                 }
                 
                 consumed = true;
             }
+            
             if (action == Key::MOTION) {
                 platform_set_cursor(cursor_is_text);
             } else if (action == Key::LEFT_UP) {
@@ -2018,6 +2101,9 @@ void _platform_render(Platform_state* platform) {
                     context->elem_tabindex = slot;
                     context->elem_flags[slot] |= Lui_context::DRAW_PRESSED;
                     context->elem_flags[slot] |= Lui_context::DRAW_FOCUSED;
+
+                    lui_radio_press(slot);
+                    
                     consumed = true;
                 }
             }
@@ -2084,7 +2170,15 @@ void _platform_render(Platform_state* platform) {
     if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_ENTRY) {
         get_entry(context->elem_focused)->cursor_draw = not context->cursor_blinked;
     }
-    
+
+    // Draw the application
+    application_render();
+    context->elem_bb[Lui_context::SLOT_CANVAS] = Rect {
+        global_context.canvas_x, global_context.canvas_y, (s64)global_context.width, (s64)global_context.height
+    };
+
+    _platform_frame_init();
+
     // Now draw the UI
     
     u8 white[] = {255, 255, 255, 255};
@@ -2136,7 +2230,7 @@ void _platform_render(Platform_state* platform) {
     y += std::round(font_inst.height - font_inst.ascent);
 
     {s64 x_orig = x, ha_line;
-        lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_LABEL_FIRSTNODE, x, y, -1, &x, &y);
     y -= ha_line;
@@ -2185,9 +2279,25 @@ void _platform_render(Platform_state* platform) {
 
     y += std::round(font_inst.newline * 0.5f);
     platform_fmt_draw(Text_fmt::SLOT_CONTEXT, x, y, w, nullptr, &y);
+
+    if (context->bddinfo_active) {
+        auto c = &global_context;
+        s64 x =               (s64)std::round((context->bddinfo_x - c->origin_x) * c->scale) + c->canvas_x;
+        s64 y = c->height-1 - (s64)std::round((context->bddinfo_y - c->origin_y) * c->scale) + c->canvas_y;
+        Padding pad {8, 8};
+        s64 w = 345;
+        s64 yh;
+
+        platform_fmt_draw(Text_fmt::SLOT_BDDINFO, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, &yh);
+        lui_draw_rect(context, x, y, w, yh + pad.pad_y - y, Lui_context::LAYER_MIDDLE, white);
+    }
     
     _platform_frame_draw();
     glXSwapBuffers(platform->display, platform->window_glx);
+
+    if (context->main_loop_active) {
+        platform_redraw(0);
+    }
 }
 
 void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
