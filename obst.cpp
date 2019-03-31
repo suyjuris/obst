@@ -990,7 +990,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
     if (bdd == (u32)-1) {
         context_append(store, "Creating BDD from list ");
         context_amend_list_base(store, numbers, base);
-        context_amend(store, " using levels ");
+        context_amend(store, " using bit order ");
         context_amend_list(store, levels, "%hhd");
 
         bdd_temp = {0, 0, (u8)levels.size, Bdd::TEMPORARY};
@@ -3988,7 +3988,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     // Generate the info text
     if (bdd == 1) {
         platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH_CLOSE, "Node T");
-        platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH, "This node is special. It represents "
+        platform_fmt_text(Text_fmt::PARAGRAPH, "This node is special. It represents "
             "the set containing only the number 0 (or, more precisely, the empty bitstring). Its "
             "sibling, F, is the empty set and is omitted from the drawing.");
     } else {
@@ -4028,9 +4028,10 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
 
     }
     platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
-    
     platform_fmt_store(Text_fmt::SLOT_BDDINFO);
-    platform_ui_bddinfo_show(x, y);
+
+    float pad = global_context.draw_param.node_radius * 1.35;
+    platform_ui_bddinfo_show(x, y, pad);
     
     return true;
 }

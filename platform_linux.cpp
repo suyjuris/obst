@@ -214,7 +214,7 @@ struct Lui_context {
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
-        SLOT_BUTTON_NEXT, SLOT_CANVAS,
+        SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_HELPTEXT, SLOT_CANVAS,
         SLOT_COUNT
     };
     
@@ -265,7 +265,10 @@ struct Lui_context {
 
     // State for bddinfo
     bool bddinfo_active = false;
-    float bddinfo_x, bddinfo_y;
+    s64 bddinfo_x, bddinfo_y, bddinfo_pad; // pixels relative to canvas
+
+    // State for helptext
+    bool helptext_active = false;
 };
 
 namespace Platform_clipboard {
@@ -294,13 +297,16 @@ struct Platform_state {
 };
 Platform_state global_platform;
 
-void platform_ui_button_help () {}
+void platform_ui_button_help () {
+    global_platform.gl_context.helptext_active ^= 1;
+}
 
-void platform_ui_bddinfo_show(float x, float y) {
+void platform_ui_bddinfo_show(float x, float y, float pad) {
     Lui_context* context = &global_platform.gl_context;
     context->bddinfo_active = true;
-    context->bddinfo_x = x;
-    context->bddinfo_y = y;
+    context->bddinfo_x   =  (s64)std::round((x - global_context.origin_x) * global_context.scale);
+    context->bddinfo_y   = -(s64)std::round((y - global_context.origin_y) * global_context.scale) + global_context.height;
+    context->bddinfo_pad =  (s64)std::round( pad                          * global_context.scale);
 }
 void platform_ui_bddinfo_hide() {
     global_platform.gl_context.bddinfo_active = false;
@@ -552,8 +558,8 @@ s64 _decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
     return c_bytes;
 }
 
-void lui_text_prepare_init(Text_preparation* prep) {
-    prep->size = 512;
+void lui_text_prepare_init(Text_preparation* prep, s64 texture_size) {
+    prep->size = texture_size;
     prep->image = array_create<u8>(prep->size * prep->size);
     prep->cache_lookup = array_create<Text_box_lookup>(4096);
     memset(prep->cache_lookup.data, -1, prep->cache_lookup.size * sizeof(Text_box_lookup));
@@ -642,6 +648,11 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
             array_resize(&buf, w * h);
             stbtt_MakeGlyphBitmapSubpixel(fontinfo, buf.data, w, h, w, f, f, shift, 0.f, glyphs[k]);
 
+            if ((x0 + w) + (y0 + h) * size > prep->image.size) {
+                fprintf(stderr, "Error: glyph texture capacity exceeded\n");
+                exit(202);
+            }
+            
             for (s64 row = 0; row < h; ++row) {
                 for (s64 col = 0; col < w; ++col) {
                     u8* p = &prep->image[(x0 + col) + (y0 + row) * size];
@@ -708,7 +719,7 @@ void platform_text_prepare(int font_size, Array_t<Text_box>* offsets, float* asc
     Lui_context* context = &global_platform.gl_context;
     
     _platform_init_font(Lui_context::FONT_BDD_LABEL, -1, font_size);
-    lui_text_prepare_init(&context->prep_bdd);
+    lui_text_prepare_init(&context->prep_bdd, 512);
 
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = webgl_bddlabel_index_char(i);
@@ -724,13 +735,13 @@ void platform_text_prepare(int font_size, Array_t<Text_box>* offsets, float* asc
     if (ascent) *ascent = context->fonts[Lui_context::FONT_BDD_LABEL].ascent;
 }
 
-void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out, bool only_measure=false) {
+void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out, bool only_measure=false, s64* xw_out=nullptr) {
     assert(context);
 
     if (not boxes.size) return;
     
     float x = (float)x_, y = (float)y_, w = (float)w_;
-    float orig_x = x, orig_y = y;
+    float orig_x = x, orig_y = y, max_x = x;
     if (w_ == -1) w = INFINITY;
 
     u8 black[] = {  0,  0,   0, 255};
@@ -745,8 +756,10 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
 
         float word_end = x;
         for (s64 j = i; j < boxes.size; ++j) {
-            if (boxes[j].flags & Text_fmt::STICKY) {
-                word_end += std::round(box.flags & Text_fmt::NOSPACE ? boxes[j].advance : boxes[j].advance + context->fonts[boxes[j].font].space);
+            if ((boxes[j].flags & Text_fmt::STICKY) and not (boxes[j].flags & Text_fmt::GROUP_BREAKING)) {
+                float adv = boxes[j].advance;
+                if (~box.flags & Text_fmt::NOSPACE) adv += context->fonts[boxes[j].font].space;
+                word_end += std::round(adv);
             } else {
                 word_end += boxes[j].x1;
                 break;
@@ -755,10 +768,13 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
         if (x > orig_x and word_end > orig_x + w) {
             x = orig_x;
             y = std::round(y + font_inst.newline);
-            if (box.flags & Text_fmt::INDENTED) {
+            if (box.flags & (Text_fmt::INDENTED | Text_fmt::ITEMIZED)) {
                 x += std::round(font_inst.space * 4);
             }
+        } else if (x == orig_x and (box.flags & Text_fmt::ITEMIZED)) {
+            x += std::round(font_inst.space * 3 - box.advance);
         }
+        max_x = std::max(x + box.x1, max_x);
 
         u8* box_fill = box.flags & Text_fmt::RED ? red : fill;
 
@@ -775,7 +791,7 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
                 array_append(&context->buf_uitext_fill, {box_fill, 4});
             }
         }
-
+        
         if (box.flags & Text_fmt::NOSPACE) {
             x = std::round(x + box.advance);
         } else {
@@ -797,8 +813,9 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
     auto font_inst = context->fonts[boxes[boxes.size-1].font];
     y -= font_inst.ascent;
     
-    if (x_out) *x_out = (s64)std::round(x);
-    if (y_out) *y_out = (s64)std::round(y);
+    if (x_out)  *x_out  = (s64)std::round(x);
+    if (y_out)  *y_out  = (s64)std::round(y);
+    if (xw_out) *xw_out = (s64)std::ceil(max_x);
 }
 
 void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, Rect* text_bb, bool only_measure=false) {
@@ -1034,8 +1051,9 @@ void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
     s64 last = 0;
     for (s64 i = 0; i <= text.size; ++i) {
         // Digits are liable to change, so we render them individually
-        bool isdigit = last < text.size and ('0' <= text[last] and text[last] <= '9');
-        if (i < text.size and text[i] != ' ' and text[i] != '\n' and not isdigit)  continue;
+        bool isdigit = (last < text.size and ('0' <= text[last] and text[last] <= '9'))
+                    or (i    < text.size and ('0' <= text[i]    and text[i]    <= '9'));
+        if (i < text.size and text[i] != ' ' and text[i] != '\n' and not isdigit) continue;
         
         if (last == i) continue;
 
@@ -1054,6 +1072,13 @@ void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
 void platform_fmt_text(u64 flags, char const* s) {
     platform_fmt_text(flags, {(u8*)s, (s64)strlen(s)});
 }
+void platform_fmt_spacing(u64 flags) {
+    Text_box box;
+    box.font = Lui_context::FONT_LUI_NORMAL;
+    box.flags = flags;
+    array_push_back(&global_platform.gl_context.fmt_boxes, box);
+}
+
 void platform_fmt_store(s64 slot) {
     assert(0 <= slot);
 
@@ -1073,12 +1098,12 @@ void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot) {
     platform_fmt_text(flags, str);
     platform_fmt_store(slot);
 }
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure) {
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure, s64* xw_out) {
     Lui_context* context = &global_platform.gl_context;
     u8 black[] = {0, 0, 0, 255};
     u8 gray[] = {120, 120, 120, 255};
     u8* fill = context->elem_flags[slot] & Lui_context::DRAW_DISABLED ? gray : black;
-    lui_text_draw(context, context->fmt_slots[slot], x, y, w, fill, x_out, y_out, only_measure);
+    lui_text_draw(context, context->fmt_slots[slot], x, y, w, fill, x_out, y_out, only_measure, xw_out);
 }
 void platform_fmt_store_copy(s64 slot_into, s64 slot_from) {
     Lui_context* context = &global_platform.gl_context;
@@ -1233,7 +1258,7 @@ void _platform_init(Platform_state* platform) {
     _platform_init_font(Lui_context::FONT_BDD_LABEL, 3, 20);
 
     // Initialise font preparation
-    lui_text_prepare_init(&context->prep_ui);
+    lui_text_prepare_init(&context->prep_ui, 1024);
     // prep_bdd is initialised in platform_text_prepare
 
     // Initialise formatted font rendering
@@ -1247,6 +1272,32 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_text(Text_fmt::ITALICS, "Hint:");
     platform_fmt_text(Text_fmt::PARAGRAPH, "You can hover over nodes using your cursor, showing additional details.");
     platform_fmt_store(Lui_context::SLOT_INITTEXT);
+
+    platform_fmt_init();
+    platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "About");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "obst visualises algorithms related to Binary Decision Diagrams (BDDs). BDDs are a data structure one can use to represent sets of numbers in a concise and unique fashion, while still being able to efficiently execute set operations on them.");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "In particular, this tool shows how to create a BDD from a list of numbers, as well as compute their union, intersection and complement. The source is publicly available on GitHub. Feel free to write me an email for any feedback, suggestions, etc.!");
+    platform_fmt_spacing(Text_fmt::NEWLINE);
+    platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Usage Instructions");
+    platform_fmt_text(Text_fmt::PARAGRAPH, u8"Press “Create and add” to get started. This will add a BDD to the graph representing the set of numbers you specified. Afterwards you can step through the frames of the animation (using arrow keys, or the buttons labelled “◁” and “▷”). ");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "Once the graph contains some nodes, you can start doing set operations. Simply enter the names of the nodes and press the “Calculate” button. Once again, you can go through the frames of the animation to find out how exactly the result was computed.");
+    platform_fmt_spacing(Text_fmt::NEWLINE);
+    platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Keybindings");
+    platform_fmt_begin(Text_fmt::ITEMIZED);
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "Left, Right");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Move to the previous/next frame of the animation.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "Page down, Page up");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Move to the previous/next checkpoint, that is the first frame of an operation.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "Home, End");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Move to the first/last frame.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F1");
+    platform_fmt_text(Text_fmt::PARAGRAPH, ": Show/hide help.");
+    platform_fmt_end(Text_fmt::ITEMIZED);
+    platform_fmt_store(Lui_context::SLOT_HELPTEXT);
 
     platform_fmt_store_simple(Text_fmt::PARAGRAPH, "Adds the BDD to the graph.", Lui_context::SLOT_BUTTON_DESC_CREATE);
     platform_fmt_store_simple(Text_fmt::PARAGRAPH, "Applies the operation.", Lui_context::SLOT_BUTTON_DESC_OP);
@@ -2282,14 +2333,37 @@ void _platform_render(Platform_state* platform) {
 
     if (context->bddinfo_active) {
         auto c = &global_context;
-        s64 x =               (s64)std::round((context->bddinfo_x - c->origin_x) * c->scale) + c->canvas_x;
-        s64 y = c->height-1 - (s64)std::round((context->bddinfo_y - c->origin_y) * c->scale) + c->canvas_y;
         Padding pad {8, 8};
-        s64 w = 345;
-        s64 yh;
+        s64 w = 345, iw, ih;
+        platform_fmt_draw(Text_fmt::SLOT_BDDINFO, 0, 0, w-2*pad.pad_x, nullptr, &ih, true, &iw);
+        s64 x = context->bddinfo_x + context->bddinfo_pad;
+        s64 y = context->bddinfo_y;
 
-        platform_fmt_draw(Text_fmt::SLOT_BDDINFO, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, &yh);
-        lui_draw_rect(context, x, y, w, yh + pad.pad_y - y, Lui_context::LAYER_MIDDLE, white);
+        if (x + pad.pad_x*2 + iw > c->width) {
+            x -= iw + pad.pad_x*2 + context->bddinfo_pad * 2;
+        }
+        if (y + pad.pad_y*2 + ih > c->height) {
+            y -= ih + pad.pad_y*2;
+        }
+        x += c->canvas_x; y += c->canvas_y;
+        
+        platform_fmt_draw(Text_fmt::SLOT_BDDINFO, x+pad.pad_x, y+pad.pad_y, iw, nullptr, nullptr);
+        lui_draw_rect(context, x, y, iw + pad.pad_x*2, ih + pad.pad_y*2, Lui_context::LAYER_MIDDLE, white);
+    }
+
+    if (context->helptext_active) {
+        auto c = &global_context;
+        Padding pad {8, 16, 10, 10};
+        s64 w = std::min((s64)c->width - pad.mar_x*2, 750ll);
+
+        s64 h;
+        platform_fmt_draw(Lui_context::SLOT_HELPTEXT, 0, 0, w-2*pad.pad_x, nullptr, &h, true);
+        h = std::min((s64)c->height - pad.mar_y*2, h + pad.pad_y*2);
+
+        s64 x = ((s64)c->width  - w) / 2 + c->canvas_x;
+        s64 y = ((s64)c->height - h) / 2 + c->canvas_y;
+        platform_fmt_draw(Lui_context::SLOT_HELPTEXT, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, nullptr);
+        lui_draw_rect(context, x, y, w, h, Lui_context::LAYER_MIDDLE, white);
     }
     
     _platform_frame_draw();

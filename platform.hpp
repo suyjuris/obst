@@ -110,8 +110,10 @@ enum Flags: u64 {
     COMPACT = 1024,
     RED = 2048,
     INDENTED = 4096,
+    ITEMIZED = 8192,
     GROUP_SPACING = PARAGRAPH | PARAGRAPH_CLOSE | NEWLINE | NOSPACE | STICKY,
-    GROUP_DRAWING = INDENTED | RED,
+    GROUP_BREAKING = PARAGRAPH | PARAGRAPH_CLOSE | NEWLINE,
+    GROUP_DRAWING = INDENTED | RED | ITEMIZED,
 };
 enum Slots: s64 {
     SLOT_CONTEXT, SLOT_CONTEXT_FRAME, SLOT_BDDINFO, SLOT_HELPTEXT, SLOT_ERRORINFO,
@@ -137,7 +139,7 @@ void platform_text_prepare(int size, Array_t<Text_box>* offsets, float* ascent);
 Array_t<u8> platform_ui_value_get(u8 elem);
 void platform_ui_value_free(Array_t<u8> data);
 void platform_ui_bddinfo_hide();
-void platform_ui_bddinfo_show(float x, float y);
+void platform_ui_bddinfo_show(float x, float y, float pad);
 double platform_now();
 void platform_mouse_position(float* out_x, float* out_y);
 void platform_ui_button_help ();
@@ -157,5 +159,5 @@ void platform_fmt_text(u64 flags, char const* s);
 void platform_fmt_store(s64 slot);
 void platform_fmt_store_simple(u64 flags, char const* str, s64 slot);
 void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot);
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false);
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false, s64* xw_out=nullptr);
 

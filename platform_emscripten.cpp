@@ -171,23 +171,27 @@ EM_JS(void, _platform_ui_bddinfo_show_js, (float x, float y, char* text, int rig
 })
 
 // Display the text at the specified position. This is the platform-level call for ui_bddinfo_show.
-void platform_ui_bddinfo_show(float x, float y, Array_t<u8> text) {
-    float pd = global_context.draw_param.node_radius * global_context.scale * 1.35;
+void platform_ui_bddinfo_show(float x, float y, float pad, Array_t<u8> text) {
     float px = (x - global_context.origin_x) * global_context.scale;
     float py = (y - global_context.origin_y) * global_context.scale;
-    int right = 0;
-    int bottom = 1;
+    float pw = w   * global_context.scale;
+    float pd = pad * global_context.scale;
     
+    bool right = false;
+    bool bottom = true;
+
     // Try to draw the box inside the canvas
+    // @Cleanup bddinfo width
     if (px + pd + 300.f >= global_context.width) {
         px = global_context.width - px;
-        right = 1;
+        right = true;
     }
     if (py + 200.f >= global_context.height) {
         py = global_context.height - py;
-        bottom = 0;
+        bottom = false;
     }
-    _platform_ui_bddinfo_show_js(px + pd, py, (char*)text.data, right, bottom);
+
+    _platform_ui_bddinfo_show_js(px + pd, py, (char*)text.data, (int)right, (int)bottom);
 }
 
 EM_JS(void, _platform_ui_context_set_js, (char* s, int frame, int frame_max), {
