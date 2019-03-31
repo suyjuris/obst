@@ -195,7 +195,8 @@ struct Lui_context {
         float scale, ascent, height, newline, space;
     };
     enum Font_instance_id: u8 {
-        FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL, FONT_LUI_SANS, FONT_BDD_LABEL,
+        FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL,
+        FONT_LUI_SANS, FONT_BDD_NORMAL, FONT_BDD_SMALL,
         FONT_COUNT
     };
 
@@ -715,16 +716,19 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
     array_push_back(&prep->cache, *box);
 }
 
-void platform_text_prepare(int font_size, Array_t<Text_box>* offsets, float* ascent) {
+void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* ascent) {
     Lui_context* context = &global_platform.gl_context;
     
-    _platform_init_font(Lui_context::FONT_BDD_LABEL, -1, font_size);
+    _platform_init_font(Lui_context::FONT_BDD_NORMAL, -1, font_size             );
+    _platform_init_font(Lui_context::FONT_BDD_SMALL,  -1, font_size * small_frac);
     lui_text_prepare_init(&context->prep_bdd, 512);
 
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = webgl_bddlabel_index_char(i);
         Text_box box;
-        lui_text_prepare_word(context, &context->prep_bdd, Lui_context::FONT_BDD_LABEL, {&c, 1}, &box);
+        u8 font = c & 128 ? Lui_context::FONT_BDD_SMALL : Lui_context::FONT_BDD_NORMAL;
+        c &= 127;
+        lui_text_prepare_word(context, &context->prep_bdd, font, {&c, 1}, &box);
 
         (*offsets)[i] = box;
     }
@@ -732,7 +736,7 @@ void platform_text_prepare(int font_size, Array_t<Text_box>* offsets, float* asc
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, context->prep_bdd.size, context->prep_bdd.size, 0,
         GL_RED, GL_UNSIGNED_BYTE, context->prep_bdd.image.data);
 
-    if (ascent) *ascent = context->fonts[Lui_context::FONT_BDD_LABEL].ascent;
+    if (ascent) *ascent = context->fonts[Lui_context::FONT_BDD_NORMAL].ascent;
 }
 
 void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out, bool only_measure=false, s64* xw_out=nullptr) {
@@ -1255,7 +1259,8 @@ void _platform_init(Platform_state* platform) {
     _platform_init_font(Lui_context::FONT_LUI_HEADER, 2, 26);
     _platform_init_font(Lui_context::FONT_LUI_SMALL, 0, 15);
     _platform_init_font(Lui_context::FONT_LUI_SANS, 4, 16.7);
-    _platform_init_font(Lui_context::FONT_BDD_LABEL, 3, 20);
+    _platform_init_font(Lui_context::FONT_BDD_NORMAL, 3, 20);
+    _platform_init_font(Lui_context::FONT_BDD_SMALL, 3, 20);
 
     // Initialise font preparation
     lui_text_prepare_init(&context->prep_ui, 1024);
@@ -2423,7 +2428,9 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     case XK_Z:            special = Key::C_REDO;      mod = ControlMask | ShiftMask; break;
     }
 
-    u64 mod_mask = ShiftMask | LockMask | ControlMask | Mod1Mask | Mod2Mask | Mod3Mask | Mod4Mask | Mod5Mask;
+    // Exclude NumLock (Mod2) and CapsLock (Lock) from the modifier list, as our shortcuts should
+    // still work if they are pressed.
+    u64 mod_mask = ShiftMask | ControlMask | Mod1Mask | Mod3Mask | Mod4Mask | Mod5Mask;
     if (special != Key::INVALID and (e.state & mod_mask) == mod) {
         u8 flags = 0;
         if (e.state & ShiftMask) flags |= Key::MOD_SHIFT;

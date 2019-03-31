@@ -135,7 +135,7 @@ struct Text_box {
 // Forward declarations for the application layer
 void platform_ui_error_report(Array_t<u8> msg);
 void platform_ui_error_clear();
-void platform_text_prepare(int size, Array_t<Text_box>* offsets, float* ascent);
+void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* ascent);
 Array_t<u8> platform_ui_value_get(u8 elem);
 void platform_ui_value_free(Array_t<u8> data);
 void platform_ui_bddinfo_hide();
