@@ -192,6 +192,7 @@ struct Bdd_store {
     // Date for generating the names of the Bdds
     Array_dyn<s64> names; // Offsets into name_data, with a dummy element at the end. First name has length 0
     Array_dyn<u8> name_data; // utf-8 encoded names
+    s64 name_next; // The final names for nodes are given in sequential order
 };
 
 // Initialises the store. Can be used for re-initialisation.
@@ -219,6 +220,7 @@ void bdd_store_init(Bdd_store* store) {
     store->snapshot_data_context.size = 0;
     store->names.size = 0;
     store->name_data.size = 0;
+    store->name_next = 0;
 
     // The F and T nodes.
     array_push_back(&store->bdd_data, {0, 0, 0, 0, 0, 1});
@@ -271,6 +273,68 @@ u32 bdd_insert(Bdd_store* store, Bdd bdd) {
     return store->bdd_lookup[slot].id;
 }
 
+void bdd_name_amend_number_base(Bdd_store* store, u64 number, s64 base = 10, bool small = false) {
+    s64 digit_count = 0;
+    for (u64 ii = number; ii or digit_count == 0; ii /= base) ++digit_count;
+
+    array_resize(&store->name_data, store->name_data.size + digit_count);
+    auto buf = array_subarray(store->name_data, store->name_data.size - digit_count, store->name_data.size);
+
+    s64 j = buf.size;
+    for (s64 j_it = 0; j_it < digit_count; ++j_it) {
+        s64 digit = number % base;
+        number /= base;
+        buf[--j] = (small << 7) | (u8)(digit < 10 ? '0' + digit : 'a' + digit - 10);
+    }
+}
+
+void bdd_name_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base) {
+    bool first = true;
+    
+    for (u64 i: list) {
+        if (not first) array_push_back(&store->name_data, (u8)(128 | ','));
+        first = false;
+        bdd_name_amend_number_base(store, i, base, true);
+    }
+}
+
+void bdd_name_amend_id(Bdd_store* store, u32 number) {
+    s64 base = 26;
+    s64 digit_count = 1;
+    for (u64 ii = number; ii >= base; ii = ii/base-1) ++digit_count;
+
+    array_resize(&store->name_data, store->name_data.size + digit_count);
+    auto buf = array_subarray(store->name_data, store->name_data.size - digit_count, store->name_data.size);
+
+    s64 j = buf.size;
+    for (s64 j_it = 0; j_it < digit_count; ++j_it) {
+        buf[--j] = (u8)('a' + number % base);
+        number = number / base - 1;
+    }
+}
+
+void bdd_name_amend_name(Bdd_store* store, u32 bdd) {
+    u32 name = store->bdd_data[bdd].name;
+    auto arr = array_subarray(store->name_data, store->names[name], store->names[name+1]);
+    array_append(&store->name_data, arr);
+}
+
+void bdd_name_amend_setop(Bdd_store* store, u32 a, u32 b, char op) {
+    assert(store->names.size > 0);
+    bdd_name_amend_name(store, a);
+    array_push_back(&store->name_data, (u8)op);
+    bdd_name_amend_name(store, b);
+}
+
+void bdd_name_assign(Bdd_store* store, Bdd* bdd) {
+    assert(store->names.size > 0);
+    if (store->name_data.size != store->names[store->names.size-1]) {
+        bdd->name = store->names.size-1;
+        store->bdd_data[bdd->id].name = bdd->name;
+        array_push_back(&store->names, store->name_data.size);
+    }
+}
+
 // Create a new bdd, with a new id. Unless the node is temporary, this does both deduplication and
 // removal of unnecessary nodes (both children point to the same node).
 //  Additionally, if there is any data remaining in store->name_data, assign it as the new name of
@@ -286,18 +350,15 @@ void bdd_create_inplace(Bdd_store* store, Bdd* bdd) {
             bdd->id = bdd_insert(store, *bdd);
             if (bdd->id == store->bdd_data.size) {
                 array_push_back(&store->bdd_data, *bdd);
+                bdd_name_amend_id(store, store->name_next++);
+                bdd_name_assign(store, bdd);
             } else {
                 *bdd = store->bdd_data[bdd->id];
             }
         }
     }
 
-    assert(store->names.size > 0);
-    if (store->name_data.size != store->names[store->names.size-1]) {
-        bdd->name = store->names.size-1;
-        store->bdd_data[bdd->id].name = bdd->name;
-        array_push_back(&store->names, store->name_data.size);
-    }
+    bdd_name_assign(store, bdd);
 }
 u32 bdd_create(Bdd_store* store, Bdd bdd) {
     bdd_create_inplace(store, &bdd);
@@ -433,32 +494,6 @@ void context_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base, s64 
     context_amend(store, "]");
 }
 
-void bdd_name_amend_number_base(Bdd_store* store, u64 number, s64 base) {
-    // If there is no fixed count, determine the actual amount here
-    s64 digit_count = 0;
-    for (u64 ii = number; ii or digit_count == 0; ii /= base) ++digit_count;
-
-    array_resize(&store->name_data, store->name_data.size + digit_count);
-    auto buf = array_subarray(store->name_data, store->name_data.size - digit_count, store->name_data.size);
-
-    s64 j = buf.size;
-    for (s64 j_it = 0; j_it < digit_count; ++j_it) {
-        s64 digit = number % base;
-        number /= base;
-        buf[--j] = 128 | (u8)(digit < 10 ? '0' + digit : 'a' + digit - 10);
-    }
-}
-
-void bdd_name_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base) {
-    bool first = true;
-    
-    for (u64 i: list) {
-        if (not first) array_push_back(&store->name_data, (u8)(128 | ','));
-        first = false;
-        bdd_name_amend_number_base(store, i, base);
-    }
-}
-
 // Pop the last element of the context stack. This will assert if it is empty.
 void context_pop(Bdd_store* store) {
     --store->snapshot_context.size;
@@ -480,8 +515,9 @@ u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
     } else {
         u32 bdd_id = bdd_insert(store, bdd);
         if (bdd_id == bdd.id) {
-            if (bdd.name == 0) bdd.name = store->bdd_data[bdd.id].name;
             store->bdd_data[bdd.id] = bdd;
+            bdd_name_amend_id(store, store->name_next++);
+            bdd_name_assign(store, &bdd);
             context_append(store, "");
         } else {
             context_append(store, "Merging node %d with %d", bdd.id, bdd_id);
@@ -586,7 +622,8 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
     if (bdd == (u32)-1) {
         // Create a new node for the union
         bdd_temp = {0, 0, std::max(a_bdd.level, b_bdd.level), Bdd::TEMPORARY};
-        bdd_temp.id = bdd_create(store, bdd_temp);
+        bdd_name_amend_setop(store, a, b, '|');
+        bdd_create_inplace(store, &bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
         
         context_append(store, "Calculating union of ");
@@ -732,7 +769,9 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         }        
 
         // Both children are created as temporary nodes, the recursive calls will populate them
+        bdd_name_amend_setop(store, child00_par, child01_par, '|');
         bdd_temp.child0 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
+        bdd_name_amend_setop(store, child10_par, child11_par, '|');
         bdd_temp.child1 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
         store->bdd_data[bdd_temp.id] = bdd_temp; // Write back changes into the store
 
@@ -2171,15 +2210,17 @@ struct Draw_param {
 
 // Data needed to draw a bdd
 struct Bdd_attr {
-    
     float x = 0.f, y = 0.f; // Position of the centre in world space
     float rx = 0.f, ry = 0.f; // Radius in x and y direction
     float font_x = 0.f, font_y = 0.f; // Position of the font centre. Not the same as x and y, but at most a pixel off.
+    float font_x2 = 0.f, font_y2 = 0.f; // Same, but slightly different offset of the second line of text
     float border = 0.05f;
     u8 stroke[4] = {}; // Color to draw the border, in RGBA
     u8 fill[4]   = {}; // Color to fill the area, in RGBA
     float mark_child0 = 0.f; // How much the child0 edge is marked
     float mark_child1 = 0.f; // How much the child1 edge is marked
+    u32 name = 0; // Which label to draw.
+    float name_alpha = 1.f;
 };
 
 // Keeps the necessary data to manage WebGL rendering
@@ -2332,8 +2373,6 @@ void webgl_text_prepare(Webgl_context* context) {
         context->text_pos = array_create<Text_box>(2*0x5e);
     }
 
-    // @Cleanup: Texture size should not be computed here, also we need to have a more general way
-    // to specify font mapping, and the platform_text_prepare interface should be more c-like
     int font_size = (int)std::round(
         context->draw_param.node_radius * context->draw_param.squish_fac * context->draw_param.font_frac * context->scale
     );
@@ -2671,10 +2710,27 @@ u8 webgl_bddlabel_index_char(s64 index) {
     assert(0 <= index and index <= 2*0x5e);
     return (u8)(index <= 0x5e ? index + 0x20 : (index - 0x3e) ^ 128);
 }
+Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr) {
+    assert(0 <= index and index <= 2*0x5e);
+    char c[2] = {(char)(index <= 0x5e ? index + 0x20 : index - 0x3e)};
+    char* s;
+    bool draw_light = false;
+    switch (c[0]) {
+    case '|': s = u8"∪"; draw_light = true; break;
+    case '&': s = u8"∩"; draw_light = true; break;
+    case '~': s = u8"¬"; break;
+    case '+': s = u8"∨"; draw_light = true; break;
+    case '-': s = u8"∧"; draw_light = true; break;
+    case '?': s = u8"∀"; break;
+    case '!': s = u8"∃"; break;
+    default: s = &c[0]; break;
+    };
+    if (draw_light_) *draw_light_ = draw_light;
+    return {(u8*)s, (s64)strlen(s)};
+}
 
 // Convert the id bdd into a label for the bdd
-Array_t<u8> _get_bdd_name(Bdd_store* store, u32 bdd) {
-    auto name = store->bdd_data[bdd].name;
+Array_t<u8> _get_bdd_name(Bdd_store* store, u32 name) {
     if (name == 0) {
         auto s = "unnamed";
         return {(u8*)s, (s64)strlen(s)};
@@ -2696,7 +2752,7 @@ void _measure_str(Webgl_context* context, Array_t<u8> text, float size, float* w
     for (u8 c: text) only_small &= (bool)(c & 128);
     
     float size_adj = size;
-    float ascent = context->font_ascent;
+    float ascent = context->font_ascent * size / context->font_size_max;;
     if (only_small) {
         size_adj *= context->font_small_frac;
         ascent   *= context->font_small_frac;
@@ -2713,31 +2769,38 @@ void webgl_draw_text(
     Array_t<u8> text, // Note that only the characters mapped by webgl_bddlabel_char_index will be drawn
     float size, // font size in world-coordinates
     float alpha,
-    float align // 1 is right-aligned, 0 centered, -1 left-aligned
+    float align, // 1 is right-aligned, 0 centered, -1 left-aligned
+    bool do_draw = true,
+    float* x_out = nullptr,
+    float* y_out = nullptr
 ) {
-    // Warning! If you change any offset in this function, also adjust webgl_round_text!
-
     // Note on font rounding: In my quest to get sharp fonts, I round font sizes and positions to
     // pixels. But that does not look great during transitions. So only the final positions and the
     // final font size (i.e. the maximum size) are rounded, for the others we interpolate as
     // usual. To get the pixels to line up, every transformation between here and the final
     // pixel-coordinates has to be taken into account by the rounding.
 
-    if (text.size == 0) return;
-    
     float fs = 1.f / context->scale * size / context->font_size_max;
     float size_total, size_adj, ascent;
     _measure_str(context, text, size, &size_total, &size_adj, &ascent);
     
     x += - size_total * (0.5f + align * 0.5f) - 0.5f / context->scale;
     y += - (ascent - size_adj*0.5f)           - 0.5f / context->scale;
-    u8 fill[] = {0, 0, 0, (u8)(alpha * 255.f)};
+    u8 black[] = {  0,   0,   0, (u8)(alpha * 255.f)};
+    u8 grey[]  = {100, 100, 100, (u8)(alpha * 255.f)};
 
+    if (x_out) *x_out = x;
+    if (y_out) *y_out = y;
+
+    if (not do_draw) return;
+    
     for (u8 c: text) {
         s64 index = webgl_bddlabel_char_index(c);
         if (index == -1) continue;
         Text_box box = context->text_pos[index];
-    
+        bool draw_light;
+        webgl_bddlabel_index_utf8(index, &draw_light);
+        
         array_append(&context->buf_text_pos, {
             x+box.x0*fs, y-box.y0*fs, x+box.x1*fs, y-box.y0*fs, x+box.x1*fs, y-box.y1*fs,
             x+box.x0*fs, y-box.y0*fs, x+box.x1*fs, y-box.y1*fs, x+box.x0*fs, y-box.y1*fs
@@ -2746,37 +2809,51 @@ void webgl_draw_text(
             box.s0, box.t0, box.s1, box.t0, box.s1, box.t1, box.s0, box.t0, box.s1, box.t1, box.s0, box.t1
         });
         for (s64 i = 0; i < 6; ++i) {
-            array_append(&context->buf_text_fill, {fill, 4});
+            array_append(&context->buf_text_fill, {draw_light ? grey : black, 4});
         }
 
         x += std::round(box.advance) * fs;
     }
 }
 
-void webgl_draw_text_bdd(Webgl_context* context, Bdd_store* store, Bdd_attr a, u32 bdd, float fac) {
-    Array_t<u8> str = _get_bdd_name(store, bdd);
+void webgl_draw_text_bdd(
+    Webgl_context* context,
+    Bdd_store* store,
+    Bdd_attr a,
+    u32 bdd,
+    float fac,
+    bool do_draw = true,
+    float* x1_out = nullptr,
+    float* y1_out = nullptr,
+    float* x2_out = nullptr,
+    float* y2_out = nullptr
+) {
+    Array_t<u8> str = _get_bdd_name(store, a.name);
     float size = context->font_size_max * fac;
 
     float w, size_adj, ascent;
     _measure_str(context, str, size, &w, &size_adj, nullptr);
-    u8 fill[] = {a.fill[0], a.fill[1], a.fill[2], (u8)(a.fill[3] * 0.93f)};
+    u8 fill[] = {a.fill[0], a.fill[1], a.fill[2], (u8)(a.fill[3] * 0.93f * a.name_alpha)};
 
     float pad = 0.01f;
+    float line_fac = 0.6f;
     
     bool oneline = true;
     if (w > 2.f*a.rx) {
         if (size_adj < size) {
             oneline = false;
-        } else {
+        } else if (do_draw) {
             webgl_draw_rect(context, a.font_x - w/2.f - pad, a.font_y - size_adj/2.f - pad, w + 2.f*pad, size_adj + 2.f*pad, fill);
         }
     }
 
-    float alpha = a.stroke[3]/255.f;
+    float alpha = a.stroke[3]/255.f * a.name_alpha;
     if (oneline) {
-        webgl_draw_text(context, a.font_x, a.font_y, str, size, alpha, 0.f);
+        webgl_draw_text(context, a.font_x, a.font_y, str, size, alpha, 0.f, do_draw, x1_out, y1_out);
+        if (x2_out) *x2_out = 0.f;
+        if (y2_out) *y2_out = 0.f;
     } else {
-        float fs = 1.f / context->scale * size / context->font_size_max;
+        float fs = fac / context->scale;
         float wn = 0.f;
         s64 i;
         for (i = 0; i < str.size; ++i) {
@@ -2786,27 +2863,32 @@ void webgl_draw_text_bdd(Webgl_context* context, Bdd_store* store, Bdd_attr a, u
             if (wn > w/2.f and (str[i]&127) == ',') break;
         }
         ++i;
-        float yoff = i < str.size ? size_adj * 0.6f : 0.f;
-        webgl_draw_text(context, a.font_x, a.font_y + yoff, array_subarray(str, 0, i       ), size, alpha, 0.f);
-        webgl_draw_text(context, a.font_x, a.font_y - yoff, array_subarray(str, i, str.size), size, alpha, 0.f);
-        webgl_draw_rect(context, a.font_x - wn/2.f - pad, a.font_y - size_adj/2.f - yoff - pad, wn + 2.f*pad, size_adj+2.f*yoff + 2.f*pad, fill);
+        float yoff = i < str.size ? size_adj * line_fac : 0.f;
+        webgl_draw_text(context, a.font_x,  a.font_y  + yoff, array_subarray(str, 0, i       ), size, alpha, 0.f, do_draw, x1_out, y1_out);
+        webgl_draw_text(context, a.font_x2, a.font_y2 - yoff, array_subarray(str, i, str.size), size, alpha, 0.f, do_draw, x2_out, y2_out);
+        if (do_draw) {
+            webgl_draw_rect(context, a.font_x - (w-wn)/2.f - pad, a.font_y - size_adj/2.f - yoff - pad, w-wn + 2.f*pad, size_adj + 2.f*pad, fill);
+            webgl_draw_rect(context, a.font_x - wn/2.f - pad, a.font_y - size_adj/2.f + yoff - pad, wn + 2.f*pad, size_adj + 2.f*pad, fill);
+        }
     }
 }
 
 // See the note on font rounding above.
-void webgl_bdd_text_round(Webgl_context* context, Bdd_store* store, float* into_x, float* into_y, float x, float y, u64 bdd, float size) {
-    u8 _buf[24];
-    Array_t<u8> text = _get_bdd_name(store, bdd);
+void webgl_bdd_text_round(Webgl_context* context, Bdd_store* store, Bdd_attr* a, u32 bdd, float fac) {
+    a->font_x  = a->x;
+    a->font_y  = a->y;
+    a->font_x2 = a->x;
+    a->font_y2 = a->y;
+    
+    float x1, y1, x2, y2;
+    webgl_draw_text_bdd(context, store, *a, bdd, fac, false, &x1, &y1, &x2, &y2);
 
-    float fs = 1.f / context->scale     * size / context->font_size_max;
-    float size_total, size_adj, ascent;
-    _measure_str(context, text, size, &size_total, &size_adj, &ascent);
-
-    // Note that bdd labels do not use alignment
-    float x_diff = - size_total * 0.5f        - 0.5f / context->scale - context->origin_x;
-    float y_diff = - (ascent - size_adj*0.5f) - 0.5f / context->scale - context->origin_y;
-    if (into_x) *into_x = std::round((x + x_diff) * context->scale) / context->scale - x_diff;
-    if (into_y) *into_y = std::round((y + y_diff) * context->scale) / context->scale - y_diff;
+    auto frac = [](float f) { return std::round(f) - f; };
+    
+    a->font_x  += frac((x1 - context->origin_x) * context->scale) / context->scale;
+    a->font_y  += frac((y1 - context->origin_y) * context->scale) / context->scale;
+    a->font_x2 += frac((x2 - context->origin_x) * context->scale) / context->scale;
+    a->font_y2 += frac((y2 - context->origin_y) * context->scale) / context->scale;
 }
 
 // Calculates the length of the quadratic spline with control points p0, p1 and p2 using numerical
@@ -3122,6 +3204,8 @@ void webgl_frame_init(Webgl_context* context) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    glDepthFunc(GL_LEQUAL);
+    
     glActiveTexture(GL_TEXTURE0);
     
     context->buf_bdd_pos.size = 0;
@@ -3358,9 +3442,12 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     float t = time - (s64)frame;
 
     // Check whether we are trying to render a sensible frame
-    if (layouts.size == 0) return;
+    if (layouts.size == 0) {
+        context->buf_attr_cur.size = 0; // these are checked to determine whether to draw the bddinfo hover text
+        return;
+    }
     if (frame >= layouts.size-1) {
-        // Small trick: instead of rendering the last frame and trying to interpolate it with the
+        // Small hack: instead of rendering the last frame and trying to interpolate it with the
         // next (which does not exist) just do the second to last one but set t = 1
         frame = layouts.size - 2;
         t = 1.f;
@@ -3426,9 +3513,9 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         a.y = layout.bdd_pos[id_map[bdd.id]].y;
         a.rx = param.node_radius;
         a.ry = param.node_radius * param.squish_fac;
+        a.name = bdd.name;
 
-        float fs = a.rx / param.node_radius * context->font_size_max;
-        webgl_bdd_text_round(context, &store, &a.font_x, &a.font_y, a.x, a.y, bdd.id, fs);
+        webgl_bdd_text_round(context, &store, &a, bdd.id, 1.f);
         
         if (bdd.flags & Bdd::CURRENT) {
             color_set(a.stroke, 0x7f0a13ff);
@@ -3453,6 +3540,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         if (bdd.flags & Bdd::MARKED_E1) {
             a.mark_child1 = 1.f;
         }
+        
         return a;
     };
     // Linearly interpolate the attributes of two bdds
@@ -3463,11 +3551,20 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         a0->ry = (1.f-t) * a0->ry + t * a1.ry;
         a0->font_x = (1.f-t) * a0->font_x + t * a1.font_x;
         a0->font_y = (1.f-t) * a0->font_y + t * a1.font_y;
+        a0->font_x2 = (1.f-t) * a0->font_x2 + t * a1.font_x2;
+        a0->font_y2 = (1.f-t) * a0->font_y2 + t * a1.font_y2;
         a0->border = (1.f-t) * a0->border + t * a1.border;
         color_inter(a0->stroke, a1.stroke, t);
         color_inter(a0->fill,   a1.fill,   t);
         a0->mark_child0 = (1.f-t) * a0->mark_child0 + t * a1.mark_child0;
         a0->mark_child1 = (1.f-t) * a0->mark_child1 + t * a1.mark_child1;
+        if (a0->name == a1.name or a0->name == 0 or a1.name == 0) {
+            a0->name_alpha = 1.f;
+            a0->name = std::max(a0->name, a1.name);
+        } else {
+            a0->name = t <= 0.5 ? a0->name : a1.name;
+            a0->name_alpha = std::abs(2.f * t - 1.f);
+        }
     };
     // Draw the bdds with the given attributes
     auto bdd_attr_apply = [param, context, &store, &attr_cur](Bdd_attr a, u32 id) {
@@ -3522,12 +3619,16 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 bdd_attr_edge(&a0.x, &a0.y, b0, a1.x - b0.x, a1.y - b0.y);
                 a0.font_x = a0.x;
                 a0.font_y = a0.y;
+                a0.font_x2 = a0.x;
+                a0.font_y2 = a0.y;
             } else {
                 // Just have the bdd start at its new position
                 a0.x = a1.x;
                 a0.y = a1.y;
                 a0.font_x = a1.font_x;
                 a0.font_y = a1.font_y;
+                a0.font_x2 = a1.font_x2;
+                a0.font_y2 = a1.font_y2;
             }
             // In both cases we want the bdd to become larger during the animation
             a0.rx = 0.f;
@@ -4033,12 +4134,12 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     } else {
         frame = (s64)std::ceil(global_ui.frame_cur);
     }
-    if (frame == global_store.snapshots.size-1) {
+    if (frame and frame == global_store.snapshots.size-1) {
         // There _could_ be some rounding errors in displaying the last frame.
         --frame;
     } else if (frame > global_store.snapshots.size-1) {
         // This just does not make any sense. Something's wrong, silently abort.
-        return true;
+        return false;
     }
 
     array_resize(&global_ui.buf_id_map, global_store.bdd_data.size);
@@ -4403,6 +4504,7 @@ void application_handle_resize() {
     // Font regeneration scheduled in 10 frames. I do not want to do this every frame while the user
     // changes window size.
     global_context.font_regenerate = 10;
+    platform_main_loop_active(true);
 }
 
 void application_render() {
@@ -4428,6 +4530,7 @@ void application_render() {
 
 // Moving in animation frames
 void ui_button_move(float diff) {
+    //@Cleanup Do a proper system here that feels better
     float now = platform_now();
     if (global_ui.frame_end + diff < 0.f) {
         global_ui.frame_end = 0.f;

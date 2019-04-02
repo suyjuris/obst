@@ -126,6 +126,8 @@ struct Padding {
     s64 pad_x = 0, pad_y = 0, mar_x = 0, mar_y = 0;
 };
 
+// Data for the current status of text preparation, i.e. the packing of rasterised glyphs into a
+// texture. Initialised in lui_text_prepare_init.
 struct Text_preparation {
     Array_t<u8> image; // The current content of the font texture
     s64 size = 0; // Size of the font texture
@@ -196,7 +198,7 @@ struct Lui_context {
     };
     enum Font_instance_id: u8 {
         FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL,
-        FONT_LUI_SANS, FONT_BDD_NORMAL, FONT_BDD_SMALL,
+        FONT_LUI_SANS, FONT_BDD_NORMAL, FONT_BDD_ITALICS, FONT_BDD_SMALL,
         FONT_COUNT
     };
 
@@ -560,9 +562,18 @@ s64 _decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
 }
 
 void lui_text_prepare_init(Text_preparation* prep, s64 texture_size) {
+    prep->image = array_create<u8>(texture_size * texture_size);
     prep->size = texture_size;
-    prep->image = array_create<u8>(prep->size * prep->size);
-    prep->cache_lookup = array_create<Text_box_lookup>(4096);
+    prep->x = 0;
+    prep->y = 0;
+    prep->y_incr = 0;
+    prep->dirty = false;
+    prep->cache.size = 0;
+
+    if (prep->cache_lookup.size != 4096) {
+        array_free(&prep->cache_lookup);
+        prep->cache_lookup = array_create<Text_box_lookup>(4096);
+    }
     memset(prep->cache_lookup.data, -1, prep->cache_lookup.size * sizeof(Text_box_lookup));
 }
 
@@ -719,16 +730,18 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
 void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* ascent) {
     Lui_context* context = &global_platform.gl_context;
     
-    _platform_init_font(Lui_context::FONT_BDD_NORMAL, -1, font_size             );
-    _platform_init_font(Lui_context::FONT_BDD_SMALL,  -1, font_size * small_frac);
+    _platform_init_font(Lui_context::FONT_BDD_NORMAL,  -1, font_size             );
+    _platform_init_font(Lui_context::FONT_BDD_ITALICS, -1, font_size             );
+    _platform_init_font(Lui_context::FONT_BDD_SMALL,   -1, font_size * small_frac);
     lui_text_prepare_init(&context->prep_bdd, 512);
 
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = webgl_bddlabel_index_char(i);
         Text_box box;
-        u8 font = c & 128 ? Lui_context::FONT_BDD_SMALL : Lui_context::FONT_BDD_NORMAL;
-        c &= 127;
-        lui_text_prepare_word(context, &context->prep_bdd, font, {&c, 1}, &box);
+        u8 font = c & 128 ? Lui_context::FONT_BDD_SMALL :
+            'a' <= c and c <= 'z' ? Lui_context::FONT_BDD_ITALICS :
+            Lui_context::FONT_BDD_NORMAL;
+        lui_text_prepare_word(context, &context->prep_bdd, font, webgl_bddlabel_index_utf8(i), &box);
 
         (*offsets)[i] = box;
     }
@@ -1236,7 +1249,6 @@ void _platform_init(Platform_state* platform) {
         "DejaVuSerif-Italic.ttf",
         "DejaVuSerif-Bold.ttf",
         "DejaVuSans.ttf",
-        "DejaVuSans.ttf"
     };
     context->font_info = array_create<stbtt_fontinfo>(sizeof(font_files) / sizeof(font_files[0]));
 
@@ -1258,8 +1270,9 @@ void _platform_init(Platform_state* platform) {
     _platform_init_font(Lui_context::FONT_LUI_BOLD, 2, 20);
     _platform_init_font(Lui_context::FONT_LUI_HEADER, 2, 26);
     _platform_init_font(Lui_context::FONT_LUI_SMALL, 0, 15);
-    _platform_init_font(Lui_context::FONT_LUI_SANS, 4, 16.7);
+    _platform_init_font(Lui_context::FONT_LUI_SANS, 3, 16.7);
     _platform_init_font(Lui_context::FONT_BDD_NORMAL, 3, 20);
+    _platform_init_font(Lui_context::FONT_BDD_ITALICS, 1, 20);
     _platform_init_font(Lui_context::FONT_BDD_SMALL, 3, 20);
 
     // Initialise font preparation
