@@ -437,6 +437,12 @@ void context_amend_(Bdd_store* store, char const* msg, Args... args) {
 #define context_amend context_amend_
 #endif
 
+void context_amend(Bdd_store* store, Array_t<u8> msg) {
+    --store->snapshot_context.size;
+    array_append(&store->snapshot_context, msg);
+    array_push_back(&store->snapshot_context, (u8)0);
+}
+
 // Like context_amend, but generate a list of numbers in square braces, separated by commas. fmt
 // specifies the format to use for each number. If you notice anything strange here, it may pay of
 // to use the above macro to make sure you got the printf specifiers right.
@@ -585,15 +591,55 @@ void take_snapshot(Bdd_store* store) {
     store->snapshot_marked_e.size = 0;
 }
 
+// Return the index of the character in the texture
+s64 webgl_bddlabel_char_index(u8 c) {
+    // Just map printable chars of ASCII directly, then again, if the high-bit is set
+    if (0x20 <= (c&127) and (c&127) <= 0x7e) {
+        return (c&127) - 0x20 + (c>>7)*0x5e;
+    } else {
+        return -1;
+    }
+}
+u8 webgl_bddlabel_index_char(s64 index) {
+    assert(0 <= index and index <= 2*0x5e);
+    return (u8)(index <= 0x5e ? index + 0x20 : (index - 0x3e) ^ 128);
+}
+Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bool* draw_italics_=nullptr) {
+    assert(0 <= index and index <= 2*0x5e);
+    static char c[2];
+    c[0] = (char)(index <= 0x5e ? index + 0x20 : index - 0x3e);
+    char* s;
+    bool draw_light = false;
+    bool draw_italics = 'a' <= c[0] and c[0] <= 'z';
+    switch (c[0]) {
+    case '|': s = u8"∪"; draw_light = true; break;
+    case '&': s = u8"∩"; draw_light = true; break;
+    case '~': s = u8"¬"; break;
+    case '+': s = u8"∨"; draw_light = true; break;
+    case '-': s = u8"∧"; draw_light = true; break;
+    case '?': s = u8"∀"; break;
+    case '!': s = u8"∃"; break;
+    default: s = &c[0]; break;
+    };
+    if (draw_light_)   *draw_light_   = draw_light;
+    if (draw_italics_) *draw_italics_ = draw_italics;
+    return {(u8*)s, (s64)strlen(s)};
+}
+
 // Like context_amend, but formats the name of a bdd.
 void context_amend_bdd(Bdd_store* store, u32 id) {
-    if (id == 0) {
-        context_amend(store, "F");
-    } else if (id == 1) {
-        context_amend(store, "T");
-    } else {
-        context_amend(store, "%d", id);
+    u32 name = store->bdd_data[id].name;
+    auto arr = array_subarray(store->name_data, store->names[name], store->names[name+1]);
+    bool italics_on = false;
+    for (u8 c: arr) {
+        bool italicized;
+        auto c_arr = webgl_bddlabel_index_utf8(webgl_bddlabel_char_index(c), nullptr, &italicized);
+        if (not italics_on and italicized) context_amend(store, "<i>");
+        if (italics_on and not italicized) context_amend(store, "</i>");
+        italics_on = italicized;
+        context_amend(store, c_arr);
     }
+    if (italics_on) context_amend(store, "</i>");
 }
 
 
@@ -647,8 +693,6 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         context_amend_bdd(store, b_parent >> 1);
         context_amend(store, b_parent & 1 ? " has no child 1)" : " has no child 0)");
     }
-    context_amend(store, " for node ");
-    context_amend_bdd(store, bdd_temp.id);
 
     // Set the current node and take snapshot
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
@@ -1097,7 +1141,6 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         bdd_temp = store->bdd_data[bdd];
         context_append(store, "Processing sublist ");
         context_amend_list_base(store, numbers, base);
-        context_amend(store, " for node %d", bdd_temp.id);
     }
 
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
@@ -2229,8 +2272,9 @@ struct Webgl_context {
     enum Attributes: GLuint {
         BDD_POS = 0, BDD_X, BDD_R, BDD_STROKE, BDD_FILL, BDD_BORDER, BDD_ATTR_COUNT,
         EDGE_POS = 0, EDGE_P0, EDGE_P1, EDGE_P2, EDGE_A, EDGE_DASH, EDGE_STROKE, EDGE_ATTR_COUNT,
-        ARROW_POS = 0, ARROW_FILL, ARROW_ATTR_COUNT,
+        ARROW_POS = 0, ARROW_H, ARROW_FILL, ARROW_ATTR_COUNT,
         TEXT_POS = 0, TEXT_TPOS, TEXT_FILL, TEXT_ATTR_COUNT,
+        RECT_POS = 0, RECT_FILL, RECT_ATTR_COUNT,
         UI_POS = 0, UI_FILL, UI_ATTR_COUNT,
     };
     // Names for all uniforms
@@ -2239,6 +2283,7 @@ struct Webgl_context {
         EDGE_ORIGIN, EDGE_SCALE, EDGE_SCALE_P,
         ARROW_ORIGIN, ARROW_SCALE,
         TEXT_ORIGIN, TEXT_SCALE, TEXT_SAMPLER,
+        RECT_ORIGIN, RECT_SCALE,
         UI_ORIGIN, UI_SCALE,
         UNIFORMS_COUNT
     };
@@ -2267,6 +2312,7 @@ struct Webgl_context {
     GLuint program_edge;
     GLuint program_arrow;
     GLuint program_text;
+    GLuint program_rect;
     GLuint program_ui;
     // Ids of the uniforms
     Array_t<GLint> uniforms;
@@ -2291,14 +2337,15 @@ struct Webgl_context {
     Array_dyn<u8>    buf_edge_stroke;
 
     Array_dyn<float> buf_arrow_pos;
+    Array_dyn<float> buf_arrow_h;
     Array_dyn<u8>    buf_arrow_fill;
-
-    Array_dyn<float> buf_rect_pos;
-    Array_dyn<u8>    buf_rect_fill;
 
     Array_dyn<float> buf_text_pos;
     Array_dyn<float> buf_text_tpos;
     Array_dyn<u8>    buf_text_fill;
+
+    Array_dyn<float> buf_rect_pos;
+    Array_dyn<u8>    buf_rect_fill;
 
     Array_dyn<float> buf_ui_pos;
     Array_dyn<u8>    buf_ui_fill;
@@ -2308,6 +2355,7 @@ struct Webgl_context {
     Array_t<GLuint> buffers_edge;
     Array_t<GLuint> buffers_arrow;
     Array_t<GLuint> buffers_text;
+    Array_t<GLuint> buffers_rect;
     Array_t<GLuint> buffers_ui;
 
     Array_t<u8> buf_render; // Memory used during rendering
@@ -2538,21 +2586,27 @@ void webgl_init(Webgl_context* context) {
         "}\n";
     
     GLbyte shader_v_arrow[] =
-        "attribute vec3 pos;\n"
+        "attribute vec2 pos;\n"
+        "attribute float h;\n"
         "attribute vec4 fill;\n"
         "varying vec4 v_fill;\n"
+        "varying float v_h;\n"
         "uniform vec2 origin;\n"
         "uniform vec2 scale;\n"
         "void main() {\n"
-        "    gl_Position = vec4((pos.xy - origin)*scale, vec2(pos.z, 1));\n"
+        "    gl_Position = vec4((pos - origin)*scale, vec2(0.7 - fill.a*0.1, 1));\n"
         "    v_fill = fill;\n"
+        "    v_h = h;\n"
         "}\n";
 
     GLbyte shader_f_arrow[] =
         OBST_SHADER_F_PREAMBLE
         "varying vec4 v_fill;\n"
+        "varying float v_h;\n"
         "void main() {\n"
-        "    gl_FragColor = v_fill;\n"
+        "    vec4 col = v_fill;\n"
+        "    col.a *= clamp(0.5-v_h , 0.0, 1.0);\n"
+        "    gl_FragColor = col;\n"
         "}\n";
     
     GLbyte shader_v_text[] =
@@ -2578,6 +2632,25 @@ void webgl_init(Webgl_context* context) {
         "    col.a *= texture2D(sampler, v_tpos).r;\n"
         "    gl_FragColor = col;\n"
         "}\n";
+
+    GLbyte shader_v_rect[] =
+        "attribute vec3 pos;\n"
+        "attribute vec4 fill;\n"
+        "varying vec4 v_fill;\n"
+        "uniform vec2 origin;\n"
+        "uniform vec2 scale;\n"
+        "void main() {\n"
+        "    gl_Position = vec4((pos.xy - origin)*scale, vec2(pos.z, 1));\n"
+        "    v_fill = fill;\n"
+        "}\n";
+
+    GLbyte shader_f_rect[] =
+        OBST_SHADER_F_PREAMBLE
+        "varying vec4 v_fill;\n"
+        "void main() {\n"
+        "    gl_FragColor = v_fill;\n"
+        "}\n";
+    
 
 #undef OBST_SHADER_F_PREAMBLE
 
@@ -2638,6 +2711,7 @@ void webgl_init(Webgl_context* context) {
     
     OBST_PROGRAM_INIT(arrow);
     OBST_ATTRIB(ARROW_POS, pos);
+    OBST_ATTRIB(ARROW_H, h);
     OBST_ATTRIB(ARROW_FILL, fill);
     OBST_PROGRAM_LINK(arrow);
     OBST_UNIFORM(ARROW_ORIGIN, origin);
@@ -2652,10 +2726,18 @@ void webgl_init(Webgl_context* context) {
     OBST_UNIFORM(TEXT_SCALE, scale);
     OBST_UNIFORM(TEXT_SAMPLER, sampler);
 
+    OBST_PROGRAM_INIT(rect);
+    OBST_ATTRIB(RECT_POS, pos);
+    OBST_ATTRIB(RECT_FILL, fill);
+    OBST_PROGRAM_LINK(rect);
+    OBST_UNIFORM(RECT_ORIGIN, origin);
+    OBST_UNIFORM(RECT_SCALE, scale);
+
     OBST_GEN_BUFFERS(bdd, BDD);
     OBST_GEN_BUFFERS(edge, EDGE);
     OBST_GEN_BUFFERS(arrow, ARROW);
     OBST_GEN_BUFFERS(text, TEXT);
+    OBST_GEN_BUFFERS(rect, RECT);
     OBST_GEN_BUFFERS(ui, UI);
     
     glClearColor(0.96f, 0.96f, 0.96f, 1.f);
@@ -2667,7 +2749,6 @@ Webgl_context global_context;
 Bdd_store global_store;
 Array_t<Bdd_layout> global_layouts;
 
-// The arrow shader can also be used to draw simple rectangles
 void webgl_draw_rect(Webgl_context* context, float x1, float y1, float w, float h, u8* fill, float z=0.45f) {
     float x2 = x1+w, y2 = y1+h;
     
@@ -2695,38 +2776,6 @@ void webgl_draw_bdd(Webgl_context* context, Bdd_attr a) {
         array_append(&context->buf_bdd_border, {a.border});
         array_append(&context->buf_bdd_fill, {a.fill, 4});
     }
-}
-
-// Return the index of the character in the texture
-s64 webgl_bddlabel_char_index(u8 c) {
-    // Just map printable chars of ASCII directly, then again, if the high-bit is set
-    if (0x20 <= (c&127) and (c&127) <= 0x7e) {
-        return (c&127) - 0x20 + (c>>7)*0x5e;
-    } else {
-        return -1;
-    }
-}
-u8 webgl_bddlabel_index_char(s64 index) {
-    assert(0 <= index and index <= 2*0x5e);
-    return (u8)(index <= 0x5e ? index + 0x20 : (index - 0x3e) ^ 128);
-}
-Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr) {
-    assert(0 <= index and index <= 2*0x5e);
-    char c[2] = {(char)(index <= 0x5e ? index + 0x20 : index - 0x3e)};
-    char* s;
-    bool draw_light = false;
-    switch (c[0]) {
-    case '|': s = u8"∪"; draw_light = true; break;
-    case '&': s = u8"∩"; draw_light = true; break;
-    case '~': s = u8"¬"; break;
-    case '+': s = u8"∨"; draw_light = true; break;
-    case '-': s = u8"∧"; draw_light = true; break;
-    case '?': s = u8"∀"; break;
-    case '!': s = u8"∃"; break;
-    default: s = &c[0]; break;
-    };
-    if (draw_light_) *draw_light_ = draw_light;
-    return {(u8*)s, (s64)strlen(s)};
 }
 
 // Convert the id bdd into a label for the bdd
@@ -3182,16 +3231,31 @@ void webgl_draw_edge_simple(Webgl_context* context, Pos p0, Pos p2, float size, 
 void webgl_draw_arrow(Webgl_context* context, Pos p0, Pos p1, float size, u8* fill) {
     float ux = p1.x - p0.x;
     float uy = p1.y - p0.y;
-    float z = 0.7f - fill[3]/255.f*0.1;
-    float f = size / std::sqrt(ux*ux + uy*uy);
+    float f = (size + 0.5f/context->scale) / std::sqrt(ux*ux + uy*uy);
     ux *= f; uy *= f;
-    
+
+    Pos p2 {p1.x - ux - 0.5f*uy, p1.y - uy + 0.5f*ux};
+    Pos p3 {p1.x - ux + 0.5f*uy, p1.y - uy - 0.5f*ux};
+    Pos pc {(p1.x + p2.x + p3.x) / 3.f, (p1.y + p2.y + p3.y) / 3.f};
     array_append(&context->buf_arrow_pos, {
-        p1.x, p1.y, z,
-        p1.x - ux - 0.5f*uy, p1.y - uy + 0.5f*ux, z,
-        p1.x - ux + 0.5f*uy, p1.y - uy - 0.5f*ux, z
+        p1.x, p1.y, p2.x, p2.y, pc.x, pc.y,
+        p2.x, p2.y, p3.x, p3.y, pc.x, pc.y, 
+        p3.x, p3.y, p1.x, p1.y, pc.x, pc.y, 
     });
-    for (s64 i = 0; i < 3; ++i) {
+
+    auto get_h = [context](Pos p1, Pos p2, Pos pc) {
+        Pos v {p1.y-p2.y, p2.x-p1.x};
+        float vf = context->scale / std::sqrt(v.x*v.x + v.y*v.y);
+        v.x *= vf; v.y *= vf;
+        return v.x*((p1.x+p2.x)*0.5f - pc.x) + v.y*((p1.y+p2.y)*0.5f - pc.y);
+    };
+    array_append(&context->buf_arrow_h, {
+        0.5f, 0.5f, get_h(p1, p2, pc) + 0.5f,
+        0.5f, 0.5f, get_h(p2, p3, pc) + 0.5f,
+        0.5f, 0.5f, get_h(p3, p1, pc) + 0.5f,
+    });
+    
+    for (s64 i = 0; i < 9; ++i) {
         array_append(&context->buf_arrow_fill, {fill, 4});
     }
 }
@@ -3224,14 +3288,15 @@ void webgl_frame_init(Webgl_context* context) {
     context->buf_edge_stroke.size = 0;
 
     context->buf_arrow_pos.size = 0;
+    context->buf_arrow_h.size = 0;
     context->buf_arrow_fill.size = 0;
-
-    context->buf_rect_pos.size = 0;
-    context->buf_rect_fill.size = 0;
     
     context->buf_text_pos.size = 0;
     context->buf_text_tpos.size = 0;
     context->buf_text_fill.size = 0;
+
+    context->buf_rect_pos.size = 0;
+    context->buf_rect_fill.size = 0;
 
     context->origin_x = -1.f;
     context->origin_y = -1.f;
@@ -3290,19 +3355,17 @@ void webgl_frame_draw(Webgl_context* context) {
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, context->buf_edge_pos.size / 2);
 
-    glEnable(GL_POLYGON_SMOOTH);
     glEnable(GL_DEPTH_TEST);
     glUseProgram(context->program_arrow);
     
     OBST_DO_UNIFORM(ARROW_ORIGIN, 2f, ox, oy);
     OBST_DO_UNIFORM(ARROW_SCALE, 2f, sx, sy);
 
-    OBST_DO_BUFFER(arrow, ARROW_POS,  buf_arrow_pos,  3, GL_FLOAT, 0);
+    OBST_DO_BUFFER(arrow, ARROW_POS,  buf_arrow_pos,  2, GL_FLOAT, 0);
+    OBST_DO_BUFFER(arrow, ARROW_H,    buf_arrow_h,    1, GL_FLOAT, 0);
     OBST_DO_BUFFER(arrow, ARROW_FILL, buf_arrow_fill, 4, GL_UNSIGNED_BYTE, 1);
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_arrow_pos.size / 2);
-    
-    glDisable(GL_POLYGON_SMOOTH);
     
     glUseProgram(context->program_bdd);
 
@@ -3319,14 +3382,13 @@ void webgl_frame_draw(Webgl_context* context) {
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_bdd_pos.size / 2);
 
-    // Second time, to do the rectangles
-    glUseProgram(context->program_arrow);
+    glUseProgram(context->program_rect);
     
-    OBST_DO_UNIFORM(ARROW_ORIGIN, 2f, ox, oy);
-    OBST_DO_UNIFORM(ARROW_SCALE, 2f, sx, sy);
+    OBST_DO_UNIFORM(RECT_ORIGIN, 2f, ox, oy);
+    OBST_DO_UNIFORM(RECT_SCALE, 2f, sx, sy);
 
-    OBST_DO_BUFFER(arrow, ARROW_POS,  buf_rect_pos,  3, GL_FLOAT, 0);
-    OBST_DO_BUFFER(arrow, ARROW_FILL, buf_rect_fill, 4, GL_UNSIGNED_BYTE, 1);
+    OBST_DO_BUFFER(rect, RECT_POS,  buf_rect_pos,  3, GL_FLOAT, 0);
+    OBST_DO_BUFFER(rect, RECT_FILL, buf_rect_fill, 4, GL_UNSIGNED_BYTE, 1);
 
     glDrawArrays(GL_TRIANGLES, 0, context->buf_rect_pos.size / 2);
 

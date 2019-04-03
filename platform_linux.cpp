@@ -517,8 +517,6 @@ void _platform_init_gl(Platform_state* platform) {
     OBST_GEN_BUFFERS(uibutton, UIBUTTON);
     
     //@Cleanup: Check max size using RECTANGLE_TEXTURE_SIZE
-
-    glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST);
 }
 
 void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, float z, u8* fill) {
@@ -737,11 +735,15 @@ void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* o
 
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = webgl_bddlabel_index_char(i);
-        Text_box box;
+        bool italicized;
+        auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
+
         u8 font = c & 128 ? Lui_context::FONT_BDD_SMALL :
-            'a' <= c and c <= 'z' ? Lui_context::FONT_BDD_ITALICS :
+            italicized ? Lui_context::FONT_BDD_ITALICS :
             Lui_context::FONT_BDD_NORMAL;
-        lui_text_prepare_word(context, &context->prep_bdd, font, webgl_bddlabel_index_utf8(i), &box);
+        
+        Text_box box;
+        lui_text_prepare_word(context, &context->prep_bdd, font, arr, &box);
 
         (*offsets)[i] = box;
     }
