@@ -85,6 +85,47 @@ Array_t<u8> array_load_from_file(char const* path) {
     return array_load_from_file({(u8*)path, (s64)strlen(path)});
 }
 
+struct Animation {
+    double begin = 0.0, duration = 1.0;
+    float value0 = 0.f, value1, speed0;
+};
+
+void animation_add(Animation* anim, float add) {
+    double now = platform_now();
+    if (anim->begin == 0.0) {
+        anim->begin = now;
+        anim->speed0 = 0.f;
+        // value0 remains
+        anim->value1 = anim->value0 + add;
+    } else {
+        float x = (float)((now - anim->begin) / anim->duration);
+        anim->begin = now;
+        anim->value0 = anim->value0 + x * anim->speed0
+            + x*x * (anim->value1 - anim->value0 - anim->speed0)
+            + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+        anim->speed0 = anim->speed0
+            + 2.f*x * (anim->value1 - anim->value0 - anim->speed0)
+            + (2.f-3.f*x)*x * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+        anim->value1 += add;
+    }
+}
+
+float animation_get(Animation* anim, bool* need_redraw = nullptr) {
+    float x = (float)((platform_now() - anim->begin) / anim->duration);
+    
+    if (need_redraw) *need_redraw = x < 1.f;
+    if (x >= 1.f) {
+        x = 1.f;
+        anim->begin = 0.f;
+        anim->value0 = anim->value1;
+        return anim->value0;
+    }
+    
+    return anim->value0 + x * anim->speed0
+        + x*x * (anim->value1 - anim->value0 - anim->speed0)
+        + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+}
+
 struct Text_box_lookup {
     u64 hash = 0; s64 index = -1;
 };
@@ -116,6 +157,15 @@ struct Text_entry {
     bool cursor_draw;
     Array_dyn<Undo_item> undo_stack, redo_stack;
     Array_dyn<u8> undo_data, redo_data;
+};
+
+struct Scrollbar {
+    s64 offset = 0;
+    s64 total_height = 0;
+    s64 slot = -1;
+    s64 slot_area = -1;
+
+    Animation anim;
 };
 
 struct Rect {
@@ -217,7 +267,8 @@ struct Lui_context {
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
-        SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_HELPTEXT, SLOT_CANVAS,
+        SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_SCROLL_PANEL, SLOT_HELPTEXT,
+        SLOT_CANVAS, SLOT_PANEL,
         SLOT_COUNT
     };
     
@@ -226,7 +277,7 @@ struct Lui_context {
     Array_dyn<Text_box> fmt_boxes; // Set of boxes we are currently generating
     Array_dyn<Array_dyn<Text_box>> fmt_slots; // Stored sets of boxes
 
-    enum Element_flags: u8 {
+    enum Element_flags: u16 {
         DRAW_FOCUSED = 1,
         DRAW_ACTIVE = 2,
         DRAW_PRESSED = 4,
@@ -234,11 +285,10 @@ struct Lui_context {
         DRAW_BUTTON = 16,
         DRAW_ENTRY = 32,
         DRAW_RADIO = 64,
-        DRAW_COMPACT = 128,
+        DRAW_SCROLL = 128,
+        DRAW_AREA = 256,
+        DRAW_COMPACT = 512,
     };
-
-    // Buffer
-    Array_dyn<u8> lui_buffer;
 
     enum Entry_names: u8 {
         ENTRY_NUMBERS, ENTRY_BASE, ENTRY_BITORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE,
@@ -252,10 +302,15 @@ struct Lui_context {
     Array_t<Rect> elem_bb;
     s64 elem_focused = 0;
     s64 elem_tabindex = 0;
-    s64 panel_left_width = 475; //@Cleanup: Make this DPI aware
     double cursor_next_blink = 0.f;
     bool cursor_blinked = false;
     Padding padding_entry;
+    Scrollbar scroll_panel;
+
+    // Lengths used by multiple places
+    //@Cleanup: Make this DPI aware
+    s64 panel_left_width = 475;
+    s64 width_scrollbar = 4;
 
     // Input state
     s64 pointer_x, pointer_y;
@@ -302,6 +357,9 @@ Platform_state global_platform;
 
 void platform_ui_button_help () {
     global_platform.gl_context.helptext_active ^= 1;
+}
+bool platform_ui_help_active () {
+    return global_platform.gl_context.helptext_active;
 }
 
 void platform_ui_bddinfo_show(float x, float y, float pad) {
@@ -926,11 +984,13 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
 
     s64 c_i = 0;
 
-    s64 offset_rows = (s64)std::floor(entry.offset_y / font_inst.newline);
+    float newline = std::round(font_inst.newline);
+    
+    s64 offset_rows = (s64)std::floor(entry.offset_y / newline);
     for (s64 row = 0; row < offset_rows; ++row) {
         while (c_i < entry.text.size and entry.text[c_i++] != '\n');
     }
-    y -= std::round((float)entry.offset_y - (float)offset_rows * font_inst.newline);
+    y -= std::round((float)entry.offset_y - (float)offset_rows * newline);
 
     s64 sel0 = -1, sel1 = -1;
     if (entry.selection != -1) {
@@ -974,11 +1034,11 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
             box.x0 += x; box.x1 += x; box.y0 += y; box.y1 += y;
 
             if (sel0 <= c_i and c_i < sel1) {
-                float y0 = y - font_inst.ascent - 0.5*(font_inst.newline - font_inst.ascent);
+                float y0 = y - font_inst.ascent - 0.5*(newline - font_inst.ascent);
                 float rx0 = std::max(tx, x);
                 float ry0 = std::max(ty, y0);
                 float rx1 = std::min(tx + tw, x + (entry.text[c_i] == '\n' ? font_inst.space : box.advance));
-                float ry1 = std::min(ty + th, y0 + font_inst.newline);
+                float ry1 = std::min(ty + th, y0 + newline);
                 if (rx0 < rx1 and ry0 < ry1) {
                     lui_draw_rect(context, rx0, ry0, rx1 - rx0, ry1 - ry0, Lui_context::LAYER_MIDDLE, sel_b);
                 }
@@ -1025,7 +1085,7 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
         }
         if (c_i >= entry.text.size) break;
 
-        y = std::round(y + font_inst.newline);
+        y += newline;
         ++c_i;
     }
 }
@@ -1122,7 +1182,14 @@ void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bo
     u8 black[] = {0, 0, 0, 255};
     u8 gray[] = {120, 120, 120, 255};
     u8* fill = context->elem_flags[slot] & Lui_context::DRAW_DISABLED ? gray : black;
-    lui_text_draw(context, context->fmt_slots[slot], x, y, w, fill, x_out, y_out, only_measure, xw_out);
+    
+    s64 xw, yh;
+    lui_text_draw(context, context->fmt_slots[slot], x, y, w, fill, x_out, &yh, only_measure, &xw);
+    
+    context->elem_bb[slot] = {x, y, xw, yh-y};
+    
+    if (xw_out) *xw_out = xw;
+    if (y_out) *y_out = yh;
 }
 void platform_fmt_store_copy(s64 slot_into, s64 slot_from) {
     Lui_context* context = &global_platform.gl_context;
@@ -1131,7 +1198,7 @@ void platform_fmt_store_copy(s64 slot_into, s64 slot_from) {
 }
 
 void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, s64* ha_out, s64* w_out) {
-    assert(context and x and y and w);
+    assert(context);
 
     s64 text_w = 0, text_h = 0;
     u8 font = Lui_context::FONT_LUI_SANS;
@@ -1197,7 +1264,7 @@ void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w
     if (ha_out) *ha_out = text_bb.y - y + font_inst.ascent - context->fonts[Lui_context::FONT_LUI_NORMAL].ascent;
 }
 
-void lui_draw_radio(Lui_context* context, s64 x, s64 y, u64 slot, s64* x_out, s64* y_out) {
+void lui_draw_radio(Lui_context* context, s64 x, s64 y, s64 slot, s64* x_out, s64* y_out) {
     auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
 
     context->elem_flags[slot] |= Lui_context::DRAW_RADIO;
@@ -1215,6 +1282,24 @@ void lui_draw_radio(Lui_context* context, s64 x, s64 y, u64 slot, s64* x_out, s6
     
     if (x_out) *x_out = x1;
     if (y_out) *y_out = y1;
+}
+
+void lui_draw_scrollbar(Lui_context* context, Scrollbar* scroll) {
+    Padding pad {0, 0};
+    //u8 fill[] = {242, 152,  51, 255};
+    u8 fill[] = {200, 200, 200, 255};
+    
+    auto bb = context->elem_bb[scroll->slot_area];
+    if (bb.h >= scroll->total_height) {
+        context->elem_bb[scroll->slot] = Rect {-10, -10, 0, 0};
+    } else {
+        s64 x = bb.x + bb.w - context->width_scrollbar - pad.pad_x;
+        s64 y = bb.y + pad.pad_y;
+        s64 h = bb.h - pad.pad_y * 2;
+        s64 p_offset = h * scroll->offset / scroll->total_height;
+        s64 p_height = h * bb.h / scroll->total_height;
+        lui_draw_rect(context, x, y + p_offset, context->width_scrollbar, p_height, Lui_context::LAYER_MIDDLE, fill);
+    }
 }
 
 void _platform_frame_init() {
@@ -1368,6 +1453,13 @@ void _platform_init(Platform_state* platform) {
     array_printf(&context->entries[Lui_context::ENTRY_NUMBERS].text, "2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62");
     array_printf(&context->entries[Lui_context::ENTRY_BASE].text, "10");
     array_printf(&context->entries[Lui_context::ENTRY_BITORDER].text, "auto");
+
+    context->scroll_panel.anim.duration = 0.1;
+    context->scroll_panel.slot = Lui_context::SLOT_SCROLL_PANEL;
+    context->scroll_panel.slot_area = Lui_context::SLOT_PANEL;
+    
+    context->elem_flags[Lui_context::SLOT_PANEL]  |= Lui_context::DRAW_AREA;
+    context->elem_flags[Lui_context::SLOT_CANVAS] |= Lui_context::DRAW_AREA;
 
     // Initialise application
     application_init();
@@ -2039,6 +2131,14 @@ void _platform_render(Platform_state* platform) {
         }
         assert(false);
     };
+    auto scrollbar_scroll = [context](Scrollbar* scroll, float amount) {
+        s64 h = context->elem_bb[scroll->slot_area].h;
+        if (scroll->offset == 0 and scroll->total_height <= h) return;
+
+        animation_add(&scroll->anim, amount);
+        scroll->anim.value1 = std::min(scroll->anim.value1, (float)(scroll->total_height - h));
+        scroll->anim.value1 = std::max(scroll->anim.value1, 0.f);
+    };
 
     for (Key key: context->input_queue) {
         if (key.type == Key::MOUSE) {
@@ -2104,6 +2204,20 @@ void _platform_render(Platform_state* platform) {
                         float world_x = c->origin_x + (x - c->canvas_x) / c->scale;
                         float world_y = c->origin_y + (c->height-1 - y + c->canvas_y) / c->scale;
                         ui_mouse_move(world_x, world_y);
+                    }
+                } else if (action == Key::SCROLL_DOWN or action == Key::SCROLL_UP) {
+                    s64 diff = (action == Key::SCROLL_DOWN) - (action == Key::SCROLL_UP);
+                    if (context->elem_flags[slot] & Lui_context::DRAW_AREA) {
+                        Scrollbar* scroll = nullptr;
+                        if (slot == Lui_context::SLOT_PANEL) {
+                            scroll = &context->scroll_panel;
+                        }
+                        if (not scroll) continue;
+
+                        float scroll_amount = context->fonts[Lui_context::FONT_LUI_NORMAL].newline * 3.f;
+                        scrollbar_scroll(scroll, scroll_amount * (float)diff);
+                    } else {
+                        continue;
                     }
                 }
                 
@@ -2206,6 +2320,12 @@ void _platform_render(Platform_state* platform) {
     } else {
         context->elem_flags[context->elem_focused] |= Lui_context::DRAW_FOCUSED;
     }
+
+    // Update the scrollbar
+    Scrollbar* scroll = &context->scroll_panel;
+    bool need_redraw;
+    scroll->offset = (s64)std::round(animation_get(&scroll->anim, &need_redraw));
+    if (need_redraw) platform_redraw(0);
     
     // Decide whether and where to draw the text cursor, normalise text entry data
     bool cursor_blinking = false;
@@ -2255,10 +2375,12 @@ void _platform_render(Platform_state* platform) {
     u8 white[] = {255, 255, 255, 255};
     u8 black[] = {0, 0, 0, 255};
     lui_draw_rect(context, 0, 0, context->panel_left_width, global_context.screen_h, Lui_context::LAYER_BACK, white);
+    context->elem_bb[Lui_context::SLOT_PANEL] = Rect {0, 0, context->panel_left_width, global_context.screen_h};
 
-    s64 x = 10;
-    s64 y = 10;
-    s64 w = context->panel_left_width - 20;
+    Padding pad_panel {10, 10};
+    s64 x = pad_panel.pad_x;
+    s64 y = pad_panel.pad_y - context->scroll_panel.offset;
+    s64 w = context->panel_left_width - pad_panel.pad_x*2 - context->width_scrollbar;
     
     auto hsep = [context, x, w, &y, font_inst]() {
         u8 gray[] = {153, 153, 153, 255};
@@ -2385,6 +2507,11 @@ void _platform_render(Platform_state* platform) {
         platform_fmt_draw(Lui_context::SLOT_HELPTEXT, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, nullptr);
         lui_draw_rect(context, x, y, w, h, Lui_context::LAYER_MIDDLE, white);
     }
+    y += pad_panel.pad_y;
+
+    context->scroll_panel.total_height = y + context->scroll_panel.offset;
+
+    lui_draw_scrollbar(context, &context->scroll_panel);
     
     _platform_frame_draw();
     glXSwapBuffers(platform->display, platform->window_glx);
@@ -2806,6 +2933,14 @@ int main(int argc, char** argv) {
             global_platform.gl_context.pointer_y = event.xmotion.y;
             if (event.xbutton.button == Button1) {
                 Key key = Key::create_mouse(Key::LEFT_DOWN, event.xbutton.x, event.xbutton.y);
+                array_push_back(&global_platform.gl_context.input_queue, key);
+                platform_redraw(0);
+            } else if (event.xbutton.button == Button4) {
+                Key key = Key::create_mouse(Key::SCROLL_UP, event.xbutton.x, event.xbutton.y);
+                array_push_back(&global_platform.gl_context.input_queue, key);
+                platform_redraw(0);
+            } else if (event.xbutton.button == Button5) {
+                Key key = Key::create_mouse(Key::SCROLL_DOWN, event.xbutton.x, event.xbutton.y);
                 array_push_back(&global_platform.gl_context.input_queue, key);
                 platform_redraw(0);
             } else if (event.xbutton.button == Button2) {

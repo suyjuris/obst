@@ -21,7 +21,7 @@ struct Key {
         "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"
     };
     enum Mouse_action: u8 {
-        LEFT_DOWN, LEFT_UP, MOTION
+        LEFT_DOWN, LEFT_UP, MOTION, SCROLL_UP, SCROLL_DOWN
     };
 
     enum General_type: u8 {
@@ -143,6 +143,7 @@ void platform_ui_bddinfo_show(float x, float y, float pad);
 double platform_now();
 void platform_mouse_position(float* out_x, float* out_y);
 void platform_ui_button_help ();
+bool platform_ui_help_active ();
 void platform_operations_enable(u32 bdd);
 void platform_operations_disable();
 void platform_main_loop_active(bool is_active);

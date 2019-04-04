@@ -659,6 +659,7 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
 // for recursive calls, no need to use it.
 u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_parent = -1, u32 b_parent = -1) {
     // Duplicated code below in bdd_intersection_stepwise. Take care. Also see the note there.
+    //@Cleanup: Update the others
     
     Bdd a_bdd = store->bdd_data[a];
     Bdd b_bdd = store->bdd_data[b];
@@ -4329,7 +4330,12 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
 // Deal with mouse motion events. Shows and hides the bddinfo hover text.
 //  IMPORTANT: The arguments are NOT in pixels, but in world coordinates. So this is only useful for
 // canvas stuff.
-void ui_mouse_move(float world_x, float world_y) {    
+void ui_mouse_move(float world_x, float world_y) {
+    if (platform_ui_help_active()) {
+        platform_ui_bddinfo_hide();
+        return;
+    }
+    
     for (s64 i = 0; i < global_context.buf_attr_cur.size; ++i) {
         Bdd_attr bdd = global_context.buf_attr_cur[i];
         float dx = (world_x - bdd.x) / bdd.rx;
