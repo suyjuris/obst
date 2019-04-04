@@ -147,7 +147,7 @@ bool platform_ui_help_active ();
 void platform_operations_enable(u32 bdd);
 void platform_operations_disable();
 void platform_main_loop_active(bool is_active);
-void platform_set_cursor(bool is_text);
+void platform_set_cursor(u8 type);
 Array_t<u8> platform_clipboard_get(s64 index);
 void platform_clipboard_free(s64 index);
 void platform_clipboard_set(u8 type, Array_t<u8> data);

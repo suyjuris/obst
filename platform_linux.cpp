@@ -166,11 +166,17 @@ struct Text_entry {
 struct Scrollbar {
     s64 offset = 0;
     s64 total_height = 0;
-    s64 slot = -1;
-    s64 slot_area = -1;
+    s64 slot;
+    s64 slot_area;
     s64 drag_offset, drag_y;
 
     Animation anim;
+};
+
+struct Resizer {
+    s64 size = 0, size_min;
+    s64 drag_size, drag_y;
+    s64 slot;
 };
 
 struct Rect {
@@ -268,7 +274,7 @@ struct Lui_context {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
         SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT, SLOT_LABEL_BASE,
         SLOT_LABEL_BITORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE,
-        SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_BUTTON_CREATE,
+        SLOT_RESIZER_NUMBERS, SLOT_ENTRY_NUMBERS, SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_BUTTON_CREATE,
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
@@ -291,14 +297,20 @@ struct Lui_context {
         DRAW_ENTRY = 32,
         DRAW_RADIO = 64,
         DRAW_SCROLL = 128,
-        DRAW_AREA = 256,
-        DRAW_COMPACT = 512,
+        DRAW_RESIZER = 256,
+        DRAW_AREA = 512,
+        DRAW_COMPACT = 1024,
     };
 
     enum Entry_names: u8 {
         ENTRY_NUMBERS, ENTRY_BASE, ENTRY_BITORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE,
         ENTRY_COUNT
     };
+    enum Resizer_names: u8 {
+        RESIZER_NUMBERS, RESIZER_PANEL,
+        RESIZER_COUNT
+    };
+    
     static constexpr double CURSOR_BLINK_DELAY = 0.5;
     
     // State of the ui elements
@@ -311,11 +323,14 @@ struct Lui_context {
     bool cursor_blinked = false;
     Padding padding_entry;
     Scrollbar scroll_panel;
+    Array_t<Resizer> resizers;
 
     // Lengths used by multiple places
     //@Cleanup: Make this DPI aware
     s64 panel_left_width = 475;
     s64 width_scrollbar = 6;
+    s64 width_resizer = 6;
+    s64 width_button_max = 40;
 
     // Input state
     s64 pointer_x, pointer_y;
@@ -340,14 +355,20 @@ enum Types: u8 {
 };
 }
 
+namespace Cursor_type {
+enum Cursor_type: u8 {
+    NORMAL, TEXT, RESIZE
+};
+}
+
 struct Platform_state {
     Display* display = nullptr;
     Window window;
     GLXWindow window_glx;
     Atom sel_primary, sel_clipboard, sel_target, sel_utf8str, sel_string, sel_incr;
 
-    bool cursor_is_text = false;
-    Cursor cursor_text;
+    u8 cursor_type = Cursor_type::NORMAL;
+    Cursor cursor_text, cursor_resize;
 
     Lui_context gl_context; //@Cleanup: Rename to lui_context
 
@@ -920,24 +941,59 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
 
     float w = (float)bb.w - 2.f*mar_x;
     float h = (float)bb.h - 2.f*mar_y;
-    if (w < h) w = h;
+
+    float f = std::min(std::min(w, h), (float)context->width_button_max);
+    bool split_x = f < w;
+    bool split_y = f < h;
     
     float x1 = (float)bb.x;
     float x4 = (float)bb.x + w + 2.f*mar_x;
-    float x2 = x1 + mar_y + h/2.f;
-    float x3 = x4 - mar_y - h/2.f;
+    float x2 = x1 + mar_x + f/2.f;
+    float x3 = x4 - mar_x - f/2.f;
     float y1 = (float)bb.y;
-    float y2 = (float)bb.y + h + 2.f*mar_y;
+    float y4 = (float)bb.y + h + 2.f*mar_y;
+    float y2 = y1 + mar_y + f/2.f;
+    float y3 = y4 - mar_y - f/2.f;
 
-    
-    array_append(&context->buf_uibutton_pos, {
-        x1, y2, x1, y2, x1, y1, x2, y2, x2, y1, x3, y2, x3, y1, x4, y2, x4, y1, x4, y1
-    });
-    float sx = h * 0.5f + mar_x;
-    float sy = h * 0.5f + mar_y;
-    array_append(&context->buf_uibutton_x, {
-        -sx, sy, -sx, sy, -sx, -sy, 0.f, sy, 0.f, -sy, 0.f, sy, 0.f, -sy, sx, sy, sx, -sy, sx, -sy
-    });
+    float sx = f * 0.5f + mar_x;
+    float sy = f * 0.5f + mar_y;
+
+    s64 vertices;
+    if (split_x and not split_y) {
+        array_append(&context->buf_uibutton_pos, {
+            x1, y4, x1, y4, x1, y1, x2, y4, x2, y1, x3, y4, x3, y1, x4, y4, x4, y1, x4, y1
+        });
+        array_append(&context->buf_uibutton_x, {
+            -sx, sy, -sx, sy, -sx, -sy, 0.f, sy, 0.f, -sy, 0.f, sy, 0.f, -sy, sx, sy, sx, -sy, sx, -sy
+        });
+        vertices = 10;
+    } else if (not split_x and split_y) {
+        array_append(&context->buf_uibutton_pos, {
+            x1, y1, x1, y1, x4, y1, x1, y2, x4, y2, x1, y3, x4, y3, x1, y4, x4, y4, x4, y4
+        });
+        array_append(&context->buf_uibutton_x, {
+            -sx, -sy, -sx, -sy, sx, -sy, -sx, 0.f, sx, 0.f, -sx, 0.f, sx, 0.f, -sx, sy, sx, sy, sx, sy
+        });
+        vertices = 10;
+    } else if (not split_x and not split_y) {
+        array_append(&context->buf_uibutton_pos, {
+            x1, y1, x1, y1, x4, y1, x1, y4, x4, y4, x4, y4
+        });
+        array_append(&context->buf_uibutton_x, {
+            -sx, -sy, -sx, -sy, sx, -sy, -sx, sy, sx, sy, sx, sy
+        });
+        vertices = 6;
+    } else  {
+        array_append(&context->buf_uibutton_pos, {
+            x1, y1, x1, y1, x2, y1, x1, y2, x2, y2, x1, y3, x2, y3, x1, y4, x2, y4, x3, y4, x2, y3,
+            x3, y3, x2, y2, x3, y2, x2, y1, x3, y1, x4, y1, x3, y2, x4, y2, x3, y3, x4, y3, x3, y4,
+            x4, y4, x4, y4
+        });
+        array_append(&context->buf_uibutton_x, {
+            -sx, -sy, -sx, -sy, 0.f, -sy, -sx, 0.f, 0.f, 0.f, -sx, 0.f, 0.f, 0.f, -sx, sy, 0.f, sy, 0.f, sy, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, -sy, 0.f, -sy, sx, -sy, 0.f, 0.f, sx, 0.f, 0.f, 0.f, sx, 0.f, 0.f, sy, sx, sy, sx, sy
+        });
+        vertices = 24;
+    }
 
     float grad_light_t = std::min(1.f, 15.f / (float)bb.h);
     
@@ -965,14 +1021,14 @@ void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, R
         inwards ? grad_light :
         flags & Lui_context::DRAW_PRESSED ? grad_pressed
         : grad_normal;
-    float size = inwards ? h * 0.5f - 0.15f : h * 0.5f;
+    float size = inwards ? f * 0.5f - 0.15f : f * 0.5f;
     float inner = ~flags & Lui_context::DRAW_RADIO ? 1.f :
         ~flags & Lui_context::DRAW_PRESSED ? 1.f :
         flags & Lui_context::DRAW_DISABLED ? 0.7f
         : 0.2f;
     float circle = flags & Lui_context::DRAW_RADIO ? 2.f : 8.f;
     
-    for (s64 i = 0; i < 10; ++i) {
+    for (s64 i = 0; i < vertices; ++i) {
         array_push_back(&context->buf_uibutton_size, size);
         array_append(&context->buf_uibutton_border, {border, 3});
         array_append(&context->buf_uibutton_color, {color, 3});
@@ -1250,14 +1306,16 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
     if (w_out) *w_out = w - bb.w;
 }
 
-void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, bool only_measure=false) {
+void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, Resizer* resizer=nullptr, bool only_measure=false) {
     u8 font = Lui_context::FONT_LUI_SANS;
     auto font_inst = context->fonts[font];
     Padding pad = {7, 5, 3, 3};
     context->padding_entry = pad;
 
+    s64 h = resizer ? resizer->size : rows * (s64)std::round(font_inst.newline);
+    
     Rect bb {x, y, w, -1};
-    bb.h = rows * (s64)std::round(font_inst.newline) + pad.mar_y*2 + pad.pad_y*2;
+    bb.h = h + pad.mar_y*2 + pad.pad_y*2;
     context->elem_bb[entry->slot] = bb;
 
     context->elem_flags[entry->slot] |= Lui_context::DRAW_ENTRY;
@@ -1271,6 +1329,12 @@ void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w
 
     if (not only_measure) {
         lui_draw_entry_text(context, *entry, text_bb, font, entry->cursor_draw);
+    }
+
+    if (resizer) {
+        s64 rh = context->width_resizer;
+        context->elem_bb[resizer->slot] = Rect {bb.x, bb.y+bb.h - rh/2, bb.w, (rh+1)/2};
+        context->elem_flags[resizer->slot] |= Lui_context::DRAW_RESIZER;
     }
     
     if (x_out) *x_out = bb.x + bb.w;
@@ -1489,6 +1553,10 @@ void _platform_init(Platform_state* platform) {
     context->elem_flags[Lui_context::SLOT_PANEL]  |= Lui_context::DRAW_AREA;
     context->elem_flags[Lui_context::SLOT_CANVAS] |= Lui_context::DRAW_AREA;
 
+    context->resizers = array_create<Resizer>(Lui_context::RESIZER_COUNT);
+    context->resizers[Lui_context::RESIZER_NUMBERS].slot = Lui_context::SLOT_RESIZER_NUMBERS;
+    context->resizers[Lui_context::RESIZER_NUMBERS].size_min = (s64)std::round(context->fonts[Lui_context::FONT_LUI_NORMAL].newline) * 3;
+    
     // Initialise application
     application_init();
 
@@ -2203,6 +2271,13 @@ void _platform_render(Platform_state* platform) {
         scroll->anim.value0 = std::max(scroll->anim.value0, 0.f);
     };
 
+    auto get_resizer = [context](s64 id) {
+        for (auto& i: context->resizers) {
+            if (i.slot == id) return &i;
+        }
+        assert(false);
+    };
+
     for (Key key: context->input_queue) {
         if (key.type == Key::MOUSE) {
             u8 action; s64 x, y;
@@ -2210,15 +2285,22 @@ void _platform_render(Platform_state* platform) {
 
             bool consumed = false;
 
-            if (action == Key::MOTION and context->drag_el != -1 and (context->elem_flags[context->drag_el] & Lui_context::DRAW_SCROLL)) {
-                Scrollbar* scroll = get_scroll(context->drag_el);
-                scrollbar_scroll_set(scroll, scroll->drag_offset + (y - scroll->drag_y));
-                consumed = true;
+            if (action == Key::MOTION and context->drag_el != -1) {
+                if (context->elem_flags[context->drag_el] & Lui_context::DRAW_SCROLL) {
+                    Scrollbar* scroll = get_scroll(context->drag_el);
+                    s64 amount = (y - scroll->drag_y) * scroll->total_height / context->elem_bb[scroll->slot_area].h;
+                    scrollbar_scroll_set(scroll, scroll->drag_offset + amount);
+                    consumed = true;
+                } else if (context->elem_flags[context->drag_el] & Lui_context::DRAW_RESIZER) {
+                    Resizer* resize = get_resizer(context->drag_el);
+                    resize->size = resize->drag_size + (y - resize->drag_y);
+                    consumed = true;
+                }
             }
 
             if (consumed) continue;
             
-            bool cursor_is_text = false;
+            u8 cursor_type = Cursor_type::NORMAL;
             for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
                 if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
                 
@@ -2255,6 +2337,10 @@ void _platform_render(Platform_state* platform) {
                         Scrollbar* scroll = get_scroll(slot);
                         scroll->drag_offset = scroll->offset;
                         scroll->drag_y = y;
+                    } else if (context->elem_flags[slot] & Lui_context::DRAW_RESIZER) {
+                        Resizer* resize = get_resizer(slot);
+                        resize->drag_size = resize->size;
+                        resize->drag_y = y;
                     }
                 } else if (action == Key::LEFT_UP) {
                     bool pressed = context->elem_flags[slot] & Lui_context::DRAW_PRESSED;
@@ -2273,7 +2359,7 @@ void _platform_render(Platform_state* platform) {
                     
                     context->elem_flags[slot] |= Lui_context::DRAW_ACTIVE;
                     if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
-                        cursor_is_text = true;
+                        cursor_type = Cursor_type::TEXT;
                         _lui_process_key_entry(context, get_entry(slot), key);
                     } else if (slot == Lui_context::SLOT_CANVAS) {
                         auto c = &global_context;
@@ -2281,6 +2367,8 @@ void _platform_render(Platform_state* platform) {
                         float world_x = c->origin_x + (x - c->canvas_x) / c->scale;
                         float world_y = c->origin_y + (c->height-1 - y + c->canvas_y) / c->scale;
                         ui_mouse_move(world_x, world_y);
+                    } else if (context->elem_flags[slot] & Lui_context::DRAW_RESIZER) {
+                        cursor_type = Cursor_type::RESIZE;
                     }
                 } else if (action == Key::SCROLL_DOWN or action == Key::SCROLL_UP) {
                     s64 diff = (action == Key::SCROLL_DOWN) - (action == Key::SCROLL_UP);
@@ -2301,7 +2389,7 @@ void _platform_render(Platform_state* platform) {
             }
             
             if (action == Key::MOTION) {
-                platform_set_cursor(cursor_is_text);
+                platform_set_cursor(cursor_type);
             } else if (action == Key::LEFT_UP) {
                 if (context->drag_el != -1 and context->elem_flags[context->drag_el] & Lui_context::DRAW_ENTRY) {
                     _lui_process_key_entry(context, get_entry(context->drag_el), key);
@@ -2402,6 +2490,12 @@ void _platform_render(Platform_state* platform) {
     bool need_redraw;
     scroll->offset = (s64)std::round(animation_get(&scroll->anim, &need_redraw));
     if (need_redraw) platform_redraw(0);
+
+    // Update the resizers
+    for (auto& resizer_: context->resizers) {
+        auto* resizer = &resizer_;
+        resizer->size = std::max(resizer->size, resizer->size_min);
+    }
     
     // Decide whether and where to draw the text cursor, normalise text entry data
     bool cursor_blinking = false;
@@ -2467,11 +2561,12 @@ void _platform_render(Platform_state* platform) {
     platform_fmt_draw(Lui_context::SLOT_INITTEXT, x, y, w, &x, &y);
     hsep();
 
-    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_NUMBERS], x, y, w, 3, nullptr, &y, nullptr);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_NUMBERS], x, y, w, 3,
+        nullptr, &y, nullptr, &context->resizers[Lui_context::RESIZER_NUMBERS]);
     y += std::round(font_inst.height - font_inst.ascent);
 
     {s64 x_orig = x, ha_line;
-    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, nullptr, true);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_LABEL_BASE, x, y, -1, &x, &y);
     y -= ha_line;
@@ -2499,7 +2594,7 @@ void _platform_render(Platform_state* platform) {
     y += std::round(font_inst.height - font_inst.ascent);
 
     {s64 x_orig = x, ha_line;
-    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, true);
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, nullptr, true);
     y += ha_line;
     platform_fmt_draw(Lui_context::SLOT_LABEL_FIRSTNODE, x, y, -1, &x, &y);
     y -= ha_line;
@@ -2663,14 +2758,18 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     }
 }
 
-void platform_set_cursor(bool is_text) {
-    if (is_text == global_platform.cursor_is_text) return;
+void platform_set_cursor(u8 type) {
+    if (type == global_platform.cursor_type) return;
 
-    global_platform.cursor_is_text = is_text;
-    if (is_text) {
+    global_platform.cursor_type = type;
+    if (type == Cursor_type::TEXT) {
         XDefineCursor(global_platform.display, global_platform.window, global_platform.cursor_text);
-    } else {
+    } else if (type == Cursor_type::RESIZE) {
+        XDefineCursor(global_platform.display, global_platform.window, global_platform.cursor_resize);
+    } else if (type == Cursor_type::NORMAL) {
         XUndefineCursor(global_platform.display, global_platform.window);
+    } else {
+        assert(false);
     }
 }
 
@@ -2911,7 +3010,8 @@ int main(int argc, char** argv) {
     XChangeProperty(display, window, wm_protocols, type_atom, 32, PropModeReplace, (u8*)&wm_delete_window, 1);
 
     // Initialise cursor
-    global_platform.cursor_text = XCreateFontCursor(display, 152);
+    global_platform.cursor_text   = XCreateFontCursor(display, 152);
+    global_platform.cursor_resize = XCreateFontCursor(display, 116);
 
     // Query some atom we will later need for the clipboard
     Atom sel_primary   = XInternAtom(display, "PRIMARY", true);
