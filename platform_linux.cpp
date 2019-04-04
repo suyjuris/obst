@@ -111,6 +111,10 @@ void animation_add(Animation* anim, float add) {
 }
 
 float animation_get(Animation* anim, bool* need_redraw = nullptr) {
+    if (anim->begin == 0.f) {
+        return anim->value0;
+    }
+    
     float x = (float)((platform_now() - anim->begin) / anim->duration);
     
     if (need_redraw) *need_redraw = x < 1.f;
@@ -154,7 +158,7 @@ struct Text_entry {
     s64 draw_w, draw_h;
     s64 slot;
     s64 selection, selection_row, selection_col;
-    bool cursor_draw;
+    bool cursor_draw, disable_newline;
     Array_dyn<Undo_item> undo_stack, redo_stack;
     Array_dyn<u8> undo_data, redo_data;
 };
@@ -164,6 +168,7 @@ struct Scrollbar {
     s64 total_height = 0;
     s64 slot = -1;
     s64 slot_area = -1;
+    s64 drag_offset, drag_y;
 
     Animation anim;
 };
@@ -240,7 +245,7 @@ struct Lui_context {
     static constexpr float LAYER_BACK = 0.1f;
     static constexpr float LAYER_MIDDLE = 0.085f;
     static constexpr float LAYER_FRONT = 0.07f;
-    
+
     // Data for font rendering
     struct Font_instance {
         s64 info_index;
@@ -310,7 +315,7 @@ struct Lui_context {
     // Lengths used by multiple places
     //@Cleanup: Make this DPI aware
     s64 panel_left_width = 475;
-    s64 width_scrollbar = 4;
+    s64 width_scrollbar = 6;
 
     // Input state
     s64 pointer_x, pointer_y;
@@ -580,7 +585,7 @@ void _platform_init_gl(Platform_state* platform) {
 void lui_draw_rect(Lui_context* context, s64 x, s64 y, s64 w, s64 h, float z, u8* fill) {
     float x1 = x,   y1 = y;
     float x2 = x+w, y2 = y+h;
-    
+
     array_append(&context->buf_uirect_pos, {
         x1, y1, z, x2, y1, z, x2, y2, z, x1, y1, z, x2, y2, z, x1, y2, z
     });
@@ -1016,8 +1021,17 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
                 fill = sel_f;
             }
             if (entry.selection == -1 and cursor and c_i == entry.cursor) {
-                lui_draw_rect(context, x-1, y-font_inst.ascent+font_inst.height*0.1f, 1,
-                    font_inst.height*0.8f, Lui_context::LAYER_FRONT, fill);
+                float p[] = {x-1, y-font_inst.ascent+font_inst.height*0.1f, 1, font_inst.height*0.8f};
+                bool draw = true;
+                if (p[0] + p[2] <= tx-1) draw = false;
+                if (p[1] + p[3] <= ty-1) draw = false;
+                if (p[0] >= tx+tw+1) draw = false;
+                if (p[1] >= ty+th+1) draw = false;
+                if (p[0] < tx-1) p[0] = tx-1;
+                if (p[0]+p[2] > tx+tw+1) p[2] = tx+tw+1 - p[0];
+                if (p[1] < ty-1) p[1] = ty-1;
+                if (p[1]+p[3] > ty+th+1) p[3] = ty+th+1 - p[1];
+                if (draw) lui_draw_rect(context, p[0], p[1], p[2], p[3], Lui_context::LAYER_FRONT, fill);
             }
             
             if (c_i >= entry.text.size) break;
@@ -1286,8 +1300,11 @@ void lui_draw_radio(Lui_context* context, s64 x, s64 y, s64 slot, s64* x_out, s6
 
 void lui_draw_scrollbar(Lui_context* context, Scrollbar* scroll) {
     Padding pad {0, 0};
-    //u8 fill[] = {242, 152,  51, 255};
-    u8 fill[] = {200, 200, 200, 255};
+    u8 orange[] = {242, 152,  51, 255};
+    u8 black[] = {200, 200, 200, 255};
+    u8* fill = context->elem_flags[scroll->slot] & Lui_context::DRAW_ACTIVE ? orange : black;
+
+    context->elem_flags[scroll->slot] |= Lui_context::DRAW_SCROLL;
     
     auto bb = context->elem_bb[scroll->slot_area];
     if (bb.h >= scroll->total_height) {
@@ -1298,7 +1315,13 @@ void lui_draw_scrollbar(Lui_context* context, Scrollbar* scroll) {
         s64 h = bb.h - pad.pad_y * 2;
         s64 p_offset = h * scroll->offset / scroll->total_height;
         s64 p_height = h * bb.h / scroll->total_height;
-        lui_draw_rect(context, x, y + p_offset, context->width_scrollbar, p_height, Lui_context::LAYER_MIDDLE, fill);
+        Rect r {x, y + p_offset, context->width_scrollbar, p_height};
+        context->elem_bb[scroll->slot] = r;
+        if (~context->elem_flags[scroll->slot] & Lui_context::DRAW_ACTIVE) {
+            r.x += r.w / 2;
+            r.w = (r.w + 1) / 2;
+        }
+        lui_draw_rect(context, r.x, r.y, r.w, r.h, Lui_context::LAYER_MIDDLE, fill);
     }
 }
 
@@ -1446,6 +1469,11 @@ void _platform_init(Platform_state* platform) {
     context->entries[Lui_context::ENTRY_BITORDER].slot   = Lui_context::SLOT_ENTRY_BITORDER;
     context->entries[Lui_context::ENTRY_FIRSTNODE].slot  = Lui_context::SLOT_ENTRY_FIRSTNODE;
     context->entries[Lui_context::ENTRY_SECONDNODE].slot = Lui_context::SLOT_ENTRY_SECONDNODE;
+    
+    context->entries[Lui_context::ENTRY_BASE].disable_newline = true;
+    context->entries[Lui_context::ENTRY_BITORDER].disable_newline = true;
+    context->entries[Lui_context::ENTRY_FIRSTNODE].disable_newline = true;
+    context->entries[Lui_context::ENTRY_SECONDNODE].disable_newline = true;
 
     context->elem_flags[Lui_context::SLOT_BUTTON_NEXT] |= Lui_context::DRAW_COMPACT;
     context->elem_flags[Lui_context::SLOT_BUTTON_PREV] |= Lui_context::DRAW_COMPACT;
@@ -1990,7 +2018,8 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
             del(MOVE_L, key.flags & Key::MOD_CTRL ? WORD : SINGLE); commit = false;
 
         } else if (key.special == Key::RETURN) {
-            ins({(u8*)"\n", 1}); commit = false;
+            if (not entry->disable_newline)
+                { ins({(u8*)"\n", 1}); commit = false; }
 
         } else if (key.special == Key::C_PASTE) {
             ins(platform_clipboard_get(key.data));
@@ -2033,6 +2062,17 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
             consumed = false;
         }
 
+        if (action == Key::SCROLL_DOWN or action == Key::SCROLL_UP) {
+            s64 diff = (action == Key::SCROLL_DOWN) - (action == Key::SCROLL_UP);
+            s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_SANS].newline);
+            entry->offset_y += diff * line;
+
+            s64 total_rows = 1;
+            for (u8 c: entry->text) total_rows += c == '\n';
+            entry->offset_y = std::min(entry->offset_y, total_rows*line - entry->draw_h);
+            entry->offset_y = std::max(entry->offset_y, (s64)0);
+        }
+
         if (action == Key::LEFT_UP and context->drag_el == entry->slot and entry->selection != -1) {
             // Note that we receive this event even if the cursor is not over the entry
             s64 i = entry->cursor, j = entry->selection;
@@ -2055,6 +2095,8 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
             move_row(row - entry->cursor_row);
             move_width(tx);
         }
+    } else {
+        consumed = false;
     }
 
     if (commit and entry->undo_stack.size) {
@@ -2131,6 +2173,18 @@ void _platform_render(Platform_state* platform) {
         }
         assert(false);
     };
+
+    auto get_scroll = [context](s64 slot) {
+        assert(slot == Lui_context::SLOT_SCROLL_PANEL);
+        return &context->scroll_panel;
+    };
+    auto get_scroll_from_area = [context](s64 slot_area) -> Scrollbar* {
+        if (context->scroll_panel.slot_area == slot_area) {
+            return &context->scroll_panel;
+        }
+        return nullptr;
+    };
+    
     auto scrollbar_scroll = [context](Scrollbar* scroll, float amount) {
         s64 h = context->elem_bb[scroll->slot_area].h;
         if (scroll->offset == 0 and scroll->total_height <= h) return;
@@ -2139,6 +2193,15 @@ void _platform_render(Platform_state* platform) {
         scroll->anim.value1 = std::min(scroll->anim.value1, (float)(scroll->total_height - h));
         scroll->anim.value1 = std::max(scroll->anim.value1, 0.f);
     };
+    auto scrollbar_scroll_set = [context](Scrollbar* scroll, s64 offset) {
+        s64 h = context->elem_bb[scroll->slot_area].h;
+        if (scroll->offset == 0 and scroll->total_height <= h) return;
+
+        scroll->anim.begin = 0.f;
+        scroll->anim.value0 = offset;
+        scroll->anim.value0 = std::min(scroll->anim.value0, (float)(scroll->total_height - h));
+        scroll->anim.value0 = std::max(scroll->anim.value0, 0.f);
+    };
 
     for (Key key: context->input_queue) {
         if (key.type == Key::MOUSE) {
@@ -2146,6 +2209,15 @@ void _platform_render(Platform_state* platform) {
             key.get_mouse_param(&action, &x, &y);
 
             bool consumed = false;
+
+            if (action == Key::MOTION and context->drag_el != -1 and (context->elem_flags[context->drag_el] & Lui_context::DRAW_SCROLL)) {
+                Scrollbar* scroll = get_scroll(context->drag_el);
+                scrollbar_scroll_set(scroll, scroll->drag_offset + (y - scroll->drag_y));
+                consumed = true;
+            }
+
+            if (consumed) continue;
+            
             bool cursor_is_text = false;
             for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
                 if (context->elem_flags[slot] & Lui_context::DRAW_DISABLED) continue;
@@ -2179,14 +2251,19 @@ void _platform_render(Platform_state* platform) {
                         context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
                         context->cursor_blinked = false;
                         _lui_process_key_entry(context, get_entry(slot), key);
+                    } else if (context->elem_flags[slot] & Lui_context::DRAW_SCROLL) {
+                        Scrollbar* scroll = get_scroll(slot);
+                        scroll->drag_offset = scroll->offset;
+                        scroll->drag_y = y;
                     }
                 } else if (action == Key::LEFT_UP) {
+                    bool pressed = context->elem_flags[slot] & Lui_context::DRAW_PRESSED;
                     if (~context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
                         context->elem_flags[slot] &= ~Lui_context::DRAW_PRESSED;
                     }
-                    if (context->elem_flags[slot] & Lui_context::DRAW_BUTTON) {
+                    if (pressed and (context->elem_flags[slot] & Lui_context::DRAW_BUTTON)) {
                         lui_button_press(slot);
-                    } else if (context->elem_flags[slot] & Lui_context::DRAW_RADIO) {
+                    } else if (pressed and (context->elem_flags[slot] & Lui_context::DRAW_RADIO)) {
                         lui_radio_press(slot);
                     }
                 } else if (action == Key::MOTION) {
@@ -2208,14 +2285,13 @@ void _platform_render(Platform_state* platform) {
                 } else if (action == Key::SCROLL_DOWN or action == Key::SCROLL_UP) {
                     s64 diff = (action == Key::SCROLL_DOWN) - (action == Key::SCROLL_UP);
                     if (context->elem_flags[slot] & Lui_context::DRAW_AREA) {
-                        Scrollbar* scroll = nullptr;
-                        if (slot == Lui_context::SLOT_PANEL) {
-                            scroll = &context->scroll_panel;
-                        }
+                        Scrollbar* scroll = get_scroll_from_area(slot);
                         if (not scroll) continue;
 
                         float scroll_amount = context->fonts[Lui_context::FONT_LUI_NORMAL].newline * 3.f;
                         scrollbar_scroll(scroll, scroll_amount * (float)diff);
+                    } else if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
+                        _lui_process_key_entry(context, get_entry(slot), key);
                     } else {
                         continue;
                     }
