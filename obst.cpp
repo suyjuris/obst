@@ -30,9 +30,11 @@ void ui_error_report(char const* msg, Args... args) {
     );
     ui_error_buf.size += len+1;
 
+    fprintf(stderr, "Error: %s\n", ui_error_buf.data); return;
     platform_fmt_store_simple(Text_fmt::PARAGRAPH | Text_fmt::RED, ui_error_buf, Text_fmt::SLOT_ERRORINFO);
 }
 void ui_error_report(char const* msg) {
+    fprintf(stderr, "Error: %s\n", msg); return;
     platform_fmt_store_simple(Text_fmt::PARAGRAPH | Text_fmt::RED, msg, Text_fmt::SLOT_ERRORINFO);
 }
 
@@ -231,7 +233,7 @@ void bdd_store_init(Bdd_store* store) {
 
     // Initial names for T and F as well as dummy element
     array_append(&store->names, {0ll, 0ll, 1ll, 2ll});
-    array_append(&store->name_data, {(u8*)"TF", 2});
+    array_append(&store->name_data, {(u8*)"FT", 2});
 }
 
 u64 bdd_hash(Bdd bdd) {
@@ -614,9 +616,13 @@ Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bo
     switch (c[0]) {
     case '|': s = u8"∪"; draw_light = true; break;
     case '&': s = u8"∩"; draw_light = true; break;
-    case '~': s = u8"¬"; break;
+    case '~': s = u8"¬"; draw_light = true; break;
     case '+': s = u8"∨"; draw_light = true; break;
     case '-': s = u8"∧"; draw_light = true; break;
+    case '<': s = u8"←"; draw_light = true; break;
+    case '>': s = u8"→"; draw_light = true; break;
+    case '=': s = u8"↔"; draw_light = true; break;
+    case '^': s = u8"⊕"; draw_light = true; break;
     case '?': s = u8"∀"; break;
     case '!': s = u8"∃"; break;
     default: s = &c[0]; break;
@@ -1320,6 +1326,869 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         context_pop(store);
     }
     return bdd_final;
+}
+
+struct Formula {
+    enum Type: u8 {
+        NONE, VAR, NEG, OR, AND, XOR, IMPL_R, IMPL_L, IMPL_RL, ASSIGN,
+
+        _PAREN_L, _PAREN_R
+    };
+    static constexpr char const* type_names[] = {
+        "", "", "~", "|", "&", "^", "->", "<-", "<->", "=", "(", ")"
+    };
+    static constexpr char type_names_bdd[] = "..~+-^><=.";
+    
+    u8 type;
+    s64 id;
+    union {
+        s64 var;
+        s64 arg;
+        struct { s64 arg_l, arg_r; };
+    };
+    u64 hash;
+};
+constexpr char const* Formula::type_names[];
+constexpr char Formula::type_names_bdd[];
+
+struct Formula_store {
+    Array_dyn<Formula> formulae;
+    Array_dyn<s64> statements;
+    Array_dyn<s64> vars;
+    Array_dyn<u8> var_names;
+    Array_dyn<s64> vars_formula;
+    
+    Array_dyn<s64> order_var;
+    
+    Array_dyn<s64> parser_ids;
+    Array_dyn<u8> parser_ops;
+    s64 parser_diff = 0;
+    
+    Array_t<u8> str;
+    s64 str_i, str_row, str_col;
+
+    bool error_flag;
+};
+
+Formula_store global_formula_store;
+
+// splitmix64, written by Sebastiano Vigna
+static inline uint64_t splitmix64(uint64_t index) {
+    uint64_t z = (index + 0x9e3779b97f4a7c15ull);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+
+bool _is_operator_commutative(u8 type) {
+    switch (type) {
+    case Formula::OR:
+    case Formula::AND:
+    case Formula::XOR:
+    case Formula::IMPL_RL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+s64 formula_create(Formula_store* store, u8 type, s64 arg0 = 0, s64 arg1 = 0) {
+    Formula f;
+    f.type = type;
+    f.id = store->formulae.size;
+    if (type == Formula::NONE) {
+        assert(false);
+    } else if (type == Formula::NEG) {
+        f.arg = arg0;
+        f.hash = splitmix64(store->formulae[f.arg].hash ^ f.type);
+    } else if (type == Formula::VAR) {
+        f.var = arg0;
+        f.hash = splitmix64(f.var ^ f.type);
+    } else {
+        f.arg_l = arg0;
+        f.arg_r = arg1;
+        u64 h0 = store->formulae[arg0].hash;
+        u64 h1 = store->formulae[arg1].hash;
+        if (_is_operator_commutative(type)) {
+            f.hash = splitmix64(h0 ^ h1 ^ type);
+        } else if (type == Formula::IMPL_L) {
+            f.hash = splitmix64(splitmix64(h1 ^ Formula::IMPL_R) ^ h0);
+        } else {
+            f.hash = splitmix64(splitmix64(h0 ^ type) ^ h1);
+        }
+    }
+    array_push_back(&store->formulae, f);
+    return f.id;
+}
+
+void formula_store_init(Formula_store* store) {
+    store->formulae.size = 0;
+    store->vars.size = 0;
+    store->var_names.size = 0;
+    store->vars_formula.size = 0;
+    
+    array_printf(&store->var_names, "01");
+    array_append(&store->vars, {0ll, 1ll, 2ll});
+    formula_create(store, Formula::VAR, 0);
+    formula_create(store, Formula::VAR, 1);
+    
+    store->error_flag = false;
+    store->str_i = 0;
+    store->str_row = 0;
+    store->str_col = 0;
+}
+
+bool _is_operator(u32 c) {
+    switch (c) {
+    case '|':
+    case '&':
+    case '~':
+    case '^':
+    case '=':
+    case '<':
+    case '>':
+    case '-':
+    case '(':
+    case ')':
+    case '+':
+    case '%':
+    case '/':
+    case '?':
+    case '!':
+    case '#':
+    case '\\':
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool _is_operator_flush(u32 c) {
+    switch (c) {
+    case '~':
+    case '(':
+    case ')':
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool _is_space(u32 c) {
+    return c == ' ' or c == '\t';
+}
+
+s64 helper_decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
+    static bool warning_was_given;
+    
+    u32 c = buf[0];
+    s64 c_bytes = c&128 ? c&64 ? c&32 ? c&16 ? 4 : 3 : 2 : -1 : 1;
+    if (buf.size < c_bytes) c_bytes = -1;
+    
+    if (c_bytes == 1) {
+        // nothing
+    } else if (c_bytes == 2) {
+        c = (buf[0]&0x1f) << 6 | (buf[1]&0x3f);
+    } else if (c_bytes == 3) {
+        c = (buf[0]&0xf) << 12 | (buf[1]&0x3f) << 6 | (buf[2]&0x3f);
+    } else if (c_bytes == 4) {
+        c = (buf[0]&0x7) << 18 | (buf[1]&0x3f) << 12 | (buf[2]&0x3f) << 6 | (buf[3]&0x3f);
+    } else {
+        if (not warning_was_given) {
+            fprintf(stderr, "Warning: encountered invalid utf-8 sequence (this warning will not show again)\n");
+            warning_was_given = true;
+        }
+        assert(false);
+        c = '?';
+        c_bytes = 1;
+    }
+    if (c_out) *c_out = c;
+    return c_bytes;
+}
+
+Array_t<u8> formula_token_pop(Formula_store* store) {
+    if (store->str_i >= store->str.size) return {};
+
+    s64 state = 0;
+    s64 beg, end;
+    while (store->str_i <= store->str.size) {
+        u32 c;
+        s64 bytes;
+
+        if (store->str_i < store->str.size) {
+            auto suffix = array_subarray(store->str, store->str_i, store->str.size);
+            bytes = helper_decode_utf8(suffix, &c);
+        } else {
+            c = 0;
+            bytes = 1;
+        }
+        
+        if (state == 0) {
+            if (_is_space(c))  {
+                // nothing
+            } else if ('0' <= c and c <= '9') {
+                beg = store->str_i;
+                state = 1;
+            } else if (c == '\n' or c == ';') {
+                beg = store->str_i;
+                end = store->str_i+1;
+                state = 2;
+            } else if (c == 0) {
+                return {};
+            } else if (_is_operator_flush(c)) {
+                beg = store->str_i;
+                end = store->str_i+1;
+                ++store->str_i;
+                break;
+            } else if (_is_operator(c)) {
+                beg = store->str_i;
+                state = 4;
+            } else {
+                beg = store->str_i;
+                state = 3;
+            }
+        } else if (state == 1) {
+            if ('0' <= c and c <= '9') {
+                // nothing
+            } else if (_is_operator(c) or _is_space(c) or c == ';' or c == '\n' or c == 0) {
+                end = store->str_i;
+                break;
+            } else {
+                ui_error_report("Invalid token, unexpected char '%c' (codepoint %d) in number", (u8)c, c);
+                store->error_flag = true;
+                return {};
+            }
+        } else if (state == 2) {
+            if (_is_space(c) or c == '\n' or c == ';') {
+                // nothing
+            } else {
+                break;
+            }
+        } else if (state == 3) {
+            if (_is_space(c) or _is_operator(c) or c == 0) {
+                end = store->str_i;
+                break;
+            } else {
+                // nothing
+            }
+        } else if (state == 4) {
+            if (not _is_operator(c) or _is_operator_flush(c)) {
+                end = store->str_i;
+                break;
+            } else {
+                // nothing
+            }
+        } else {
+            assert(false);
+        }
+
+        store->str_i += bytes;
+        if (c == '\n') {
+            store->str_col = 0;
+            ++store->str_row;
+        } else {
+            ++store->str_col;
+        }
+    }
+
+    auto arr = array_subarray(store->str, beg, end);
+    if (state == 1) {
+        if (arr.size != 1 or arr[0] >= '2') {
+            ui_error_report("Invalid token, only 0 and 1 are allowed as constants");
+            store->error_flag = true;
+            return {};
+        }
+    }
+    return arr;
+}
+
+u8 _get_operator_type(Array_t<u8> op) {
+    if (array_equal_str(op, "~")) return Formula::NEG;
+    if (array_equal_str(op, "|")) return Formula::OR;
+    if (array_equal_str(op, "&")) return Formula::AND;
+    if (array_equal_str(op, "^")) return Formula::XOR;
+    if (array_equal_str(op, "->")) return Formula::IMPL_R;
+    if (array_equal_str(op, "=>")) return Formula::IMPL_R;
+    if (array_equal_str(op, "<-")) return Formula::IMPL_L;
+    if (array_equal_str(op, "<=")) return Formula::IMPL_L;
+    if (array_equal_str(op, "<->")) return Formula::IMPL_RL;
+    if (array_equal_str(op, "<=>")) return Formula::IMPL_RL;
+    if (array_equal_str(op, "=")) return Formula::ASSIGN;
+    if (array_equal_str(op, "(")) return Formula::_PAREN_L;
+    if (array_equal_str(op, ")")) return Formula::_PAREN_R;
+    return Formula::NONE;
+}
+
+s64 _get_operator_precedence(u8 op) {
+    switch (op) {
+    case Formula::_PAREN_L: return 8;
+    case Formula::_PAREN_R: return 8;
+    case Formula::NEG:      return 7;
+    case Formula::AND:      return 6;
+    case Formula::OR:       return 5;
+    case Formula::IMPL_R:   return 4;
+    case Formula::IMPL_L:   return 4;
+    case Formula::XOR:      return 3;
+    case Formula::IMPL_RL:  return 2;
+    case Formula::ASSIGN:   return 1;
+    case Formula::NONE:     return 0;
+    default: assert(false); return 0;
+    }
+}
+
+void formula_print(Formula_store* store, s64 f_id, s64 parent_prec = 0) {
+    Formula f = store->formulae[f_id];
+    if (f.type == Formula::NONE) {
+        printf(".");
+    } else if (f.type == Formula::VAR) {
+        auto name = array_subarray(store->var_names, store->vars[f.var], store->vars[f.var+1]);
+        fwrite(name.data, name.size, 1, stdout);
+    } else if (f.type == Formula::NEG) {
+        printf("~");
+        formula_print(store, f.arg, _get_operator_precedence(f.type));
+    } else {
+        bool paren = _get_operator_precedence(f.type) <= parent_prec;
+        bool right_assoc = f.type == Formula::IMPL_R;
+        if (paren) printf("(");
+        formula_print(store, f.arg_l, f.type + 1-right_assoc);
+        printf("%s", Formula::type_names[f.type]);
+        formula_print(store, f.arg_r, f.type +   right_assoc);
+        if (paren) printf(")");
+    }
+}
+
+void context_amend_formula_var(Bdd_store* store, Formula_store* fstore, s64 var) {
+    auto name = array_subarray(fstore->var_names, fstore->vars[var], fstore->vars[var+1]);
+    context_amend(store, name);
+}
+void context_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
+    Formula f = fstore->formulae[f_id];
+    if (f.type == Formula::NONE) {
+        assert(false);
+    } else if (f.type == Formula::VAR) {
+        context_amend_formula_var(store, fstore, f.var);
+    } else if (f.type == Formula::NEG) {
+        context_amend(store, "~");
+        context_amend_formula(store, fstore, f.arg, _get_operator_precedence(f.type));
+    } else {
+        bool paren = _get_operator_precedence(f.type) <= parent_prec;
+        bool right_assoc = f.type == Formula::IMPL_R;
+        if (paren) context_amend(store, "(");
+        context_amend_formula(store, fstore, f.arg_l, f.type + 1-right_assoc);
+        context_amend(store, "%s", Formula::type_names[f.type]);
+        context_amend_formula(store, fstore, f.arg_r, f.type +   right_assoc);
+        if (paren) context_amend(store, ")");
+    }
+}
+
+void bdd_name_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
+    Formula f = fstore->formulae[f_id];
+    if (f.type == Formula::NONE) {
+        assert(false);
+    } else if (f.type == Formula::VAR) {
+        auto name = array_subarray(fstore->var_names, fstore->vars[f.var], fstore->vars[f.var+1]);
+        for (u8 c: name)
+            array_push_back(&store->name_data, (u8)(128 | c));
+    } else if (f.type == Formula::NEG) {
+        array_push_back(&store->name_data, (u8)(128 | Formula::type_names_bdd[f.type]));
+        bdd_name_amend_formula(store, fstore, f.arg, _get_operator_precedence(f.type));
+    } else {
+        bool paren = _get_operator_precedence(f.type) <= parent_prec;
+        bool right_assoc = f.type == Formula::IMPL_R;
+        if (paren) array_push_back(&store->name_data, (u8)(128 | '('));
+        bdd_name_amend_formula(store, fstore, f.arg_l, f.type + 1-right_assoc);
+        array_push_back(&store->name_data, (u8)(128 | Formula::type_names_bdd[f.type]));
+        bdd_name_amend_formula(store, fstore, f.arg_r, f.type +   right_assoc);
+        if (paren) array_push_back(&store->name_data, (u8)(128 | ')'));
+    }
+}
+
+void formula_parse_statement(Formula_store* store) {
+    auto pop_binop = [store]() {
+        assert(store->parser_ids.size >= 2);
+        u8 top_typ = store->parser_ops[store->parser_ops.size-1];
+        s64 ss = store->parser_ids.size;
+        store->parser_ids[ss-2] = formula_create(store, top_typ, store->parser_ids[ss-2], store->parser_ids[ss-1]);
+        --store->parser_ids.size;
+        --store->parser_ops.size;
+    };
+    auto pop_unop = [store]() {
+        assert(store->parser_ids.size >= 1);
+        assert(store->parser_ops[store->parser_ops.size-1] == Formula::NEG);
+        s64 ss = store->parser_ids.size;
+        store->parser_ids[ss-1] = formula_create(store, Formula::NEG, store->parser_ids[ss-1]);
+        --store->parser_ops.size;
+    };
+    
+    while (true) {
+        auto tok = formula_token_pop(store);
+        if (store->error_flag) return;
+        
+        if (tok.size == 0 or tok[0] == '\n' or tok[0] == ';') {
+            if (store->parser_ids.size == 0) break;
+            if (store->parser_diff == 0) {
+                ui_error_report("Unexpected end of statement");
+                store->error_flag = true;
+                return;
+            }
+            
+            while (true) {
+                s64 s = store->parser_ops.size;
+                if (not s) break;
+                s64 top_typ = store->parser_ops[s-1];
+                
+                if (top_typ == Formula::NEG) {
+                    ui_error_report("Unexpected end of statement after unary '~'");
+                    store->error_flag = true;
+                    return;
+                } else if (top_typ == Formula::_PAREN_L) {
+                    ui_error_report("Unexpected end of statement, mismatched '('");
+                    store->error_flag = true;
+                    return;
+                } else {
+                    pop_binop();
+                }
+            }
+
+            assert(store->parser_ids.size <= 1);
+            if (store->parser_ids.size == 1) {
+                array_push_back(&store->statements, store->parser_ids[0]);
+                --store->parser_ids.size;
+                store->parser_diff = 0;
+            }
+
+            break;
+        } else if (tok[0] == ')') {
+            while (true) {
+                s64 s = store->parser_ops.size;
+                if (not s) {
+                    ui_error_report("Mismatched ')'");
+                    store->error_flag = true;
+                    return;
+                }
+                if (store->parser_ops[s-1] == Formula::_PAREN_L) {
+                    --store->parser_ops.size;
+                    break;
+                }
+                pop_binop();
+            }
+
+            while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
+                pop_unop();
+            }
+        } else if (_is_operator(tok[0])) {
+            u8 typ = _get_operator_type(tok);
+            if (typ == Formula::NONE) {
+                Array_dyn<u8> str;
+                defer { array_free(&str); };
+                array_printf(&str, "Invalid operator '");
+                array_append(&str, tok);
+                array_push_back(&str, (u8)'\'');
+                array_push_back(&str, (u8)0);
+                ui_error_report((char*)str.data);
+                store->error_flag = true;
+                return;
+            }
+
+            s64 prec = _get_operator_precedence(typ);
+            s64 right_assoc = typ == Formula::IMPL_R;
+            while (true) {
+                s64 s = store->parser_ops.size;
+                if (not s) break;
+                s64 top_typ = store->parser_ops[s-1];
+                s64 top_prec = _get_operator_precedence(top_typ);
+
+                if (prec > top_prec or (prec == top_prec and right_assoc)) break;
+                if (store->parser_ops[s-1] == Formula::_PAREN_L) break;
+
+                if (top_typ == Formula::NEG) {
+                    if (typ == Formula::NEG) break;
+                    ui_error_report("Expected term after '~', got operator");
+                    store->error_flag = true;
+                    return;
+                }
+
+                pop_binop();
+            }
+
+            if (typ != Formula::_PAREN_L and typ != Formula::NEG) {
+                if (store->parser_diff != 1) {
+                    ui_error_report("Expected identifier or constant, got operator");
+                    store->error_flag = true;
+                    return;
+                }
+                store->parser_diff = 0;
+            }
+            
+            array_push_back(&store->parser_ops, typ);
+        } else if ('0' <= tok[0] and tok[0] <= '9') {
+            assert(tok[0] == '0' or tok[0] == '1');
+            array_push_back(&store->parser_ids, (s64)(tok[0] - '0'));
+
+            if (store->parser_diff != 0) {
+                ui_error_report("Expected operator, got constant");
+                store->error_flag = true;
+                return;
+            }
+            store->parser_diff = 1;
+
+            while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
+                pop_unop();
+            }
+        } else {
+            s64 var = -1;
+            for (s64 i = 0; i+1 < store->vars.size; ++i) {
+                if (array_equal(tok, array_subarray(store->var_names, store->vars[i], store->vars[i+1]))) {
+                    var = i;
+                    break;
+                }
+            }
+            if (var == -1) {
+                var = store->vars.size-1;
+                array_append(&store->var_names, tok);
+                array_push_back(&store->vars, store->var_names.size);
+            }
+            
+            array_push_back(&store->parser_ids, formula_create(store, Formula::VAR, var));
+
+            if (store->parser_diff != 0) {
+                ui_error_report("Expected operator, got identifier");
+                store->error_flag = true;
+                return;
+            }
+            store->parser_diff = 1;
+
+            while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
+                pop_unop();
+            }
+        }
+    }
+}
+
+s64 formula_parse(Formula_store* store, Array_t<u8> str) {
+    formula_store_init(store);
+    store->str = str;
+
+    while (store->str_i < store->str.size) {
+        formula_parse_statement(store);
+        if (store->error_flag) return -1;
+    }
+
+    // Recursion without using std::function. C++ is really showing its greatness here, after all,
+    // why would anyone want to use recursion in a function?
+    auto check_no_assign = [store](s64 f_id) {
+        auto _rec = [store](s64 f_id, auto& self) mutable {
+            Formula f = store->formulae[f_id];
+            if (f.type == Formula::ASSIGN) {
+                ui_error_report("Invalid assignment in expression (use '<->' for equality)");
+                store->error_flag = true;
+                return;
+            } else if (f.type == Formula::NEG) {
+                self(f.arg, self);
+            } else if (f.type == Formula::VAR) {
+                // nothing
+            } else if (f.type == Formula::NONE) {
+                assert(false);
+            } else {
+                self(f.arg_l, self);
+                if (store->error_flag) return;
+                self(f.arg_r, self);
+            }
+        };
+        return _rec(f_id, _rec);
+    };
+    
+    array_resize(&store->vars_formula, store->vars.size);
+    memset(store->vars_formula.data, -1, store->vars_formula.size * sizeof(store->vars_formula[0]));
+    store->vars_formula[0] = 0;
+    store->vars_formula[1] = 1;
+
+    {s64 j = 0;
+    for (s64 i = 0; i < store->statements.size; ++i) {
+        Formula f = store->formulae[store->statements[i]];
+        if (f.type == Formula::ASSIGN) {
+            Formula f_l = store->formulae[f.arg_l];
+            if (f_l.type != Formula::VAR) {
+                ui_error_report("Cannot assign to non-variable");
+                store->error_flag = true;
+                return -1;
+            } else if (store->vars_formula[f_l.var] != -1) {
+                ui_error_report("Cannot assign to assigned variable or constant");
+                store->error_flag = true;
+                return -1;
+            }
+            check_no_assign(f.arg_r);
+
+            store->vars_formula[f_l.var] = f.arg_r;
+        } else {
+            check_no_assign(f.id);
+            store->statements[j++] = f.id;
+        }
+    }
+    store->statements.size = j;}
+
+    for (Formula f: store->formulae) {
+        if (f.type != Formula::VAR) continue;
+        if (store->vars_formula[f.var] != -1) continue;
+
+        array_push_back(&store->order_var, f.var);
+    }
+
+    std::sort(store->order_var.begin(), store->order_var.end(), [store](s64 a, s64 b) {
+        auto a_name = array_subarray(store->var_names, store->vars[a], store->vars[a+1]);
+        auto b_name = array_subarray(store->var_names, store->vars[b], store->vars[b+1]);
+
+        s64 a_i = a_name.size;
+        while (a_i > 0 and '0' <= a_name[a_i-1] and a_name[a_i-1] <= '9') --a_i;
+        s64 b_i = b_name.size;
+        while (b_i > 0 and '0' <= b_name[b_i-1] and b_name[b_i-1] <= '9') --b_i;
+
+        for (s64 i = 0; i < a_i and i < b_i; ++i) {
+            if (a_name[i] < b_name[i]) return true;
+            if (a_name[i] > b_name[i]) return false;
+        }
+        if (a_i < b_i) return true;
+        if (a_i > b_i) return false;
+        
+        s64 a_n = 0;
+        for (s64 i = a_i; i < a_name.size; ++i) { a_n = a_n*10 + (a_name[i] - '0'); }
+        s64 b_n = 0;
+        for (s64 i = b_i; i < b_name.size; ++i) { b_n = b_n*10 + (b_name[i] - '0'); }
+
+        return a_n < b_n;
+    });
+
+    {s64 j = 0;
+    for (s64 i = 1; i < store->order_var.size; ++i) {
+        if (store->order_var[j] != store->order_var[i]) {
+            store->order_var[++j] = store->order_var[i];
+        }
+    }
+    store->order_var.size = j+1;}
+
+    if (store->statements.size == 0) {
+        ui_error_report("Empty formula");
+        store->error_flag = true;
+        return -1;
+    }
+
+    for (s64 i = 1; i < store->statements.size; ++i) {
+        store->statements[0] = formula_create(store, Formula::AND, store->statements[0], store->statements[i]);
+    }
+    store->statements.size = 1;
+    
+    return store->statements[0];
+}
+
+s64 formula_assign_var(Formula_store* store, s64 f_id, s64 var, bool value) {
+    Formula f = store->formulae[f_id];
+    if (f.type == Formula::NONE) {
+        assert(false);
+        return 0;
+    } else if (f.type == Formula::VAR) {
+        s64 sub = store->vars_formula[f.var];
+        if (sub > 1) {
+            s64 subs = formula_assign_var(store, sub, var, value);
+            if (subs != sub) return subs;
+        }
+
+        return f.var == var ? value : f_id;
+    } else if (f.type == Formula::NEG) {
+        return formula_assign_var(store, f.arg, var, value);
+    } else {
+        s64 f_l = formula_assign_var(store, f.arg_l, var, value);
+        s64 f_r = formula_assign_var(store, f.arg_r, var, value);
+        if (f_l != f.arg_l or f_r != f.arg_r) {
+            return formula_create(store, f.type, f_l, f_r);
+        } else {
+            return f_id;
+        }
+    }
+}
+
+s64 formula_simplify(Formula_store* store, s64 f_id) {
+    Formula f = store->formulae[f_id];
+    if (f.type == Formula::NONE) {
+        assert(false);
+        return 0;
+    } else if (f.type == Formula::VAR) {
+        return f_id;
+    } else if (f.type == Formula::NEG) {
+        Formula f0 = store->formulae[formula_simplify(store, f.arg)];
+        
+        if (f0.type == Formula::NEG) {
+            return f0.arg;
+        } else if (f0.id == f.arg) {
+            return f.id;
+        } else {
+            return formula_create(store, Formula::NEG, f0.id);
+        }
+    } else {
+        Formula f0 = store->formulae[formula_simplify(store, f.arg_l)];
+        Formula f1 = store->formulae[formula_simplify(store, f.arg_r)];
+
+        auto create_simplified = [store](u8 type, s64 arg0 = 0, s64 arg1 = 0) {
+            return formula_simplify(store, formula_create(store, type, arg0, arg1));
+        };
+        
+        if (f.type == Formula::OR) {
+            if (f0.id == 0) return f1.id;
+            if (f1.id == 0) return f0.id;
+            if (f0.id == 1) return 1;
+            if (f1.id == 1) return 1;
+            if (f0.hash == f1.hash) return f0.id;
+            if (f0.type == Formula::NEG and store->formulae[f0.arg].hash == f1.hash) return 1;
+            if (f1.type == Formula::NEG and store->formulae[f1.arg].hash == f0.hash) return 1;
+        } else if (f.type == Formula::AND) {
+            if (f0.id == 0) return 0;
+            if (f1.id == 0) return 0;
+            if (f0.id == 1) return f1.id;
+            if (f1.id == 1) return f0.id;
+            if (f0.hash == f1.hash) return f0.id;
+            if (f0.type == Formula::NEG and store->formulae[f0.arg].hash == f1.hash) return 0;
+            if (f1.type == Formula::NEG and store->formulae[f1.arg].hash == f0.hash) return 0;
+        } else if (f.type == Formula::XOR) {
+            if (f0.id == 0) return f1.id;
+            if (f1.id == 0) return f0.id;
+            if (f0.id == 1) return create_simplified(Formula::NEG, f1.id);
+            if (f1.id == 1) return create_simplified(Formula::NEG, f0.id);
+            if (f0.hash == f1.hash) return 0;
+            if (f0.type == Formula::NEG and store->formulae[f0.arg].hash == f1.hash) return 1;
+            if (f1.type == Formula::NEG and store->formulae[f1.arg].hash == f0.hash) return 1;
+        } else if (f.type == Formula::IMPL_R) {
+            if (f0.id == 0) return 1;
+            if (f1.id == 0) return create_simplified(Formula::NEG, f0.id);
+            if (f0.id == 1) return f1.id;
+            if (f1.id == 1) return 1;
+            if (f0.hash == f1.hash) return 1;
+            if (f0.type == Formula::NEG and store->formulae[f0.arg].hash == f1.hash) return f1.id;
+            if (f1.type == Formula::NEG and store->formulae[f1.arg].hash == f0.hash) return f1.id;
+        } else if (f.type == Formula::IMPL_L) {
+            if (f0.id == 0) return create_simplified(Formula::NEG, f1.id);
+            if (f1.id == 0) return 1;
+            if (f0.id == 1) return 1;
+            if (f1.id == 1) return f0.id;
+            if (f0.hash == f1.hash) return 1;
+            if (f0.type == Formula::NEG and store->formulae[f0.arg].hash == f1.hash) return f0.id;
+            if (f1.type == Formula::NEG and store->formulae[f1.arg].hash == f0.hash) return f0.id;
+        } else if (f.type == Formula::IMPL_RL) {
+            if (f0.id == 0) return create_simplified(Formula::NEG, f1.id);
+            if (f1.id == 0) return create_simplified(Formula::NEG, f0.id);
+            if (f0.id == 1) return f1.id;
+            if (f1.id == 1) return f0.id;
+            if (f0.hash == f1.hash) return 1;
+            if (f0.type == Formula::NEG and store->formulae[f0.arg].hash == f1.hash) return 0;
+            if (f1.type == Formula::NEG and store->formulae[f1.arg].hash == f0.hash) return 0;
+            if (f0.type == Formula::NEG and f1.type == Formula::NEG) return formula_create(store, f.type, f0.arg, f1.arg);
+        } else {
+            assert(false);
+        }
+        
+        if (f0.id == f.arg_l and f1.id == f.arg_r) return f.id;
+        return formula_create(store, f.type, f0.id, f1.id);
+    }    
+}
+
+u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1) {
+    Bdd bdd_temp;
+    if (bdd == (u32)-1) {
+        context_append(store, "Creating BDD from formula ");
+        context_amend_formula(store, fstore, f_id);
+        context_amend(store, " using variable order ");
+        bool first = true;
+        for (s64 i: fstore->order_var) {
+            if (not first) context_amend(store, ", ");
+            first = false;
+            auto name = array_subarray(fstore->var_names, fstore->vars[i], fstore->vars[i+1]);
+            context_amend(store, name);
+        }
+
+        bdd_name_amend_formula(store, fstore, f_id);
+        
+        bdd_temp = {0, 0, (u8)fstore->order_var.size, Bdd::TEMPORARY};
+        bdd_create_inplace(store, &bdd_temp);
+        array_push_back(&store->snapshot_parents, bdd_temp.id);
+    } else {
+        bdd_temp = store->bdd_data[bdd];
+        context_append(store, "Processing subformula ");
+        context_amend_formula(store, fstore, f_id);
+    }
+
+    array_push_back(&store->snapshot_cur_node, bdd_temp.id);
+    take_snapshot(store);
+
+    s64 f_id_simple = formula_simplify(fstore, f_id);
+    if (f_id_simple != -1) {
+        context_append(store, "Simplify formula into ");
+        context_amend_formula(store, fstore, f_id_simple);
+        bdd_name_amend_formula(store, fstore, f_id_simple);
+        bdd_name_assign(store, &bdd_temp);
+        take_snapshot(store);
+        context_pop(store);
+        f_id = f_id_simple;
+    }
+
+    u32 bdd_final;
+    if (f_id == 0) {
+        bdd_final = 0;
+        context_pop(store);
+        context_append(store, "Formula is unsatisfiable, no connection");
+    } else if (f_id == 1) {
+        bdd_final = 1;
+        context_pop(store);
+        context_append(store, "Formula is tautology, connect to T");
+    } else {
+        s64 order_level = fstore->order_var.size - bdd_temp.level;
+        s64 f0_id = formula_assign_var(fstore, f_id, fstore->order_var[order_level], 0);
+        s64 f1_id = formula_assign_var(fstore, f_id, fstore->order_var[order_level], 1);
+        
+        context_append(store, "Splitting at variable ");
+        context_amend_formula_var(store, fstore, fstore->order_var[order_level]);
+        context_amend(store, " (level %lld) into subformulae. The child 0 subformula is ", order_level);
+        context_amend_formula(store, fstore, f0_id);
+        context_amend(store, ", the child 1 subformula is ");
+        context_amend_formula(store, fstore, f1_id);
+        
+        bdd_name_amend_formula(store, fstore, f0_id);
+        bdd_temp.child0 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
+        bdd_name_amend_formula(store, fstore, f1_id);
+        bdd_temp.child1 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
+        store->bdd_data[bdd_temp.id] = bdd_temp;
+
+        take_snapshot(store);
+        context_pop(store);
+
+        bdd_temp.child0 = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.child0);
+        store->bdd_data[bdd_temp.id] = bdd_temp;
+        take_snapshot(store);
+        context_pop(store);
+        --store->snapshot_cur_node.size;
+        
+        bdd_temp.child1 = _bdd_from_formula_stepwise_helper(store, fstore, f1_id, bdd_temp.child1);
+        store->bdd_data[bdd_temp.id] = bdd_temp;
+        take_snapshot(store);
+        context_pop(store);
+        --store->snapshot_cur_node.size;
+
+        context_pop(store);
+        bdd_final = bdd_finalize(store, bdd_temp);
+    }
+    
+    store->snapshot_cur_node[store->snapshot_cur_node.size-1] = bdd_final;
+    if (bdd == (u32)-1) {
+        store->snapshot_parents[store->snapshot_parents.size-1] = bdd_final;
+        --store->snapshot_cur_node.size;
+        context_append(store, "Done.");
+        take_snapshot(store);
+        context_pop(store);
+        context_pop(store);
+    }
+    return bdd_final;
+}
+
+u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id) {
+    // @Cleanup: Inline this call
+    return _bdd_from_formula_stepwise_helper(store, fstore, f_id);
 }
 
 // Now we get into the layout part.
@@ -2910,9 +3779,11 @@ void webgl_draw_text_bdd(
             s64 index = webgl_bddlabel_char_index(str[i]);
             if (index == -1) continue;
             wn += std::round(context->text_pos[index].advance) * fs;
+            bool breakable = (str[i]&127) == ',' or (i+1 < str.size and ((str[i+1]&127) == '&' or (str[i+1]&127) == '|'
+                or (str[i+1]&127) == '^' or (str[i+1]&127) == '>' or (str[i+1]&127) == '<' or (str[i+1]&127) == '='));
             if (wn > w/2.f and (str[i]&127) == ',') break;
         }
-        ++i;
+        i += i+1 < str.size;
         float yoff = i < str.size ? size_adj * line_fac : 0.f;
         webgl_draw_text(context, a.font_x,  a.font_y  + yoff, array_subarray(str, 0, i       ), size, alpha, 0.f, do_draw, x1_out, y1_out);
         webgl_draw_text(context, a.font_x2, a.font_y2 - yoff, array_subarray(str, i, str.size), size, alpha, 0.f, do_draw, x2_out, y2_out);
@@ -4047,12 +4918,12 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
 namespace Ui_elem {
 
 enum Name: u8 {
-    INVALID, OP_NODE0, OP_NODE1, CREATE_NUMS, CREATE_BASE, CREATE_BITS, OPERATION,
+    INVALID, OP_NODE0, OP_NODE1, CREATE_TYPE, CREATE_NUMS, CREATE_FORM, CREATE_BASE, CREATE_BITS, OPERATION,
     NAME_COUNT
 };
 
 char* name[] = {
-    nullptr, "op_node0", "op_node1", "create_nums", "create_base", "create_bits", "operation", nullptr
+    nullptr, "op_node0", "op_node1", "create_nums", "create_form", "create_base", "create_bits", "operation", nullptr
 };
 
 }
@@ -4479,8 +5350,7 @@ void ui_button_op() {
     ui_commit_store();
 }
 
-// Callback for the 'Create and add' button
-void ui_button_create() {
+void ui_button_create_from_numbers() {
     Array_t<u8> nums_str = platform_ui_value_get(Ui_elem::CREATE_NUMS);
     Array_t<u8> base_str = platform_ui_value_get(Ui_elem::CREATE_BASE);
     Array_t<u8> bits_str = platform_ui_value_get(Ui_elem::CREATE_BITS);
@@ -4541,6 +5411,40 @@ void ui_button_create() {
 
     platform_operations_enable(bdd);
     ui_commit_store();
+}
+
+void ui_button_create_from_formula() {
+    Array_t<u8> form_str = platform_ui_value_get(Ui_elem::CREATE_FORM);
+    defer { platform_ui_value_free(form_str); };
+
+    auto fstore = &global_formula_store;
+    
+    formula_store_init(fstore);
+    
+    s64 f_id = formula_parse(fstore, form_str);
+    if (f_id == -1) {
+        platform_ui_cursor_set(Ui_elem::CREATE_FORM, fstore->str_i, fstore->str_row, fstore->str_col);
+        return;
+    }
+
+    u32 bdd = bdd_from_formula_stepwise(&global_store, fstore, f_id);
+    
+    platform_operations_enable(bdd);
+    ui_commit_store();
+}
+
+// Callback for the 'Create and add' button
+void ui_button_create() {
+    Array_t<u8> type_str = platform_ui_value_get(Ui_elem::CREATE_TYPE);
+    defer { platform_ui_value_free(type_str); };
+
+    assert(type_str.size == 1);
+    
+    if (type_str[0] == 'n') {
+        ui_button_create_from_numbers();
+    } else {
+        ui_button_create_from_formula();
+    }
 }
 
 // Called when the 'Remove all' button is pressed. Also used to initialise the UI.

@@ -138,6 +138,7 @@ void platform_ui_error_clear();
 void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* ascent);
 Array_t<u8> platform_ui_value_get(u8 elem);
 void platform_ui_value_free(Array_t<u8> data);
+void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col);
 void platform_ui_bddinfo_hide();
 void platform_ui_bddinfo_show(float x, float y, float pad);
 double platform_now();
