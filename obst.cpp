@@ -596,20 +596,20 @@ void take_snapshot(Bdd_store* store) {
 // Return the index of the character in the texture
 s64 webgl_bddlabel_char_index(u8 c) {
     // Just map printable chars of ASCII directly, then again, if the high-bit is set
-    if (0x20 <= (c&127) and (c&127) <= 0x7e) {
-        return (c&127) - 0x20 + (c>>7)*0x5e;
+    if (0x20 <= (c&127) and (c&127) < 0x7f) {
+        return (c&127) - 0x20 + (c>>7)*0x5f;
     } else {
         return -1;
     }
 }
 u8 webgl_bddlabel_index_char(s64 index) {
-    assert(0 <= index and index <= 2*0x5e);
-    return (u8)(index <= 0x5e ? index + 0x20 : (index - 0x3e) ^ 128);
+    assert(0 <= index and index < 2*0x5f);
+    return (u8)(index < 0x5f ? index + 0x20 : (index - 0x3f) ^ 128);
 }
 Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bool* draw_italics_=nullptr) {
-    assert(0 <= index and index <= 2*0x5e);
+    assert(0 <= index and index < 2*0x5f);
     static char c[2];
-    c[0] = (char)(index <= 0x5e ? index + 0x20 : index - 0x3e);
+    c[0] = (char)(index < 0x5f ? index + 0x20 : index - 0x3f);
     char* s;
     bool draw_light = false;
     bool draw_italics = 'a' <= c[0] and c[0] <= 'z';
@@ -1423,9 +1423,14 @@ s64 formula_create(Formula_store* store, u8 type, s64 arg0 = 0, s64 arg1 = 0) {
 
 void formula_store_init(Formula_store* store) {
     store->formulae.size = 0;
+    store->statements.size = 0;
     store->vars.size = 0;
     store->var_names.size = 0;
     store->vars_formula.size = 0;
+    store->order_var.size = 0;
+    store->parser_ids.size = 0;
+    store->parser_ops.size = 0;
+    store->parser_diff = 0;
     
     array_printf(&store->var_names, "01");
     array_append(&store->vars, {0ll, 1ll, 2ll});
@@ -1994,14 +1999,19 @@ s64 formula_assign_var(Formula_store* store, s64 f_id, s64 var, bool value) {
 
         return f.var == var ? value : f_id;
     } else if (f.type == Formula::NEG) {
-        return formula_assign_var(store, f.arg, var, value);
+        s64 f0 = formula_assign_var(store, f.arg, var, value);
+        if (f0 != f.arg) {
+            return formula_create(store, f.type, f0);
+        } else {
+            return f.id;
+        }
     } else {
         s64 f_l = formula_assign_var(store, f.arg_l, var, value);
         s64 f_r = formula_assign_var(store, f.arg_r, var, value);
         if (f_l != f.arg_l or f_r != f.arg_r) {
             return formula_create(store, f.type, f_l, f_r);
         } else {
-            return f_id;
+            return f.id;
         }
     }
 }
@@ -2018,6 +2028,8 @@ s64 formula_simplify(Formula_store* store, s64 f_id) {
         
         if (f0.type == Formula::NEG) {
             return f0.arg;
+        } else if (f0.id <= 1) {
+            return 1 - f0.id;
         } else if (f0.id == f.arg) {
             return f.id;
         } else {
@@ -2118,7 +2130,7 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
     take_snapshot(store);
 
     s64 f_id_simple = formula_simplify(fstore, f_id);
-    if (f_id_simple != -1) {
+    if (f_id_simple != f_id) {
         context_append(store, "Simplify formula into ");
         context_amend_formula(store, fstore, f_id_simple);
         bdd_name_amend_formula(store, fstore, f_id_simple);
@@ -2141,37 +2153,52 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
         s64 order_level = fstore->order_var.size - bdd_temp.level;
         s64 f0_id = formula_assign_var(fstore, f_id, fstore->order_var[order_level], 0);
         s64 f1_id = formula_assign_var(fstore, f_id, fstore->order_var[order_level], 1);
-        
-        context_append(store, "Splitting at variable ");
-        context_amend_formula_var(store, fstore, fstore->order_var[order_level]);
-        context_amend(store, " (level %lld) into subformulae. The child 0 subformula is ", order_level);
-        context_amend_formula(store, fstore, f0_id);
-        context_amend(store, ", the child 1 subformula is ");
-        context_amend_formula(store, fstore, f1_id);
-        
-        bdd_name_amend_formula(store, fstore, f0_id);
-        bdd_temp.child0 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
-        bdd_name_amend_formula(store, fstore, f1_id);
-        bdd_temp.child1 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
-        store->bdd_data[bdd_temp.id] = bdd_temp;
 
-        take_snapshot(store);
-        context_pop(store);
-
-        bdd_temp.child0 = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.child0);
-        store->bdd_data[bdd_temp.id] = bdd_temp;
-        take_snapshot(store);
-        context_pop(store);
-        --store->snapshot_cur_node.size;
+        if (f0_id == f1_id) {
+            context_append(store, "Splitting at variable ");
+            context_amend_formula_var(store, fstore, fstore->order_var[order_level]);
+            context_amend(store, " (level %lld), which leaves the formula unchanged", order_level);
         
-        bdd_temp.child1 = _bdd_from_formula_stepwise_helper(store, fstore, f1_id, bdd_temp.child1);
-        store->bdd_data[bdd_temp.id] = bdd_temp;
-        take_snapshot(store);
-        context_pop(store);
-        --store->snapshot_cur_node.size;
+            --bdd_temp.level;
+            store->bdd_data[bdd_temp.id] = bdd_temp;
+            take_snapshot(store);
+            context_pop(store);
 
-        context_pop(store);
-        bdd_final = bdd_finalize(store, bdd_temp);
+            bdd_final = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.id);
+            context_pop(store);
+            --store->snapshot_cur_node.size;
+        } else {
+            context_append(store, "Splitting at variable ");
+            context_amend_formula_var(store, fstore, fstore->order_var[order_level]);
+            context_amend(store, " (level %lld) into subformulae. The child 0 subformula is ", order_level);
+            context_amend_formula(store, fstore, f0_id);
+            context_amend(store, ", the child 1 subformula is ");
+            context_amend_formula(store, fstore, f1_id);
+        
+            bdd_name_amend_formula(store, fstore, f0_id);
+            bdd_temp.child0 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
+            bdd_name_amend_formula(store, fstore, f1_id);
+            bdd_temp.child1 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
+
+            store->bdd_data[bdd_temp.id] = bdd_temp;
+            take_snapshot(store);
+            context_pop(store);
+
+            bdd_temp.child0 = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.child0);
+            store->bdd_data[bdd_temp.id] = bdd_temp;
+            take_snapshot(store);
+            context_pop(store);
+            --store->snapshot_cur_node.size;
+        
+            bdd_temp.child1 = _bdd_from_formula_stepwise_helper(store, fstore, f1_id, bdd_temp.child1);
+            store->bdd_data[bdd_temp.id] = bdd_temp;
+            take_snapshot(store);
+            context_pop(store);
+            --store->snapshot_cur_node.size;
+
+            context_pop(store);
+            bdd_final = bdd_finalize(store, bdd_temp);
+        }
     }
     
     store->snapshot_cur_node[store->snapshot_cur_node.size-1] = bdd_final;
@@ -2209,8 +2236,9 @@ Pos _pos_mix(Pos p0, Pos p1, float t) {
 // Its like Pos, but with id!
 struct Pos_id {
     enum Flags: u8 {
-        FIXED = 1,      // These nodes are already there from the last layout, so do not change their relative position 
-        INITIALIZED = 2 // Whether the node as been assigned a position already
+        FIXED = 1,       // These nodes are already there from the last layout, so do not change their relative position 
+        INITIALIZED = 2, // Whether the node as been assigned a position already
+        REPOSITION = 4,  // In the formula animation, a node may change levels. This flag marks a node which just did.
     };
     float x, y;
     u32 id;
@@ -2366,7 +2394,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
         Inter i = layout->inters[i_it];
         if (id_map[i.parent] == (u32)-1) continue;
         Bdd* i_bdd = &bdds[id_map[i.parent]];
-        if (i_bdd->child0 == i.child) {
+        if (i_bdd->child0 == i.child and i_bdd->level > bdds[id_map[i.child]].level+1) {
             Bdd inter = {i_bdd->child0, i_bdd->child0, (u8)(i_bdd->level-1), Bdd::INTERMEDIATE, i.id};
             i_bdd->child0 = i.id;
             id_map[i.id] = bdds.size;
@@ -2377,7 +2405,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
                 continue;
             }
         }
-        if (i_bdd->child1 == i.child) {
+        if (i_bdd->child1 == i.child and i_bdd->level > bdds[id_map[i.child]].level+1) {
             Bdd inter = {i_bdd->child1, i_bdd->child1, (u8)(i_bdd->level-1), Bdd::INTERMEDIATE, i.id};
             i_bdd->child1 = i.id;
             id_map[i.id] = bdds.size;
@@ -2443,7 +2471,10 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
             pos[i].y = bdds[i].level;
             pos[i].id = bdds[i].id;
         }
-        assert(pos[i].y == bdds[i].level);
+        if (pos[i].y != bdds[i].level) {
+            pos[i].y = bdds[i].level;
+            pos[i].flags = Pos_id::REPOSITION | Pos_id::INITIALIZED;
+        }
     }
 
     // The order of the pos array swaps between id-based and position-based, depending on what is
@@ -2451,17 +2482,57 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
     // the actual layout and are very interested in having the array reflect the nodes' position in
     // space. The precise ordering orders the nodes top-to-bottom (y decreasing) and then
     // left-to-right (x increasing).
-    auto cmp1 = [](Pos_id a, Pos_id b) {
-        return a.y > b.y or (a.y == b.y and a.x < b.x);
+    auto cmp1 = [](Pos_id a, Pos_id b) -> bool {
+        if (a.y != b.y) return a.y > b.y;
+        if ((a.flags ^ b.flags) & Pos_id::REPOSITION) return b.flags & Pos_id::REPOSITION;
+        return a.x < b.x;
     };
     std::sort(pos.begin(), pos.end(), cmp1);
 
     // Note to myself: Maybe the following code would be much simpler if it just initialised the
     // x-values somewhat correctly, sorted the array, and then patched them up to prevent two nodes
     // being in the same position?
+
+    // Take the node at j and insert it somewhere close to target_x
+    auto insert_node = [&pos, &x_max](s64 j, float target_x) {
+        // First, we find the node just to the right of target_x
+        s64 k = j;
+        while (0 < k and target_x < pos[k-1].x and pos[k-1].y == pos[j].y) --k;
+        assert(0 < k and pos[k].y == pos[j].y);
+
+        // Now, we move the node from j into k, moving the others along.
+        Pos_id pos_j = pos[j];
+        for (s64 k_end = j; k_end >= k+1; --k_end) {
+            pos[k_end] = pos[k_end - 1];
+        }
+        pos[k] = pos_j;
+
+        // The precise insertion depends on whether there is a node to the left and/or to the right.
+        bool exist_l = pos[k-1].y == pos[k].y;
+        bool exist_r = k+1 < pos.size and pos[k+1].flags & Pos_id::INITIALIZED and pos[k+1].y == pos[k].y;
+
+        if (exist_l and exist_r) {
+            pos[k].x = pos[k-1].x * 0.5f + pos[k+1].x * 0.5f;
+        } else if (exist_l) {
+            pos[k].x = pos[k-1].x + 1.f;
+            if (x_max < pos[k].x) x_max = pos[k].x;
+        } else if (exist_r) {
+            pos[k].x = pos[k+1].x - 1.f;
+        } else {
+            pos[k].x = target_x;
+        }
+        pos[k].flags |= Pos_id::INITIALIZED;
+        return k;
+    };
     
     // This code actually inserts the new nodes into the layout
     for (s64 i = 0; i < pos.size; ++i) {
+        if (pos[i].flags & Pos_id::REPOSITION) {
+            pos[i].flags &= ~Pos_id::REPOSITION;
+            insert_node(i, pos[i].x);
+            continue;
+        }
+        
         // If the node is not initialised here, that means that it has no parents. Sad. So, just put
         // it in somewhere to the right. (But still left of the uninitialised nodes!)
         if (not (pos[i].flags & Pos_id::INITIALIZED)) {
@@ -2486,38 +2557,6 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
         assert(j0 and j1);
         assert(j0 == -1 or pos[j0].y == pos[i].y - 1);
         assert(j1 == -1 or pos[j1].y == pos[i].y - 1);
-
-        // Take the node at j and insert it somewhere close to target_x
-        auto insert_node = [&pos, &x_max](s64 j, float target_x) {
-            // First, we find the node just to the right of target_x
-            s64 k = j;
-            while (0 < k and target_x < pos[k-1].x and pos[k-1].y == pos[j].y) --k;
-            assert(0 < k and pos[k].y == pos[j].y);
-
-            // Now, we move the node from j into k, moving the others along.
-            Pos_id pos_j = pos[j];
-            for (s64 k_end = j; k_end >= k+1; --k_end) {
-                pos[k_end] = pos[k_end - 1];
-            }
-            pos[k] = pos_j;
-
-            // The precise insertion depends on whether there is a node to the left and/or to the right.
-            bool exist_l = pos[k-1].y == pos[k].y;
-            bool exist_r = k+1 < pos.size and pos[k+1].flags & Pos_id::INITIALIZED and pos[k+1].y == pos[k].y;
-
-            if (exist_l and exist_r) {
-                pos[k].x = pos[k-1].x * 0.5f + pos[k+1].x * 0.5f;
-            } else if (exist_l) {
-                pos[k].x = pos[k-1].x + 1.f;
-                if (x_max < pos[k].x) x_max = pos[k].x;
-            } else if (exist_r) {
-                pos[k].x = pos[k+1].x - 1.f;
-            } else {
-                pos[k].x = target_x;
-            }
-            pos[k].flags |= Pos_id::INITIALIZED;
-            return k;
-        };
 
         // Insert child0 (unless it is already initialised)
         if (j0 != -1 and not (pos[j0].flags & Pos_id::INITIALIZED)) {
@@ -3288,7 +3327,7 @@ void webgl_text_prepare(Webgl_context* context) {
     glBindTexture(GL_TEXTURE_2D, context->text_tex);
 
     if (context->text_pos.size == 0) {
-        context->text_pos = array_create<Text_box>(2*0x5e);
+        context->text_pos = array_create<Text_box>(2*0x5f);
     }
 
     int font_size = (int)std::round(
@@ -4620,51 +4659,65 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         // interpolate the ones on the same height. If, at some height, only one spline has a point,
         // then we split the other to introduce one there as well.
         array_push_back(out, _pos_mix(edge0_data[0], edge1_data[0], t));
+
+        float y00 = edge0_data[0].y;
+        float y01 = edge1_data[0].y;
+        float y0t = _pos_mix(edge0_data[0], edge1_data[0], t).y;
+        float y10 = edge0_data[edge0_data.size-1].y;
+        float y11 = edge1_data[edge1_data.size-1].y;
+        float y1t = _pos_mix(edge0_data[edge0_data.size-1], edge1_data[edge1_data.size-1], t).y;
+        float sy0 = (y1t - y0t) / (y10 - y00);
+        float sy1 = (y1t - y0t) / (y11 - y01);
+        float oy0 = y0t - y00 * sy0;
+        float oy1 = y0t - y01 * sy1;
+        auto edge0 = [&edge0_data, sy0, oy0](s64 i) { return Pos {edge0_data[i].x, edge0_data[i].y * sy0 + oy0}; };
+        auto edge1 = [&edge1_data, sy1, oy1](s64 i) { return Pos {edge1_data[i].x, edge1_data[i].y * sy1 + oy1}; };
+        
         s64 i0 = 0;
         s64 i1 = 0;
-        Pos p00 = edge0_data[i0  ];
-        Pos p01 = edge0_data[i0+1];
-        Pos p10 = edge1_data[i1  ];
-        Pos p11 = edge1_data[i1+1];
+        Pos p00 = edge0(i0  );
+        Pos p01 = edge0(i0+1);
+        Pos p10 = edge1(i1  );
+        Pos p11 = edge1(i1+1);
         while (true) {
-            if (std::abs(edge0_data[i0+2].y - edge1_data[i1+2].y) < param.edge_point_merge) {
+            if (std::abs(edge0(i0+2).y - edge1(i1+2).y) < param.edge_point_merge) {
                 // Both splines have a point, merge
                 array_append(out, {
                     _pos_mix(p01, p11, t),
-                    _pos_mix(edge0_data[i0+2], edge1_data[i1+2], t)
+                    _pos_mix(edge0(i0+2), edge1(i1+2), t)
                 });
                 i0 += 2;
                 i1 += 2;
                 if (i0+2 >= edge0_data.size or i1+2 >= edge1_data.size) break;
-                p00 = edge0_data[i0  ];
-                p01 = edge0_data[i0+1];
-                p10 = edge1_data[i1  ];
-                p11 = edge1_data[i1+1];
-            } else if (edge0_data[i0+2].y < edge1_data[i1+2].y) {
+                p00 = edge0(i0  );
+                p01 = edge0(i0+1);
+                p10 = edge1(i1  );
+                p11 = edge1(i1+1);
+            } else if (edge0(i0+2).y < edge1(i1+2).y) {
                 // edge0 has a point here, so split edge1
                 Pos m[3];
-                spline_split_y(m, p00, p01, edge0_data[i0+2], edge1_data[i1+2].y);
+                spline_split_y(m, p00, p01, edge0(i0+2), edge1(i1+2).y);
 
                 array_append(out, {
                     _pos_mix(m[0], p11, t),
-                    _pos_mix(m[1], edge1_data[i1+2], t)
+                    _pos_mix(m[1], edge1(i1+2), t)
                 });
                 i1 += 2;
                 p00 = m[1];
                 p01 = m[2];
-                p10 = edge1_data[i1  ];
-                p11 = edge1_data[i1+1];
+                p10 = edge1(i1  );
+                p11 = edge1(i1+1);
             } else {
                 // edge1 has a point here, so split edge0
                 Pos m[3];
-                spline_split_y(m, p10, p11, edge1_data[i1+2], edge0_data[i0+2].y);
+                spline_split_y(m, p10, p11, edge1(i1+2), edge0(i0+2).y);
                 array_append(out, {
                     _pos_mix(p01, m[0], t),
-                    _pos_mix(edge0_data[i0+2], m[1], t)
+                    _pos_mix(edge0(i0+2), m[1], t)
                 });
                 i0 += 2;
-                p00 = edge0_data[i0  ];
-                p01 = edge0_data[i0+1];
+                p00 = edge0(i0  );
+                p01 = edge0(i0+1);
                 p10 = m[1];
                 p11 = m[2];
             }
