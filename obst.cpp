@@ -2368,7 +2368,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
     // Note on id generation:
     //  There are two main ways to refer to bdds: 1. Their id.  2. An offset into the bdds array.
     // 2 -> 1 goes via bdds[i].id and mapping 1 -> 2 is id_map[i].
-    //  Actually, there are also 2, Offsets into the bdds array of the previous layout. Mapping
+    //  Actually, there is also 3, an offset into the bdds array of the previous layout. Mapping
     // 3 -> 1 is done by taking layout->bdd_pos[i].id. 1 -> 3 is not needed.
     //  When we generate a new id for an artificial node, we take one from the end of the current
     // id-space. That ensures that (during the layouting for a single stepwise algorithm) no
@@ -2773,8 +2773,8 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
 
         // Apply the edge forces. Very simple, due to our acceleration structure.
         for (Child_edge i: pos_children) {
-            // Note that the force is simply linear with vertical distance. Realistic? No, but does
-            // not have to be.
+            // Note that the force is simply linear with horizontal distance. Realistic? No, but
+            // does not have to be.
             float f = (pos[i.parent].x - pos[i.child].x) * force_edge;
             vel[i.parent] -= f;
             vel[i.child] += f;
@@ -2784,7 +2784,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
         for (Inter i: layout->inters) {
             u32 i0 = pos_map[i.parent];
             u32 i1 = pos_map[i.id];
-            u32 i2 = pos_map[i.child];
+            u32 i2 = pos_map[bdds[id_map[i.id]].child0];
             float f = (pos[i0].x + pos[i2].x) * 0.5 - pos[i1].x;
             vel[i1] += std::max(std::min(f, 0.1f), -0.1f) * force_inter;
             vel[i0] -= std::max(std::min(f, 0.1f), -0.1f) * force_inter * 0.5f;
@@ -2810,7 +2810,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
         //  In more precise terms, we want to do the following: If two nodes are closer than the
         // minimum distance, we ensure that they move into the same direction (preserving their
         // combined impulse). The node force is applied afterwards.
-        
+        //
         //  'But wait,' you might object. 'Doesn't that violate continuity?' Yeah, it does. This is
         // where things become a little bit ugly. Instead of saying 'two nodes are glued together'
         // we could also say 'for each node, the forces applied to that node are instead spread
@@ -3820,7 +3820,7 @@ void webgl_draw_text_bdd(
             wn += std::round(context->text_pos[index].advance) * fs;
             bool breakable = (str[i]&127) == ',' or (i+1 < str.size and ((str[i+1]&127) == '&' or (str[i+1]&127) == '|'
                 or (str[i+1]&127) == '^' or (str[i+1]&127) == '>' or (str[i+1]&127) == '<' or (str[i+1]&127) == '='));
-            if (wn > w/2.f and (str[i]&127) == ',') break;
+            if (wn > w/2.f and breakable) break;
         }
         i += i+1 < str.size;
         float yoff = i < str.size ? size_adj * line_fac : 0.f;
@@ -5165,7 +5165,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     children.size = 0;
 
     _collect_children(&children, id_map, bdds, bdd);
-
+    
     Bdd bdd_bdd = bdds[id_map[bdd]];
     
     Array_dyn<u8> buf = global_ui.ui_buf;
@@ -5208,11 +5208,14 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
             "sibling, F, is the empty set and is omitted from the drawing.");
     } else {
         buf.size = 0;
-        array_printf(&buf, "Node %d", bdd);
+        platform_fmt_text(Text_fmt::BOLD, "Node");
+        auto name = array_subarray(global_store.name_data, global_store.names[global_store.bdd_data[bdd].name],
+            global_store.names[global_store.bdd_data[bdd].name+1]);
+        platform_fmt_text(Text_fmt::BOLD, name);
         if (bdd_bdd.flags & Bdd::TEMPORARY) {
-            array_printf(&buf, "%s", " (temporary)");
+            platform_fmt_text(Text_fmt::BOLD, "(temporary)");
         }
-        platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH_CLOSE, buf);
+        platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
         
         if (children.size) {
             buf.size = 0;
