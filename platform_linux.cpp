@@ -273,9 +273,9 @@ struct Lui_context {
     enum Fmt_slots_lui: s64 {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
         SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT, SLOT_LABEL_BASE,
-        SLOT_LABEL_BITORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_INPUT,
-        SLOT_LABEL_NUMBERS, SLOT_LABEL_FORMULA, SLOT_RESIZER_NUMBERS, SLOT_ENTRY_NUMBERS, SLOT_ENTRY_FORMULA,
-        SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_BUTTON_CREATE,
+        SLOT_LABEL_BITORDER, SLOT_LABEL_VARORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_INPUT,
+        SLOT_LABEL_NUMBERS, SLOT_LABEL_FORMULA, SLOT_RESIZER_CREATE, SLOT_ENTRY_NUMBERS, SLOT_ENTRY_FORMULA,
+        SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_ENTRY_VARORDER, SLOT_BUTTON_CREATE,
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
@@ -304,11 +304,11 @@ struct Lui_context {
     };
 
     enum Entry_names: u8 {
-        ENTRY_NUMBERS, ENTRY_FORMULA, ENTRY_BASE, ENTRY_BITORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE,
+        ENTRY_NUMBERS, ENTRY_FORMULA, ENTRY_BASE, ENTRY_BITORDER, ENTRY_VARORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE,
         ENTRY_COUNT
     };
     enum Resizer_names: u8 {
-        RESIZER_NUMBERS, RESIZER_PANEL,
+        RESIZER_CREATE, RESIZER_PANEL,
         RESIZER_COUNT
     };
     
@@ -1484,6 +1484,7 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(0, "Boolean formula", Lui_context::SLOT_LABEL_FORMULA);
     platform_fmt_store_simple(0, "Base:", Lui_context::SLOT_LABEL_BASE);
     platform_fmt_store_simple(0, "Bit order:", Lui_context::SLOT_LABEL_BITORDER);
+    platform_fmt_store_simple(0, "Variable order:", Lui_context::SLOT_LABEL_VARORDER);
     platform_fmt_store_simple(Text_fmt::COMPACT, "Operation:", Lui_context::SLOT_LABEL_OPERATION);
     platform_fmt_store_simple(Text_fmt::COMPACT, "Union", Lui_context::SLOT_LABEL_UNION);
     platform_fmt_store_simple(Text_fmt::COMPACT, "Intersection", Lui_context::SLOT_LABEL_INTERSECTION);
@@ -1500,6 +1501,7 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_BUTTON_HELP);
     platform_fmt_store_simple(button_flag, u8"◁", Lui_context::SLOT_BUTTON_PREV);
     platform_fmt_store_simple(button_flag, u8"▷", Lui_context::SLOT_BUTTON_NEXT);
+    platform_fmt_store_simple(button_flag, u8"×", Lui_context::SLOT_BUTTON_HELP_CLOSE);
 
     platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_U);
     
@@ -1518,11 +1520,13 @@ void _platform_init(Platform_state* platform) {
     context->entries[Lui_context::ENTRY_FORMULA].slot    = Lui_context::SLOT_ENTRY_FORMULA;
     context->entries[Lui_context::ENTRY_BASE].slot       = Lui_context::SLOT_ENTRY_BASE;
     context->entries[Lui_context::ENTRY_BITORDER].slot   = Lui_context::SLOT_ENTRY_BITORDER;
+    context->entries[Lui_context::ENTRY_VARORDER].slot   = Lui_context::SLOT_ENTRY_VARORDER;
     context->entries[Lui_context::ENTRY_FIRSTNODE].slot  = Lui_context::SLOT_ENTRY_FIRSTNODE;
     context->entries[Lui_context::ENTRY_SECONDNODE].slot = Lui_context::SLOT_ENTRY_SECONDNODE;
     
     context->entries[Lui_context::ENTRY_BASE].disable_newline = true;
     context->entries[Lui_context::ENTRY_BITORDER].disable_newline = true;
+    context->entries[Lui_context::ENTRY_VARORDER].disable_newline = true;
     context->entries[Lui_context::ENTRY_FIRSTNODE].disable_newline = true;
     context->entries[Lui_context::ENTRY_SECONDNODE].disable_newline = true;
 
@@ -1535,6 +1539,7 @@ void _platform_init(Platform_state* platform) {
     array_printf(&context->entries[Lui_context::ENTRY_FORMULA].text, "x1 | x2 & x3");
     array_printf(&context->entries[Lui_context::ENTRY_BASE].text, "10");
     array_printf(&context->entries[Lui_context::ENTRY_BITORDER].text, "auto");
+    array_printf(&context->entries[Lui_context::ENTRY_VARORDER].text, "auto");
 
     context->scroll_panel.anim.duration = 0.1;
     context->scroll_panel.slot = Lui_context::SLOT_SCROLL_PANEL;
@@ -1544,8 +1549,8 @@ void _platform_init(Platform_state* platform) {
     context->elem_flags[Lui_context::SLOT_CANVAS] |= Lui_context::DRAW_AREA;
 
     context->resizers = array_create<Resizer>(Lui_context::RESIZER_COUNT);
-    context->resizers[Lui_context::RESIZER_NUMBERS].slot = Lui_context::SLOT_RESIZER_NUMBERS;
-    context->resizers[Lui_context::RESIZER_NUMBERS].size_min = (s64)std::round(context->fonts[Lui_context::FONT_LUI_NORMAL].newline) * 3;
+    context->resizers[Lui_context::RESIZER_CREATE].slot = Lui_context::SLOT_RESIZER_CREATE;
+    context->resizers[Lui_context::RESIZER_CREATE].size_min = (s64)std::round(context->fonts[Lui_context::FONT_LUI_NORMAL].newline) * 3;
     
     // Initialise application
     application_init();
@@ -1634,6 +1639,7 @@ Array_t<u8> platform_ui_value_get(u8 elem) {
     case Ui_elem::CREATE_FORM:  return context->entries[Lui_context::ENTRY_FORMULA].text;
     case Ui_elem::CREATE_BASE:  return context->entries[Lui_context::ENTRY_BASE].text;
     case Ui_elem::CREATE_BITS:  return context->entries[Lui_context::ENTRY_BITORDER].text;
+    case Ui_elem::CREATE_VARS:  return context->entries[Lui_context::ENTRY_VARORDER].text;
     case Ui_elem::OPERATION: {
         char const* c = "u";
         if (context->elem_flags[Lui_context::SLOT_LABEL_UNION]        & Lui_context::DRAW_PRESSED) c = "u";
@@ -1663,12 +1669,16 @@ void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col)
     case Ui_elem::CREATE_FORM:  entry = &context->entries[Lui_context::ENTRY_FORMULA]; break;
     case Ui_elem::CREATE_BASE:  entry = &context->entries[Lui_context::ENTRY_BASE]; break;
     case Ui_elem::CREATE_BITS:  entry = &context->entries[Lui_context::ENTRY_BITORDER]; break;
+    case Ui_elem::CREATE_VARS:  entry = &context->entries[Lui_context::ENTRY_VARORDER]; break;
     };
 
     assert(0 <= cursor and cursor <= entry->text.size);
     entry->cursor = cursor;
     entry->cursor_row = cursor_row;
     entry->cursor_col = cursor_col;
+    context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
+    context->elem_focused = entry->slot;
+    context->elem_flags[context->elem_focused] |=  Lui_context::DRAW_FOCUSED;
 }
 
 void platform_mouse_position(float* out_x, float* out_y) {
@@ -2548,6 +2558,25 @@ void _platform_render(Platform_state* platform) {
         get_entry(context->elem_focused)->cursor_draw = not context->cursor_blinked;
     }
 
+    // Reset bbs
+    for (s64 slot = 0; slot < Lui_context::SLOT_COUNT; ++slot) {
+        context->elem_bb[slot] = Rect {};
+    }
+
+    // Determine whether we show the number input or the formula one
+    bool create_type_numbers = context->elem_flags[Lui_context::SLOT_LABEL_NUMBERS] & Lui_context::DRAW_PRESSED;
+    auto set_disabled = [context](s64 slot, bool value) {
+        if (value) context->elem_flags[slot] |=  Lui_context::DRAW_DISABLED;
+        else       context->elem_flags[slot] &= ~Lui_context::DRAW_DISABLED;
+    };
+
+    set_disabled(Lui_context::SLOT_ENTRY_FORMULA,   create_type_numbers);
+    set_disabled(Lui_context::SLOT_ENTRY_BASE,     !create_type_numbers);
+    set_disabled(Lui_context::SLOT_LABEL_BASE,     !create_type_numbers);
+    set_disabled(Lui_context::SLOT_ENTRY_NUMBERS,  !create_type_numbers);
+    set_disabled(Lui_context::SLOT_ENTRY_BITORDER, !create_type_numbers);
+    set_disabled(Lui_context::SLOT_ENTRY_VARORDER,  create_type_numbers);
+    
     // Draw the application
     application_render();
     context->elem_bb[Lui_context::SLOT_CANVAS] = Rect {
@@ -2555,7 +2584,7 @@ void _platform_render(Platform_state* platform) {
     };
 
     _platform_frame_init();
-
+    
     // Now draw the UI
     
     u8 white[] = {255, 255, 255, 255};
@@ -2583,21 +2612,11 @@ void _platform_render(Platform_state* platform) {
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_FORMULA, &x, &y);
     y += (s64)std::round(font_inst.newline); x = x_orig;}
     
-    y += std::round(font_inst.height - font_inst.ascent);
-    if (context->elem_flags[Lui_context::SLOT_LABEL_NUMBERS] & Lui_context::DRAW_PRESSED) {
-        lui_draw_entry(context, &context->entries[Lui_context::ENTRY_NUMBERS], x, y, w, -1,
-            nullptr, &y, nullptr, &context->resizers[Lui_context::RESIZER_NUMBERS]);
-        context->elem_bb[Lui_context::SLOT_ENTRY_FORMULA] = Rect {};
-        context->elem_flags[Lui_context::SLOT_ENTRY_FORMULA] |= Lui_context::DRAW_DISABLED;
-        context->elem_flags[Lui_context::SLOT_ENTRY_NUMBERS] &= ~Lui_context::DRAW_DISABLED;
-    } else {
-        context->elem_bb[Lui_context::SLOT_ENTRY_NUMBERS] = Rect {};
-        context->elem_flags[Lui_context::SLOT_ENTRY_NUMBERS] |= Lui_context::DRAW_DISABLED;
-        context->elem_flags[Lui_context::SLOT_ENTRY_FORMULA] &= ~Lui_context::DRAW_DISABLED;
-        lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FORMULA], x, y, w, -1,
-            nullptr, &y, nullptr, &context->resizers[Lui_context::RESIZER_NUMBERS]);
-    }
-    y += std::round(font_inst.height - font_inst.ascent);
+    {y += std::round(font_inst.height - font_inst.ascent);
+    s64 slot = create_type_numbers ? Lui_context::ENTRY_NUMBERS : Lui_context::ENTRY_FORMULA;
+    lui_draw_entry(context, &context->entries[slot], x, y, w, -1,
+        nullptr, &y, nullptr, &context->resizers[Lui_context::RESIZER_CREATE]);
+    y += std::round(font_inst.height - font_inst.ascent);}
 
     {s64 x_orig = x, ha_line;
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, nullptr, true);
@@ -2606,9 +2625,11 @@ void _platform_render(Platform_state* platform) {
     y -= ha_line;
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
     y += ha_line; x += 10;
-    platform_fmt_draw(Lui_context::SLOT_LABEL_BITORDER, x, y, -1, &x, &y);
+    s64 entry      = create_type_numbers ? Lui_context::ENTRY_BITORDER : Lui_context::ENTRY_VARORDER;
+    s64 slot_label = create_type_numbers ? Lui_context::SLOT_LABEL_BITORDER : Lui_context::SLOT_LABEL_VARORDER;
+    platform_fmt_draw(slot_label, x, y, -1, &x, &y);
     y -= ha_line;
-    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BITORDER], x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
+    lui_draw_entry(context, &context->entries[entry], x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
     
     {s64 w_line, ha_line;
@@ -2709,8 +2730,9 @@ void _platform_render(Platform_state* platform) {
 
         s64 x = ((s64)c->width  - w) / 2 + c->canvas_x;
         s64 y = ((s64)c->height - h) / 2 + c->canvas_y;
+        lui_draw_button_right(context, Lui_context::SLOT_BUTTON_HELP_CLOSE, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, nullptr);
         platform_fmt_draw(Lui_context::SLOT_HELPTEXT, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, nullptr);
-        lui_draw_rect(context, x, y, w, h, Lui_context::LAYER_MIDDLE, white);
+        lui_draw_rect(context, x, y, w, h, Lui_context::LAYER_BACK, white);
     }
     y += pad_panel.pad_y;
 
