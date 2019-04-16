@@ -162,4 +162,4 @@ void platform_fmt_store(s64 slot);
 void platform_fmt_store_simple(u64 flags, char const* str, s64 slot);
 void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot);
 void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false, s64* xw_out=nullptr);
-
+void platform_fmt_store_copy(s64 slot_into, s64 slot_from);

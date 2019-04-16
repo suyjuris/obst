@@ -1584,7 +1584,7 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
                 break;
             }
         } else if (state == 3) {
-            if (_is_space(c) or _is_operator(c) or c == 0) {
+            if (_is_space(c) or _is_operator(c) or c == 0 or c == '\n' or c == ';') {
                 end = store->str_i;
                 break;
             } else {
@@ -1961,6 +1961,12 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
     }
     store->statements.size = j;}
 
+    if (store->statements.size == 0) {
+        ui_error_report("Error: Empty formula");
+        store->error_flag = true;
+        return -1;
+    }
+
     store->str = order;
     store->str_i = 0;
     store->str_row = 0;
@@ -2034,12 +2040,6 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
 
         return a_n < b_n;
     });
-
-    if (store->statements.size == 0) {
-        ui_error_report("Error: Empty formula");
-        store->error_flag = true;
-        return -1;
-    }
 
     for (s64 i = 1; i < store->statements.size; ++i) {
         store->statements[0] = formula_create(store, Formula::AND, store->statements[0], store->statements[i]);
@@ -5067,6 +5067,63 @@ char* name[] = {
 
 }
 
+struct Animation {
+    double begin = 0.0, duration = 1.0;
+    float value0 = 0.f, value1, speed0;
+};
+
+void animation_add(Animation* anim, float add, float min, float max) {
+    double now = platform_now();
+    if (anim->begin == 0.0) {
+        anim->begin = now;
+        anim->speed0 = 0.f;
+        // value0 remains
+        anim->value1 = anim->value0 + add;
+    } else {
+        float x = (float)((now - anim->begin) / anim->duration);
+        anim->begin = now;
+        anim->value0 = anim->value0 + x * anim->speed0
+            + x*x * (anim->value1 - anim->value0 - anim->speed0)
+            + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+        anim->speed0 = anim->speed0
+            + 2.f*x * (anim->value1 - anim->value0 - anim->speed0)
+            + (2.f-3.f*x)*x * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+        anim->value1 += add;
+    }
+
+    anim->value1 = std::min(anim->value1, max);
+    anim->value1 = std::max(anim->value1, min);
+}
+
+void animation_set(Animation* anim, float value, float min = -INFINITY, float max = INFINITY) {
+    anim->begin = 0.f;
+    anim->value0 = value;
+    anim->value0 = std::min(anim->value0, max);
+    anim->value0 = std::max(anim->value0, min);
+    anim->value1 = anim->value0;
+}
+
+float animation_get(Animation* anim, bool* need_redraw = nullptr) {
+    if (anim->begin == 0.f) {
+        if (need_redraw) *need_redraw = false;
+        return anim->value0;
+    }
+    
+    float x = (float)((platform_now() - anim->begin) / anim->duration);
+    
+    if (need_redraw) *need_redraw = x < 1.f;
+    if (x >= 1.f) {
+        x = 1.f;
+        anim->begin = 0.f;
+        anim->value0 = anim->value1;
+        return anim->value0;
+    }
+    
+    return anim->value0 + x * anim->speed0
+        + x*x * (anim->value1 - anim->value0 - anim->speed0)
+        + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+}
+
 // Data for the UI
 struct Ui_context {
     Array_dyn<u8> ui_buf;
@@ -5077,11 +5134,8 @@ struct Ui_context {
     Array_dyn<s64> frame_section; // Stores the frames between algorithms
 
     // Time and frame control for the smooth animation
-    float time_begin;
-    float time_end;
-    float frame_begin;
-    float frame_end;
-    float frame_cur;
+    Animation anim_frame;
+    float frame_cur; // Caches the value of the current frame
 
     // Data for showing the debug information
     bool debug_info_enabled;
@@ -5092,6 +5146,7 @@ struct Ui_context {
     u64 focus_flags; // Bitset of the input elements that are focused
 
     bool is_helptext_visible = false; // You can probably guess what this flag is referring to.
+    u8 novice_create_helper = 0; // "Create and Add doubleclick assistant" status
 };
 
 Ui_context global_ui;
@@ -5102,15 +5157,13 @@ void ui_context_refresh() {
     // Context could be out of bounds here, is not useful anyway
     return;
 #endif
-    // @Cleanup: Need to adjust the way of handling context messages
 
     if (not global_context.not_completely_empty) return;
     
-    s64 frame = (s64)global_ui.frame_end;
+    s64 frame = (s64)global_ui.anim_frame.value1;
     if (frame + 1 >= global_store.snapshots.size) {
         frame = global_store.snapshots.size - 2;
     }
-
     
     platform_fmt_init();
     platform_fmt_begin(Text_fmt::INDENTED);
@@ -5201,12 +5254,9 @@ void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<
 // Display the hover text. Returns whether the bdd is currently valid.
 bool ui_bddinfo_show(float x, float y, u32 bdd) {
     // Depending on whether we are moving forwards or backwards, round to the next frame
-    s64 frame;
-    if (global_ui.frame_end < global_ui.frame_cur) {
-        frame = (s64)std::floor(global_ui.frame_cur);
-    } else {
-        frame = (s64)std::ceil(global_ui.frame_cur);
-    }
+    s64 frame = global_ui.frame_cur < global_ui.anim_frame.value1
+        ? (s64)std::floor(global_ui.frame_cur) : (s64)std::ceil(global_ui.frame_cur);
+    
     if (frame and frame == global_store.snapshots.size-1) {
         // There _could_ be some rounding errors in displaying the last frame.
         --frame;
@@ -5432,9 +5482,7 @@ void ui_commit_store() {
     
     array_push_back(&global_ui.frame_section, global_layouts.size);
     float frame = global_ui.frame_section[global_ui.frame_section.size-2];
-    global_ui.frame_begin = frame;
-    global_ui.frame_cur = frame;
-    global_ui.frame_end = frame;
+    animation_set(&global_ui.anim_frame, frame);
 
     ui_frame_draw();
     
@@ -5583,6 +5631,20 @@ void ui_button_create_from_formula() {
 
 // Callback for the 'Create and add' button
 void ui_button_create() {
+    // "Create and Add doubleclick assistant": If someone presses the "Create and add" button twice,
+    // they probably did not mean to. So, we help them by moving the animation towards the end
+    // instead.
+    if (global_ui.novice_create_helper == 0) {
+        global_ui.novice_create_helper = 1;
+    } else if (global_ui.novice_create_helper == 1) {
+        global_ui.novice_create_helper = 2;
+        global_ui.anim_frame.duration = (float)global_layouts.size * 0.5f;
+        animation_add(&global_ui.anim_frame, INFINITY, 0.f, (float)std::max(global_layouts.size-1, 0ll));
+        ui_context_refresh();
+        platform_main_loop_active(true);
+        return;
+    }
+    
     Array_t<u8> type_str = platform_ui_value_get(Ui_elem::CREATE_TYPE);
     defer { platform_ui_value_free(type_str); };
 
@@ -5601,14 +5663,10 @@ void ui_button_removeall() {
     global_layouts.size = 0;
 
     global_context.not_completely_empty = false;
-    
+
     global_ui.frame_section.size = 0;
     array_push_back(&global_ui.frame_section, 0ll);
-    global_ui.time_begin = 0.f;
-    global_ui.time_end = 0.f;
-    global_ui.frame_begin = 0.f;
-    global_ui.frame_cur = 0.f;
-    global_ui.frame_end = 0.f;
+    animation_set(&global_ui.anim_frame, 0.f);
 
     platform_operations_disable();
 
@@ -5628,14 +5686,11 @@ void application_handle_resize() {
 }
 
 void application_render() {
-    float time = (float)platform_now();
-    float time_t = (time - global_ui.time_begin) / (global_ui.time_end - global_ui.time_begin);
-    assert(time_t >= 0.f);
+    bool redraw;
+    global_ui.frame_cur = animation_get(&global_ui.anim_frame, &redraw);
 
-    // Note the >=, to check the inner condition continuously.
-    if (time_t >= 1.f) {
-        time_t = 1.f;
-
+    // Check whether the animation has stopped
+    if (not redraw) {
         // If the font is due to regenerate, i.e. we are resizing, we actually do want to draw, so
         // check that. Else, we will come back to this.
         if (global_context.font_regenerate == 0) {
@@ -5643,35 +5698,15 @@ void application_render() {
         }
     }
 
-    global_ui.frame_cur = (1.f-time_t) * global_ui.frame_begin + time_t * global_ui.frame_end;
-
     ui_frame_draw();
 }
 
 // Moving in animation frames
 void ui_button_move(float diff) {
-    //@Cleanup Do a proper system here that feels better
-    float now = platform_now();
-    if (global_ui.frame_end + diff < 0.f) {
-        global_ui.frame_end = 0.f;
-    } else if (global_ui.frame_end + diff > global_layouts.size-1) {
-        global_ui.frame_end = (float)(global_layouts.size-1);
-    } else if (global_ui.time_end <= now) {
-        // No other animation is ongoing
-        global_ui.time_begin = now;
-        global_ui.time_end = now + 0.4f;
-        global_ui.frame_begin = global_ui.frame_cur;
-        global_ui.frame_end += diff;
-    } else if ((global_ui.frame_begin < global_ui.frame_end) != (0 < diff)) {
-        // Changing direction
-        global_ui.time_begin = now;
-        global_ui.time_end = now + 0.4f;
-        global_ui.frame_begin = global_ui.frame_cur;
-        global_ui.frame_end += diff;
-    } else {
-        global_ui.time_end = now + 0.4f;
-        global_ui.frame_end += diff;
-    }
+    global_ui.novice_create_helper = 2; // Deactivate the "Create and Add doubleclick assistant"
+    
+    global_ui.anim_frame.duration = 0.5f;
+    animation_add(&global_ui.anim_frame, diff, 0.f, (float)std::max(global_layouts.size-1, 0ll));
     ui_context_refresh();
     platform_main_loop_active(true);
 }
@@ -5682,9 +5717,7 @@ void ui_set_frame(s64 frame) {
     } else if (frame >= global_layouts.size) {
         frame = global_layouts.size-1;
     }
-    global_ui.frame_begin = (float)frame;
-    global_ui.frame_end   = (float)frame;
-    global_ui.frame_cur   = (float)frame;
+    animation_set(&global_ui.anim_frame, (float)frame);
     ui_context_refresh();
     platform_main_loop_active(false);
 }

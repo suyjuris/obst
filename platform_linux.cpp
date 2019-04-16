@@ -85,51 +85,6 @@ Array_t<u8> array_load_from_file(char const* path) {
     return array_load_from_file({(u8*)path, (s64)strlen(path)});
 }
 
-struct Animation {
-    double begin = 0.0, duration = 1.0;
-    float value0 = 0.f, value1, speed0;
-};
-
-void animation_add(Animation* anim, float add) {
-    double now = platform_now();
-    if (anim->begin == 0.0) {
-        anim->begin = now;
-        anim->speed0 = 0.f;
-        // value0 remains
-        anim->value1 = anim->value0 + add;
-    } else {
-        float x = (float)((now - anim->begin) / anim->duration);
-        anim->begin = now;
-        anim->value0 = anim->value0 + x * anim->speed0
-            + x*x * (anim->value1 - anim->value0 - anim->speed0)
-            + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
-        anim->speed0 = anim->speed0
-            + 2.f*x * (anim->value1 - anim->value0 - anim->speed0)
-            + (2.f-3.f*x)*x * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
-        anim->value1 += add;
-    }
-}
-
-float animation_get(Animation* anim, bool* need_redraw = nullptr) {
-    if (anim->begin == 0.f) {
-        return anim->value0;
-    }
-    
-    float x = (float)((platform_now() - anim->begin) / anim->duration);
-    
-    if (need_redraw) *need_redraw = x < 1.f;
-    if (x >= 1.f) {
-        x = 1.f;
-        anim->begin = 0.f;
-        anim->value0 = anim->value1;
-        return anim->value0;
-    }
-    
-    return anim->value0 + x * anim->speed0
-        + x*x * (anim->value1 - anim->value0 - anim->speed0)
-        + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
-}
-
 struct Text_box_lookup {
     u64 hash = 0; s64 index = -1;
 };
@@ -278,9 +233,9 @@ struct Lui_context {
         SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_ENTRY_VARORDER, SLOT_BUTTON_CREATE,
         SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
-        SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_BUTTON_HELP, SLOT_BUTTON_PREV,
-        SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_SCROLL_PANEL, SLOT_HELPTEXT,
-        SLOT_CANVAS, SLOT_PANEL,
+        SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_LABEL_HELP_SHOW, SLOT_LABEL_HELP_HIDE,
+        SLOT_BUTTON_HELP, SLOT_BUTTON_PREV, SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_SCROLL_PANEL,
+        SLOT_HELPTEXT, SLOT_CANVAS, SLOT_PANEL,
         SLOT_COUNT
     };
     
@@ -384,6 +339,8 @@ Platform_state global_platform;
 
 void platform_ui_button_help () {
     global_platform.gl_context.helptext_active ^= 1;
+    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, global_platform.gl_context.helptext_active
+        ? Lui_context::SLOT_LABEL_HELP_HIDE : Lui_context::SLOT_LABEL_HELP_SHOW);
 }
 bool platform_ui_help_active () {
     return global_platform.gl_context.helptext_active;
@@ -1498,12 +1455,14 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(button_flag, "Calculate intersection", Lui_context::SLOT_LABEL_OP_I);
     platform_fmt_store_simple(button_flag, "Calculate complement", Lui_context::SLOT_LABEL_OP_C);
     platform_fmt_store_simple(button_flag, "Remove all", Lui_context::SLOT_BUTTON_REMOVEALL);
-    platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_BUTTON_HELP);
+    platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_LABEL_HELP_SHOW);
+    platform_fmt_store_simple(button_flag, "Hide help", Lui_context::SLOT_LABEL_HELP_HIDE);
     platform_fmt_store_simple(button_flag, u8"◁", Lui_context::SLOT_BUTTON_PREV);
     platform_fmt_store_simple(button_flag, u8"▷", Lui_context::SLOT_BUTTON_NEXT);
     platform_fmt_store_simple(button_flag, u8"×", Lui_context::SLOT_BUTTON_HELP_CLOSE);
 
     platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_U);
+    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, Lui_context::SLOT_LABEL_HELP_SHOW);
     
     platform_fmt_init();
     platform_fmt_text(Text_fmt::BOLD, "Step-by-step");
@@ -1536,7 +1495,8 @@ void _platform_init(Platform_state* platform) {
     context->elem_flags[Lui_context::SLOT_LABEL_NUMBERS] |= Lui_context::DRAW_PRESSED;
 
     array_printf(&context->entries[Lui_context::ENTRY_NUMBERS].text, "2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62");
-    array_printf(&context->entries[Lui_context::ENTRY_FORMULA].text, "x1 | x2 & x3");
+    array_printf(&context->entries[Lui_context::ENTRY_FORMULA].text, "f = x2 ^ x4\n(x1&f) <-> ~x3");
+    
     array_printf(&context->entries[Lui_context::ENTRY_BASE].text, "10");
     array_printf(&context->entries[Lui_context::ENTRY_BITORDER].text, "auto");
     array_printf(&context->entries[Lui_context::ENTRY_VARORDER].text, "auto");
@@ -2230,12 +2190,13 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
 
 void lui_button_press(s64 slot) {
     switch (slot) {
-    case Lui_context::SLOT_BUTTON_CREATE:    ui_button_create(); break;
-    case Lui_context::SLOT_BUTTON_OP:        ui_button_op(); break;
-    case Lui_context::SLOT_BUTTON_REMOVEALL: ui_button_removeall(); break;
-    case Lui_context::SLOT_BUTTON_NEXT:      ui_button_move(1.f); break;
-    case Lui_context::SLOT_BUTTON_PREV:      ui_button_move(-1.f); break;
-    case Lui_context::SLOT_BUTTON_HELP:      platform_ui_button_help(); break;
+    case Lui_context::SLOT_BUTTON_CREATE:     ui_button_create(); break;
+    case Lui_context::SLOT_BUTTON_OP:         ui_button_op(); break;
+    case Lui_context::SLOT_BUTTON_REMOVEALL:  ui_button_removeall(); break;
+    case Lui_context::SLOT_BUTTON_NEXT:       ui_button_move(1.f); break;
+    case Lui_context::SLOT_BUTTON_PREV:       ui_button_move(-1.f); break;
+    case Lui_context::SLOT_BUTTON_HELP:       platform_ui_button_help(); break;
+    case Lui_context::SLOT_BUTTON_HELP_CLOSE: platform_ui_button_help(); break;
     default: assert(false);
     }
 }
@@ -2283,18 +2244,13 @@ void _platform_render(Platform_state* platform) {
         s64 h = context->elem_bb[scroll->slot_area].h;
         if (scroll->offset == 0 and scroll->total_height <= h) return;
 
-        animation_add(&scroll->anim, amount);
-        scroll->anim.value1 = std::min(scroll->anim.value1, (float)(scroll->total_height - h));
-        scroll->anim.value1 = std::max(scroll->anim.value1, 0.f);
+        animation_add(&scroll->anim, amount, 0.f, (float)(scroll->total_height - h));
     };
     auto scrollbar_scroll_set = [context](Scrollbar* scroll, s64 offset) {
         s64 h = context->elem_bb[scroll->slot_area].h;
         if (scroll->offset == 0 and scroll->total_height <= h) return;
 
-        scroll->anim.begin = 0.f;
-        scroll->anim.value0 = offset;
-        scroll->anim.value0 = std::min(scroll->anim.value0, (float)(scroll->total_height - h));
-        scroll->anim.value0 = std::max(scroll->anim.value0, 0.f);
+        animation_set(&scroll->anim, (float)offset, 0.f, (float)(scroll->total_height - h));
     };
 
     auto get_resizer = [context](s64 id) {
