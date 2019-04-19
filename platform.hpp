@@ -44,7 +44,7 @@ struct Key {
         result.text[text_.size] = 0;
         return result;
     }
-    static Key create_special(u8 special, u8 flags, s32 data = -1) {
+    static Key create_special(u8 special, u8 flags = 0, s32 data = -1) {
         assert(special != INVALID and special < SPECIAL_COUNT);
         Key result;
         result.type = Key::SPECIAL;
@@ -138,13 +138,13 @@ void platform_ui_error_clear();
 void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* ascent);
 Array_t<u8> platform_ui_value_get(u8 elem);
 void platform_ui_value_free(Array_t<u8> data);
-void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col);
+void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col, s64 cursor_char);
 void platform_ui_bddinfo_hide();
 void platform_ui_bddinfo_show(float x, float y, float pad);
 double platform_now();
 void platform_mouse_position(float* out_x, float* out_y);
-void platform_ui_button_help ();
-bool platform_ui_help_active ();
+void platform_ui_button_help();
+bool platform_ui_help_active();
 void platform_operations_enable(u32 bdd);
 void platform_operations_disable();
 void platform_main_loop_active(bool is_active);
@@ -161,5 +161,17 @@ void platform_fmt_text(u64 flags, char const* s);
 void platform_fmt_store(s64 slot);
 void platform_fmt_store_simple(u64 flags, char const* str, s64 slot);
 void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot);
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure=false, s64* xw_out=nullptr);
-void platform_fmt_store_copy(s64 slot_into, s64 slot_from);
+
+void platform_fmt_text(u64 flags, char const* s) {
+    platform_fmt_text(flags, {(u8*)s, (s64)strlen(s)});
+}
+void platform_fmt_store_simple(u64 flags, char const* str, s64 slot) {
+    platform_fmt_init();
+    platform_fmt_text(flags, str);
+    platform_fmt_store(slot);
+}
+void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot) {
+    platform_fmt_init();
+    platform_fmt_text(flags, str);
+    platform_fmt_store(slot);
+}

@@ -46,7 +46,7 @@
       textarea {
           width: 100%;
           resize: vertical;
-          margin-top: 3px;
+          margin-top: 6px;
           margin-bottom: 6px;
       }
       button {
@@ -60,7 +60,7 @@
       div.init-enabled {
           display: inline;
       }
-      #error-cont {
+      span.nicered {
           color: rgb(213,23,0);
       }
       p.spaced {
@@ -134,6 +134,9 @@
       <p>Read the help for more information, or get started right away by pressing “Create and add”.</p>
       <p><i>Hint:</i> You can hover over nodes using your cursor, showing additional details.
       <hr></hr>
+      Input type:
+      <input type="radio" name="create_type" value="n" id="type_n" onclick="Module.__platform_ui_button_typer()" checked><label for="type_n">List of numbers</label>
+      <input type="radio" name="create_type" value="f" id="type_f" onclick="Module.__platform_ui_button_typer()"><label for="type_f">Boolean formula</label>
       <textarea id="create_nums" rows="3" placeholder="Enter a list of numbers, e.g. 2,3,5,7">2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62</textarea>
       Base: <input id="create_base" type="text" size="3" placeholder="10" value="10">
       <span style="padding-left:10px;"></span>

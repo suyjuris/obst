@@ -337,15 +337,6 @@ struct Platform_state {
 };
 Platform_state global_platform;
 
-void platform_ui_button_help () {
-    global_platform.gl_context.helptext_active ^= 1;
-    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, global_platform.gl_context.helptext_active
-        ? Lui_context::SLOT_LABEL_HELP_HIDE : Lui_context::SLOT_LABEL_HELP_SHOW);
-}
-bool platform_ui_help_active () {
-    return global_platform.gl_context.helptext_active;
-}
-
 void platform_ui_bddinfo_show(float x, float y, float pad) {
     Lui_context* context = &global_platform.gl_context;
     context->bddinfo_active = true;
@@ -1158,9 +1149,6 @@ void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
     
     platform_fmt_end(flags_add);
 }
-void platform_fmt_text(u64 flags, char const* s) {
-    platform_fmt_text(flags, {(u8*)s, (s64)strlen(s)});
-}
 void platform_fmt_spacing(u64 flags) {
     Text_box box;
     box.font = Lui_context::FONT_LUI_NORMAL;
@@ -1177,17 +1165,7 @@ void platform_fmt_store(s64 slot) {
     array_append(&context->fmt_slots[slot], context->fmt_boxes);
     context->fmt_boxes.size = 0;
 }
-void platform_fmt_store_simple(u64 flags, char const* str, s64 slot) {
-    platform_fmt_init();
-    platform_fmt_text(flags, str);
-    platform_fmt_store(slot);
-}
-void platform_fmt_store_simple(u64 flags, Array_t<u8> str, s64 slot) {
-    platform_fmt_init();
-    platform_fmt_text(flags, str);
-    platform_fmt_store(slot);
-}
-void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out, s64* y_out, bool only_measure, s64* xw_out) {
+void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out=nullptr, s64* y_out=nullptr, bool only_measure=false, s64* xw_out=nullptr) {
     Lui_context* context = &global_platform.gl_context;
     u8 black[] = {0, 0, 0, 255};
     u8 gray[] = {120, 120, 120, 255};
@@ -1589,6 +1567,15 @@ void platform_operations_enable(u32 bdd) {
     _platform_operations_able(false);
 }
 
+void platform_ui_button_help () {
+    global_platform.gl_context.helptext_active ^= 1;
+    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, global_platform.gl_context.helptext_active
+        ? Lui_context::SLOT_LABEL_HELP_HIDE : Lui_context::SLOT_LABEL_HELP_SHOW);
+}
+bool platform_ui_help_active () {
+    return global_platform.gl_context.helptext_active;
+}
+
 Array_t<u8> platform_ui_value_get(u8 elem) {
     auto context = &global_platform.gl_context;
     
@@ -1618,7 +1605,7 @@ Array_t<u8> platform_ui_value_get(u8 elem) {
 }
 void platform_ui_value_free(Array_t<u8> data) {}
 
-void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col) {
+void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col, s64 _cursor_char) {
     auto context = &global_platform.gl_context;
     
     Text_entry* entry;
@@ -2445,6 +2432,13 @@ void _platform_render(Platform_state* platform) {
                 context->window_has_focus = true;
             } else if (key.general == Key::FOCUS_OUT) {
                 context->window_has_focus = false;
+            }
+        }
+
+        if (key.type == Key::TEXT or key.type == Key::SPECIAL) {
+            // Hacky: Reset the create helper if the user presses a key
+            if (global_ui.novice_create_helper == 1) {
+                global_ui.novice_create_helper = 2;
             }
         }
 

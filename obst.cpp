@@ -609,7 +609,7 @@ Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bo
     assert(0 <= index and index < 210);
     static char c[2];
     c[0] = (char)(index < 105 ? index + 22 : index - 83);
-    char* s;
+    char const* s;
     bool draw_light = false;
     bool draw_italics = 'a' <= c[0] and c[0] <= 'z';
     switch (c[0]) {
@@ -1378,7 +1378,7 @@ struct Formula_store {
     s64 parser_diff = 0;
     
     Array_t<u8> str;
-    s64 str_i, str_row, str_col;
+    s64 str_i, str_row, str_col, str_char;
 
     bool error_flag;
 };
@@ -1454,6 +1454,7 @@ void formula_store_init(Formula_store* store) {
     store->str_i = 0;
     store->str_row = 0;
     store->str_col = 0;
+    store->str_char = 0;
 }
 
 bool _is_operator(u32 c) {
@@ -1602,6 +1603,7 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
         }
 
         store->str_i += bytes;
+        ++store->str_char;
         if (c == '\n') {
             store->str_col = 0;
             ++store->str_row;
@@ -1971,6 +1973,7 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
     store->str_i = 0;
     store->str_row = 0;
     store->str_col = 0;
+    store->str_char = 0;
     bool first = true;
     while (true) {
         auto tok = formula_token_pop(store);
@@ -3436,7 +3439,7 @@ void webgl_init(Webgl_context* context) {
     // Note that the scale passed as attribute is not context->scale (ratio of pixels and
     // world->coordinates) but rather the factor between world-coordinates and device-coordinates.
 
-#ifdef OS_PLATFORM_EMSCRIPTEN
+#ifdef OBST_PLATFORM_EMSCRIPTEN
 #define OBST_SHADER_F_PREAMBLE "precision mediump float;\n"
 #else
 #define OBST_SHADER_F_PREAMBLE "\n"
@@ -3616,6 +3619,7 @@ void webgl_init(Webgl_context* context) {
         "}\n";
 
     GLbyte shader_f_text[] =
+        OBST_SHADER_F_PREAMBLE
         "varying vec2 v_tpos;\n"
         "varying vec4 v_fill;\n"
         "uniform sampler2D sampler;\n"
@@ -3861,7 +3865,6 @@ void webgl_draw_text_bdd(
     Webgl_context* context,
     Bdd_store* store,
     Bdd_attr a,
-    u32 bdd,
     float fac,
     bool do_draw = true,
     float* x1_out = nullptr,
@@ -3917,14 +3920,14 @@ void webgl_draw_text_bdd(
 }
 
 // See the note on font rounding above.
-void webgl_bdd_text_round(Webgl_context* context, Bdd_store* store, Bdd_attr* a, u32 bdd, float fac) {
+void webgl_bdd_text_round(Webgl_context* context, Bdd_store* store, Bdd_attr* a, float fac) {
     a->font_x  = a->x;
     a->font_y  = a->y;
     a->font_x2 = a->x;
     a->font_y2 = a->y;
     
     float x1, y1, x2, y2;
-    webgl_draw_text_bdd(context, store, *a, bdd, fac, false, &x1, &y1, &x2, &y2);
+    webgl_draw_text_bdd(context, store, *a, fac, false, &x1, &y1, &x2, &y2);
 
     auto frac = [](float f) { return std::round(f) - f; };
     
@@ -4496,7 +4499,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     if (time < 0.f) time = 0.f;
     s64 frame = (s64)time;
     float t = time - (s64)frame;
-
+    
     // Check whether we are trying to render a sensible frame
     if (layouts.size == 0) {
         context->buf_attr_cur.size = 0; // these are checked to determine whether to draw the bddinfo hover text
@@ -4571,7 +4574,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         a.ry = param.node_radius * param.squish_fac;
         a.name = bdd.name;
 
-        webgl_bdd_text_round(context, &store, &a, bdd.id, 1.f);
+        webgl_bdd_text_round(context, &store, &a, 1.f);
         
         if (bdd.flags & Bdd::CURRENT) {
             color_set(a.stroke, 0x7f0a13ff);
@@ -4625,7 +4628,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     // Draw the bdds with the given attributes
     auto bdd_attr_apply = [param, context, &store, &attr_cur](Bdd_attr a, u32 id) {
         webgl_draw_bdd(context, a);
-        webgl_draw_text_bdd(context, &store, a, id, a.rx / param.node_radius);
+        webgl_draw_text_bdd(context, &store, a, a.rx / param.node_radius);
         attr_cur[id] = a;
     };
     // Gives a point on the edge of a bdd. Used to position the children during the creation
@@ -4637,14 +4640,13 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         *x = vx / len + a.x;
         *y = vy / len + a.y;
     };
-    
+
     for (u32 i = 1; i < store.bdd_data.size; ++i) {
         if (id_map0[i] != -1 and id_map1[i] != -1) {
             // Bdd existed in both frames. Just simple interpolation here.
-            
+
             Bdd bdd0 = bdds0[id_map0[i]];
             Bdd bdd1 = bdds1[id_map1[i]];
-            
             Bdd_attr a0 = bdd_attr_get(layouts[frame],  bdd0, id_map0);
             Bdd_attr a1 = bdd_attr_get(layouts[frame+1], bdd1, id_map1);
             bdd_attr_inter(&a0, a1, t);
@@ -5062,7 +5064,8 @@ enum Name: u8 {
 };
 
 char* name[] = {
-    nullptr, "op_node0", "op_node1", "create_nums", "create_form", "create_base", "create_bits", "operation", nullptr
+    nullptr, "op_node0", "op_node1", "create_type", "create_nums", "create_form", "create_base",
+    "create_bits", "create_vars", "operation", nullptr
 };
 
 }
@@ -5169,6 +5172,8 @@ void ui_context_refresh() {
     platform_fmt_begin(Text_fmt::INDENTED);
     s64 last = global_store.snapshots[frame].offset_context;
     auto sd = global_store.snapshot_data_context;
+    
+    platform_fmt_begin(Text_fmt::PARAGRAPH_CLOSE);
     for (s64 i = global_store.snapshots[frame].offset_context;
          i < global_store.snapshots[frame+1].offset_context; ++i)
     {
@@ -5184,14 +5189,18 @@ void ui_context_refresh() {
         u64 nospace = last < i and sd[i-1] == ' ' ? 0 : (u64)Text_fmt::NOSPACE;
         platform_fmt_text(nospace, array_subarray(sd, last, i));
             
-        if (strncmp((char*)&sd[i], "<b>", 3) == 0)  { i += 3; platform_fmt_begin(Text_fmt::BOLD); }
-        if (strncmp((char*)&sd[i], "<i>", 3) == 0)  { i += 3; platform_fmt_begin(Text_fmt::ITALICS); }
-        if (strncmp((char*)&sd[i], "</b>", 4) == 0) { i += 4; platform_fmt_end(Text_fmt::BOLD); }
-        if (strncmp((char*)&sd[i], "</i>", 4) == 0) { i += 4; platform_fmt_end(Text_fmt::ITALICS); }
-        if (sd[i] == 0) platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+        if (strncmp((char*)&sd[i], "<b>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::BOLD); }
+        if (strncmp((char*)&sd[i], "<i>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::ITALICS); }
+        if (strncmp((char*)&sd[i], "</b>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::BOLD); }
+        if (strncmp((char*)&sd[i], "</i>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::ITALICS); }
+        if (sd[i] == 0 and i+1 < global_store.snapshots[frame+1].offset_context) {
+            platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+            platform_fmt_begin(Text_fmt::PARAGRAPH_CLOSE);
+        }
 
-        last = i;
+        last = i+1;
     }
+    platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
     platform_fmt_store(Text_fmt::SLOT_CONTEXT);
 
     global_ui.ui_buf.size = 0;
@@ -5543,7 +5552,7 @@ void ui_button_op() {
     ui_commit_store();
 }
 
-void ui_button_create_from_numbers() {
+bool ui_button_create_from_numbers() {
     Array_t<u8> nums_str = platform_ui_value_get(Ui_elem::CREATE_NUMS);
     Array_t<u8> base_str = platform_ui_value_get(Ui_elem::CREATE_BASE);
     Array_t<u8> bits_str = platform_ui_value_get(Ui_elem::CREATE_BITS);
@@ -5551,25 +5560,25 @@ void ui_button_create_from_numbers() {
     defer { platform_ui_value_free(nums_str); };
     defer { platform_ui_value_free(base_str); };
     defer { platform_ui_value_free(bits_str); };
-    
+
     s32 base;
     if (u8 code = jup_stoi(base_str, &base, 10)) {
         ui_error_report("Error while parsing 'Base', which has to be a number: %s", jup_err_messages[code]);
-        return;
+        return false;
     } else if (base < 2 or 36 < base) {
         ui_error_report("Error: 'Base' must be between 2 and 36. Tryhard.");
-        return;
+        return false;
     }
     
     Array_dyn<s64> nums;
     if (u8 code = parse_int_list(&nums, nums_str, base)) {
         ui_error_report("Error while parsing numbers, which has to be a comma-delimited list of numbers. Error: %s", jup_err_messages[code]);
-        return;
+        return false;
     }
     for (s64 i: nums) {
         if (i < 0) {
             ui_error_report("Error: Only non-negative numbers are valid. (What were you trying to achieve, anyway?)");
-            return;    
+            return false;    
         }
     }
 
@@ -5585,16 +5594,16 @@ void ui_button_create_from_numbers() {
         }
     } else if (u8 code = parse_int_list(&bits, bits_str, base)) {
         ui_error_report("Error while parsing 'Bit order': %s", jup_err_messages[code]);
-        return;
+        return false;
     } else if (bits.size < 1) {
         ui_error_report("Error: 'Bit order' must contain at least one element.");
-        return;
+        return false;
     }
     Array_dyn<u8> bits_u8;
     for (s64 i: bits) {
         if (i < 0 or i > 30) {
             ui_error_report("Error: Invalid bit index, must be between 0 and 30.");
-            return;
+            return false;
         }
         array_push_back(&bits_u8, (u8)i);
     }
@@ -5604,9 +5613,10 @@ void ui_button_create_from_numbers() {
 
     platform_operations_enable(bdd);
     ui_commit_store();
+    return true;
 }
 
-void ui_button_create_from_formula() {
+bool ui_button_create_from_formula() {
     Array_t<u8> form_str = platform_ui_value_get(Ui_elem::CREATE_FORM);
     Array_t<u8> vars_str = platform_ui_value_get(Ui_elem::CREATE_VARS);
     defer { platform_ui_value_free(form_str); };
@@ -5619,14 +5629,15 @@ void ui_button_create_from_formula() {
     s64 f_id = formula_parse(fstore, form_str, vars_str);
     if (f_id == -1) {
         s64 elem = fstore->str.data == form_str.data ? Ui_elem::CREATE_FORM : Ui_elem::CREATE_VARS;
-        platform_ui_cursor_set(elem, fstore->str_i, fstore->str_row, fstore->str_col);
-        return;
+        platform_ui_cursor_set(elem, fstore->str_i, fstore->str_row, fstore->str_col, fstore->str_char);
+        return false;
     }
 
     u32 bdd = bdd_from_formula_stepwise(&global_store, fstore, f_id);
     
     platform_operations_enable(bdd);
     ui_commit_store();
+    return true;
 }
 
 // Callback for the 'Create and add' button
@@ -5649,11 +5660,16 @@ void ui_button_create() {
     defer { platform_ui_value_free(type_str); };
 
     assert(type_str.size == 1);
-    
+
+    bool result;
     if (type_str[0] == 'n') {
-        ui_button_create_from_numbers();
+        result = ui_button_create_from_numbers();
     } else {
-        ui_button_create_from_formula();
+        result = ui_button_create_from_formula();
+    }
+
+    if (not result and global_ui.novice_create_helper == 1) {
+        global_ui.novice_create_helper = 0;
     }
 }
 

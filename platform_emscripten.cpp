@@ -32,6 +32,114 @@ void platform_ui_error_clear () { _platform_ui_error_clear(); }
 
 // @Cleanup: Replace abort() calls by something a little bit more useful.
 
+struct Emscripten_state {
+    Array_dyn<u8> fmt_buf;
+    u64 fmt_flags;
+};
+Emscripten_state global_emscripten;
+
+void platform_fmt_init() {
+    auto* state = &global_emscripten;
+    state->fmt_buf.size = 0;
+    state->fmt_flags = 0;
+}
+
+void platform_fmt_begin(u64 flags) {
+    auto* state = &global_emscripten;
+    
+    state->fmt_flags |= flags;
+
+    if (flags & Text_fmt::PARAGRAPH) {
+        array_printf(&state->fmt_buf, "<p>");
+    } else if (flags & Text_fmt::PARAGRAPH_CLOSE) {
+        array_printf(&state->fmt_buf, "<p class=\"close\">");
+    }
+
+    if (flags & Text_fmt::BOLD) {
+        array_printf(&state->fmt_buf, "<b>");
+    }
+    if (flags & Text_fmt::ITALICS) {
+        array_printf(&state->fmt_buf, "<i>");
+    }
+    if (flags & Text_fmt::RED) {
+        array_printf(&state->fmt_buf, "<span class=\"nicered\">");
+    }
+}
+
+void platform_fmt_end(u64 flags) {
+    auto* state = &global_emscripten;
+        
+    if (flags & Text_fmt::PARAGRAPH) {
+        array_printf(&state->fmt_buf, "</p>");
+    } else if (flags & Text_fmt::PARAGRAPH_CLOSE) {
+        array_printf(&state->fmt_buf, "</p>");
+    } else if (flags & Text_fmt::NEWLINE) {
+        array_printf(&state->fmt_buf, "<br>");
+    }
+
+    if (flags & Text_fmt::BOLD) {
+        array_printf(&state->fmt_buf, "</b>");
+    }
+    if (flags & Text_fmt::ITALICS) {
+        array_printf(&state->fmt_buf, "</i>");
+    }
+    if (flags & Text_fmt::RED) {
+        array_printf(&state->fmt_buf, "</span>");
+    }
+    
+    state->fmt_flags &= ~flags;
+}
+
+void platform_fmt_text(u64 flags, Array_t<u8> text) {
+    auto* state = &global_emscripten;
+    
+    platform_fmt_begin(flags);
+    array_append(&state->fmt_buf, text);
+
+    if (text.size and not (flags & (Text_fmt::NOSPACE | Text_fmt::STICKY))) {
+        array_printf(&state->fmt_buf, " ");
+    }
+    platform_fmt_end(flags);
+}
+
+char* _platform_get_elem(s64 slot) {
+    switch (slot) {
+    case Text_fmt::SLOT_CONTEXT:       return (char*)"context-cont";
+    case Text_fmt::SLOT_CONTEXT_FRAME: return (char*)"frame";
+    case Text_fmt::SLOT_BDDINFO:       return (char*)"cont-bddinfo";
+    case Text_fmt::SLOT_HELPTEXT:      return (char*)"helptext";
+    case Text_fmt::SLOT_ERRORINFO:     return (char*)"error-cont";
+    default: assert(false); return nullptr;
+    };
+}
+
+void platform_fmt_store(s64 slot) {
+    auto* state = &global_emscripten;
+
+    array_push_back(&state->fmt_buf, (u8)0);
+    --state->fmt_buf.size;
+
+    EM_ASM_({
+        document.getElementById(UTF8ToString($0)).innerHTML = UTF8ToString($1);
+    }, _platform_get_elem(slot), state->fmt_buf.data);
+
+    if (slot == Text_fmt::SLOT_ERRORINFO) {
+        EM_ASM_({
+            document.getElementById("error-hr").style.display = UTF8ToString($0);
+        }, state->fmt_buf.size > 0 ? "block" : "none");
+    }
+}
+
+EM_JS(void, _platform_ui_cursor_set, (char* name, int pos), {
+    var e = document.getElementById(UTF8ToString(name));
+    e.focus();
+    e.setSelectionRange(pos, pos);
+})
+
+void platform_ui_cursor_set(u8 elem, s64, s64, s64, s64 cursor_char) {
+    _platform_ui_cursor_set(_platform_get_elem(elem), cursor_char);
+}
+
 // Called whenever the canvas resizes. This causes the internal viewport to adopt the new
 // dimensions, regenerates the font to properly align the pixels, and redraws.
 int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
@@ -103,12 +211,105 @@ EM_JS(int, _platform_text_prepare, (int size, int w, float* offsets), {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
     return actualTop - actualBot;
 });
-int platform_text_prepare(int font_size, Array_t<Quad>* offsets) {
-    int texture_size = 1;
-    while (texture_size < 4*font_size+4) texture_size *= 2;
 
-    static_assert(sizeof(Quad) == sizeof(float) * 4);
-    return _platform_text_prepare(font_size, texture_size, (float*)offsets->data);
+EM_JS(int, _platform_text_prepare_init, (int canvas_size, float font_size), {
+    var canvas = document.createElement("canvas");
+    Module.text_prepare_canvas = canvas;
+    canvas.width = canvas_size;
+    canvas.height = canvas_size;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "grey";
+    ctx.font = font_size + "px sans-serif";
+    ctx.textAlign = "start";
+    ctx.textBaseline = "top";
+
+    // I would really like to use the advanced text measurement options here, but they are not yet
+    // made available by Firefox. This measures how high the E is, which I found better for
+    // cross-browser consistency than just trusting the fonts to have similar offsets.
+    ctx.clearRect(0, 0, font_size, font_size);
+    var m = ctx.measureText("E");
+    ctx.fillText("E", 0.5, 0.5);
+    var i;
+    var data = ctx.getImageData(0, 0, m.width, font_size);
+    var actual_top = 0;
+    var actual_bot = 0;
+    var is_filled = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
+    for (i = 0; i < font_size; i++) {
+        var flag = data.data.slice(i*4*m.width, (i+1)*4*m.width).some(is_filled);
+        if (flag) {
+            actual_top = i+2;
+        }
+        if (!flag && actual_bot == i) {
+            actual_bot = i+1;
+        }
+    }
+
+    ctx.clearRect(0, 0, canvas_size, canvas_size);
+    ctx.fillStyle = "black";
+    
+    return font_size - actual_bot;
+});
+
+EM_JS(int, _platform_text_prepare_char, (char* c, bool italics, float size, int x, int y), {
+    var canvas = Module.text_prepare_canvas;
+    var ctx = canvas.getContext("2d");
+
+    if (italics) {
+        ctx.font = size + "px italics sans-serif";
+    } else {
+        ctx.font = size + "px sans-serif";
+    }
+    
+    var s = UTF8ToString(c);
+    ctx.fillText(s, x+0.5, y+0.5);
+    return ctx.measureText(s);
+});
+
+
+void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* ascent_out) {
+    int texture_size = 1024; //@Cleanup Adaptive size
+
+    int ascent = _platform_text_prepare_init(texture_size, size);
+    if (ascent_out) *ascent_out = ascent;
+    
+    int x = 0, y = 0;
+    for (s64 i = 0; i < offsets->size; ++i) {
+        u8 c = webgl_bddlabel_index_char(i);
+        bool italicized;
+        auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
+        bool small = c & 128;
+
+        float font_size = (float)size;
+        if (small) font_size *= small_frac;
+        
+        int advance = _platform_text_prepare_char((char*)arr.data, italicized and not small, font_size, x, y);
+        x += advance;
+        if (x >= texture_size) {
+            x = 0;
+            y += size;
+            --i;
+            continue;
+        }
+        
+        Text_box box;
+        box.x0 = 0.f;
+        box.y0 = (float)-ascent;
+        box.x1 = (float)advance;
+        box.y1 = (float)(size - ascent);
+        box.s0 = box.x0 + (float)x;
+        box.t0 = box.y0 + (float)y;
+        box.s1 = box.x1 + (float)x;
+        box.t1 = box.y1 + (float)y;
+        box.advance = (float)advance;
+        box.font = -1;
+
+        (*offsets)[i] = box;
+    }
+
+    EM_ASM_({
+        var gl = document.getElementById("canvas").getContext("webgl");
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.ALPHA, gl.ALPHA, gl.UNSIGNED_BYTE, Module.text_prepare_canvas);
+    });
 }
     
 // Query the value of an input element
@@ -129,12 +330,12 @@ EM_JS(char*, _platform_get_radio_value_js, (char* element), {
 Array_t<u8> platform_ui_value_get(u8 elem) {
     assert(elem < Ui_elem::NAME_COUNT);
     char* s;
-    if (elem != Ui_elem::OPERATION) {
-        // Normal button
-        s = _platform_get_value_js(Ui_elem::name[elem]);
-    } else {
+    if (elem == Ui_elem::OPERATION or elem == Ui_elem::CREATE_TYPE) {
         // Radiobutton
         s = _platform_get_radio_value_js(Ui_elem::name[elem]);
+    } else {
+        // Normal button
+        s = _platform_get_value_js(Ui_elem::name[elem]);
     }
     return {(u8*)s, strlen(s)};
 }
@@ -149,8 +350,7 @@ EM_JS(void, _platform_ui_bddinfo_hide, (), {
 })
 void platform_ui_bddinfo_hide() { _platform_ui_bddinfo_hide(); }
 
-EM_JS(void, _platform_ui_bddinfo_show_js, (float x, float y, char* text, int right, int bottom), {
-    var s = UTF8ToString(text);
+EM_JS(void, _platform_ui_bddinfo_show_js, (float x, float y, int right, int bottom), {
     var e = document.getElementById('cont-bddinfo');
     e.style.display = "";
     if (right) {
@@ -167,14 +367,12 @@ EM_JS(void, _platform_ui_bddinfo_show_js, (float x, float y, char* text, int rig
         e.style.bottom = "";
         e.style.top = y + "px";
     }
-    e.innerHTML = s;
 })
 
 // Display the text at the specified position. This is the platform-level call for ui_bddinfo_show.
-void platform_ui_bddinfo_show(float x, float y, float pad, Array_t<u8> text) {
+void platform_ui_bddinfo_show(float x, float y, float pad) {
     float px = (x - global_context.origin_x) * global_context.scale;
     float py = (y - global_context.origin_y) * global_context.scale;
-    float pw = w   * global_context.scale;
     float pd = pad * global_context.scale;
     
     bool right = false;
@@ -191,7 +389,7 @@ void platform_ui_bddinfo_show(float x, float y, float pad, Array_t<u8> text) {
         bottom = false;
     }
 
-    _platform_ui_bddinfo_show_js(px + pd, py, (char*)text.data, (int)right, (int)bottom);
+    _platform_ui_bddinfo_show_js(px + pd, py, (int)right, (int)bottom);
 }
 
 EM_JS(void, _platform_ui_context_set_js, (char* s, int frame, int frame_max), {
@@ -228,7 +426,8 @@ void platform_mouse_position(float* out_x, float* out_y) {
 
 // Enable the right elements depending on the operation selected.
 extern "C" void OBST_EM_EXPORT(_platform_ui_button_opr) () {
-    Array_t<u8> op_str = platform_ui_get_value(Ui_elem::OPERATION);
+    Array_t<u8> op_str = platform_ui_value_get(Ui_elem::OPERATION);
+    defer { platform_ui_value_free(op_str); };
     assert(op_str.size == 1);
 
     if (op_str[0] == 'u') {
@@ -255,7 +454,7 @@ extern "C" void OBST_EM_EXPORT(_platform_ui_button_opr) () {
 }
 
 // Show/hide the helptext
-void platform_ui_button_help () {
+void platform_ui_button_help() {
     global_ui.is_helptext_visible ^= 1;
     if (global_ui.is_helptext_visible) {
         EM_ASM(
@@ -268,6 +467,10 @@ void platform_ui_button_help () {
             document.getElementById("b_help").textContent = "Show help";
         );
     }
+}
+
+bool platform_ui_help_active() {
+    return global_ui.is_helptext_visible;
 }
 
 // Simply dispatch to the respective ui_button_* procedures. Why? The extern "C" declaration is
@@ -394,6 +597,12 @@ EM_BOOL _platform_ui_focus(int event_type, EmscriptenFocusEvent const* event, vo
     } else {
         return false;
     }
+
+    if (focused and global_ui.novice_create_helper == 1) {
+        // Hacky: Reset the create helper if an entry is focused
+        global_ui.novice_create_helper = 2;
+    }
+    
     global_ui.focus_flags ^= (global_ui.focus_flags ^ (focused << id)) & 1ull << id;
     return false;
 }
