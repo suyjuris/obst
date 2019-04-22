@@ -138,9 +138,13 @@
       <input type="radio" name="create_type" value="n" id="type_n" onclick="Module.__platform_ui_button_typer()" checked><label for="type_n">List of numbers</label>
       <input type="radio" name="create_type" value="f" id="type_f" onclick="Module.__platform_ui_button_typer()"><label for="type_f">Boolean formula</label>
       <textarea id="create_nums" rows="3" placeholder="Enter a list of numbers, e.g. 2,3,5,7">2, 4, 13, 17, 20, 24, 25, 31, 33, 41, 51, 52, 61, 62</textarea>
-      Base: <input id="create_base" type="text" size="3" placeholder="10" value="10">
+      <textarea id="create_form" style="display:none" rows="3" placeholder="Enter a boolean formula, e.g. x1|x2&x3">f = x2 ^ x4
+(x1&amp;f) <-> ~x3</textarea>
+      <span id="create_base-cont">Base:</span> <input id="create_base" type="text" size="3" placeholder="10" value="10">
       <span style="padding-left:10px;"></span>
-      Bit order: <input id="create_bits" type="text" size="11" placeholder="auto, or e.g. 2,1,0" value="auto">
+      <span id="create_order-cont">Bit order:</span>
+      <input id="create_bits" type="text" size="11" placeholder="auto, or e.g. 2,1,0" value="auto">
+      <input id="create_vars" style="display:none" type="text" size="11" placeholder="auto, or e.g. x2,x1,x0" value="auto">
       <div style="padding-top:5px;"></div>
       <div class="fill">
         <div class="center">Adds the BDD to the graph.</div>
@@ -195,6 +199,7 @@
       <div id="cont-bddinfo" style="display: none"></div>
       <div id="cont-overlay">
         <span id="loadtext">Loading...</span>
+        <canvas id="canvas2"></canvas>
         <div id="helptext" style="display: none">
           <button class="topright" type="button" onclick="Module.__platform_ui_button_help()">×</button>
           <h3>About</h3>

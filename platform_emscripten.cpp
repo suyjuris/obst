@@ -146,6 +146,9 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     Webgl_context* context = (Webgl_context*)user_data;
     emscripten_get_element_css_size("canvas", &context->width, &context->height);
     emscripten_set_canvas_element_size("canvas", (int)context->width, (int)context->height);
+    global_context.screen_w = (s64)context->width;
+    global_context.screen_h = (s64)context->height;
+
     context->canvas_x = 0; // In the emscripten environment there is only the canvas to draw on
     context->canvas_y = 0;
     glViewport(0.0, 0.0, context->width, context->height);
@@ -154,66 +157,9 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     return true;
 }
 
-// Render text into the currently selected TEXTURE_2D with the specified size. Writes the offsets
-// into offsets
-EM_JS(int, _platform_text_prepare, (int size, int w, float* offsets), {
-    var canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = w;
-    var ctx = canvas.getContext("2d");
-    ctx.fillStyle = "black";
-    ctx.font = size + "px sans-serif";
-    ctx.textAlign = "start";
-    ctx.textBaseline = "top";
-    
-    // I would really like to use the advanced text measurement options here, but they are not yet
-    // made available by Firefox and Chrome. This measures how high the 0 is, which I found better
-    // for cross-browser consistency than just trusting the fonts to have similar offsets.
-    ctx.clearRect(0, 0, size, size);
-    var m = ctx.measureText("0");
-    ctx.fillText("0", 0.5, 0.5);
-    var i;
-    var data = ctx.getImageData(0, 0, m.width, size);
-    var actualTop = 0;
-    var actualBot = 0;
-    var greater_zero = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
-    for (i = 0; i < size; i++) {
-        var flag = data.data.slice(i*4*m.width, (i+1)*4*m.width).some(greater_zero);
-        if (flag) {
-            actualTop = i+2;
-        }
-        if (!flag && actualBot == i) {
-            actualBot = i+1;
-        }
-    }
-
-    ctx.clearRect(0, 0, w, w);
-    
-    var i;
-    var x = 1;
-    var y = 1;
-    for (i = 0; i < 12; i++) {
-        // We just need the digits, T and F as glyphs
-        var s = i < 10 ? ""+i : i == 10 ? "F" : "T";
-        var m = ctx.measureText(s);
-        ctx.fillText(s, x+0.5, y+0.5);
-        setValue(offsets+i*16,     x           /w, "float");
-        setValue(offsets+i*16+ 4, (y+actualBot)/w, "float");
-        setValue(offsets+i*16+ 8, (x+m.width)  /w, "float");
-        setValue(offsets+i*16+12, (y+actualTop)/w, "float");
-        x = x + m.width + 1;
-        if (x + size >= w) {
-            x = 1;
-            y = y + size + 1;
-        }
-    }
-    var gl = document.getElementById("canvas").getContext("webgl");
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    return actualTop - actualBot;
-});
-
 EM_JS(int, _platform_text_prepare_init, (int canvas_size, float font_size), {
-    var canvas = document.createElement("canvas");
+    //var canvas = document.createElement("canvas");
+    var canvas = document.getElementById("canvas2");
     Module.text_prepare_canvas = canvas;
     canvas.width = canvas_size;
     canvas.height = canvas_size;
@@ -231,17 +177,19 @@ EM_JS(int, _platform_text_prepare_init, (int canvas_size, float font_size), {
     ctx.fillText("E", 0.5, 0.5);
     var i;
     var data = ctx.getImageData(0, 0, m.width, font_size);
-    var actual_top = 0;
-    var actual_bot = 0;
+    var actual_top = -1;
+    var actual_bot = -1;
     var is_filled = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
+    var last_flag = false;
     for (i = 0; i < font_size; i++) {
         var flag = data.data.slice(i*4*m.width, (i+1)*4*m.width).some(is_filled);
-        if (flag) {
-            actual_top = i+2;
+        if (!last_flag && flag) {
+            actual_top = font_size - i;
         }
-        if (!flag && actual_bot == i) {
-            actual_bot = i+1;
+        if (last_flag && !flag) {
+            actual_bot = font_size - i;
         }
+        last_flag = flag;
     }
 
     ctx.clearRect(0, 0, canvas_size, canvas_size);
@@ -250,29 +198,37 @@ EM_JS(int, _platform_text_prepare_init, (int canvas_size, float font_size), {
     return font_size - actual_bot;
 });
 
-EM_JS(int, _platform_text_prepare_char, (char* c, bool italics, float size, int x, int y), {
+EM_JS(int, _platform_text_prepare_char, (char* c, bool italics, float size, int x, int y, int* out_width, int* out_height, int* out_advance, int* out_xoff), {
     var canvas = Module.text_prepare_canvas;
     var ctx = canvas.getContext("2d");
 
+    var pad;
     if (italics) {
-        ctx.font = size + "px italics sans-serif";
+        ctx.font = "italic " + size + "px serif";
+        pad = size / 4;
     } else {
         ctx.font = size + "px sans-serif";
+        pad = 0;
     }
     
     var s = UTF8ToString(c);
-    ctx.fillText(s, x+0.5, y+0.5);
-    return ctx.measureText(s);
+    ctx.fillText(s, x+pad+0.5, y+0.5);
+    var advance = ctx.measureText(s).width;
+    var width = advance + 2*pad;
+    setValue(out_width,   width,   'i32');
+    setValue(out_height,  size+2,  'i32');
+    setValue(out_advance, advance, 'i32');
+    setValue(out_xoff,    -pad,    'i32');
 });
 
 
 void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* ascent_out) {
-    int texture_size = 1024; //@Cleanup Adaptive size
+    int texture_size = 512; //@Cleanup Adaptive size
 
     int ascent = _platform_text_prepare_init(texture_size, size);
     if (ascent_out) *ascent_out = ascent;
     
-    int x = 0, y = 0;
+    int x = 1, y = 1;
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = webgl_bddlabel_index_char(i);
         bool italicized;
@@ -281,27 +237,30 @@ void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offset
 
         float font_size = (float)size;
         if (small) font_size *= small_frac;
+
+        int width, height, advance, xoff;
+        _platform_text_prepare_char((char*)arr.data, italicized and not small, font_size, x, y, &width, &height, &advance, &xoff);
+        int ascent_i = small ? (int)std::round((float)ascent * small_frac) : ascent;
         
-        int advance = _platform_text_prepare_char((char*)arr.data, italicized and not small, font_size, x, y);
-        x += advance;
+        Text_box box;
+        box.x0 = xoff;
+        box.y0 = (float)(-ascent_i);
+        box.x1 = (float)(xoff + width);
+        box.y1 = (float)(height-ascent_i);
+        box.s0 = (float) x           / (float)texture_size;
+        box.t0 = (float) y           / (float)texture_size;
+        box.s1 = (float)(x + width ) / (float)texture_size;
+        box.t1 = (float)(y + height) / (float)texture_size;
+        box.advance = (float)advance;
+        box.font = -1;
+        
+        x += width+1;
         if (x >= texture_size) {
-            x = 0;
-            y += size;
+            x = 1;
+            y += size+2 + 1;
             --i;
             continue;
         }
-        
-        Text_box box;
-        box.x0 = 0.f;
-        box.y0 = (float)-ascent;
-        box.x1 = (float)advance;
-        box.y1 = (float)(size - ascent);
-        box.s0 = box.x0 + (float)x;
-        box.t0 = box.y0 + (float)y;
-        box.s1 = box.x1 + (float)x;
-        box.t1 = box.y1 + (float)y;
-        box.advance = (float)advance;
-        box.font = -1;
 
         (*offsets)[i] = box;
     }
@@ -453,6 +412,42 @@ extern "C" void OBST_EM_EXPORT(_platform_ui_button_opr) () {
     }
 }
 
+extern "C" void OBST_EM_EXPORT(_platform_ui_button_typer) () {
+    Array_t<u8> type_str = platform_ui_value_get(Ui_elem::CREATE_TYPE);
+    defer { platform_ui_value_free(type_str); };
+    assert(type_str.size == 1);
+
+    if (type_str[0] == 'n') {
+        EM_ASM(
+            var a = document.getElementById("create_nums");
+            var b = document.getElementById("create_form");
+            a.style.display = "";
+            b.style.display = "none";
+            a.style.height = b.style.height;
+            document.getElementById("create_base").disabled = false;
+            document.getElementById("create_base-cont").style.color = "";
+            document.getElementById("create_order-cont").textContent = "Bit order:";
+            document.getElementById("create_bits").style.display = "";
+            document.getElementById("create_vars").style.display = "none";
+        );
+    } else if (type_str[0] == 'f') {
+        EM_ASM(
+            var a = document.getElementById("create_form");
+            var b = document.getElementById("create_nums");
+            a.style.display = "";
+            b.style.display = "none";
+            a.style.height = b.style.height;
+            document.getElementById("create_base").disabled = true;
+            document.getElementById("create_base-cont").style.color = "rgba(0,0,0,0.5)";
+            document.getElementById("create_order-cont").textContent = "Variable order:";
+            document.getElementById("create_vars").style.display = "";
+            document.getElementById("create_bits").style.display = "none";
+        );
+    } else {
+        assert_false;
+    }
+}
+
 // Show/hide the helptext
 void platform_ui_button_help() {
     global_ui.is_helptext_visible ^= 1;
@@ -581,7 +576,7 @@ EM_BOOL _platform_ui_key_press(int, EmscriptenKeyboardEvent const* event, void*)
 
 // We want to collect information on whether the following elements are focused or not. If any of
 // them are, we ignore keypresses.
-char const* focusable_ids[] = {"create_nums", "create_base", "create_bits", "op_node0", "op_node1", 0};
+char const* focusable_ids[] = {"create_nums", "create_form", "create_base", "create_bits", "create_vars", "op_node0", "op_node1", 0};
 EM_BOOL _platform_ui_focus(int event_type, EmscriptenFocusEvent const* event, void*) {
     u64 id;
     for (id = 0; focusable_ids[id]; ++id) {
@@ -658,6 +653,8 @@ int OBST_EM_EXPORT(main) () {
 
     _platform_init_context(&global_context);
     application_init();
+
+    _platform_ui_button_typer();
     
     return 0;
 }

@@ -458,36 +458,61 @@ void context_amend_list(Bdd_store* store, Array_t<T> list, char const* fmt) {
     context_amend(store, "]");
 }
 
-void context_amend_number_base(Bdd_store* store, u64 number, s64 base, s64 digit_count = -1, s64 digit_mark = -1) {
-    char const* fmt = "<b>%</b>";
-    
+void context_amend_number_base(Bdd_store* store, u64 number, s64 base, s64 digit_count = -1, Array_t<u8> marked = {}) {
     // If there is no fixed count, determine the actual amount here
     if (digit_count == -1) {
         digit_count = 0;
         for (u64 ii = number; ii or digit_count == 0; ii /= base) ++digit_count;
+
+        for (u8 pos: marked) {
+            digit_count = std::max(digit_count, (s64)pos+1);
+        }
     }
 
-    s64 buf_size = digit_count + strlen(fmt) + 1;
+    s64 buf_size = digit_count + 7 * marked.size + 1;
     Array_t<char> buf = {(char*)alloca(buf_size), buf_size};
 
     s64 j = buf.size;
     buf[--j] = 0;
+    bool marking = false;
     for (s64 j_it = 0; j_it < digit_count; ++j_it) {
         s64 digit = number % base;
         number /= base;
             
         char c = (char)(digit < 10 ? '0' + digit : 'a' + digit - 10);
-        if (j_it == digit_mark) {
-            j -= strlen(fmt);
-            for (s64 k = 0; fmt[k]; ++k)
-                buf[j+k] = fmt[k] != '%' ? fmt[k] : c;
-        } else {
-            buf[--j] = c;
+
+        bool flag = false;
+        for (u8 pos: marked) flag |= pos == j_it;
+        if (not flag and marking) {
+            j -= 3;
+            memcpy(&buf[j], "<b>", 3);
         }
+        if (flag and not marking) {
+            j -= 4;
+            memcpy(&buf[j], "</b>", 4);
+        }
+        marking = flag;
+        
+        buf[--j] = c;
     }
+    
+    if (marking) {
+        j -= 3;
+        memcpy(&buf[j], "<b>", 3);
+    }
+    
     context_amend(store, &buf[j]);
 }
+void context_amend_number_base(Bdd_store* store, u64 number, s64 base, s64 digit_count, s64 digit_mark_) {
+    if (digit_mark_ == -1) {
+        context_amend_number_base(store, number, base, digit_count);
+    } else {
+        u8 digit_mark = (u8)digit_mark_;
+        context_amend_number_base(store, number, base, digit_count, {&digit_mark, 1});
+    }
+}
 
+    
 void context_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base, s64 digit_count = -1, s64 digit_mark = -1) {
     context_amend(store, "[");
     bool first = true;
@@ -505,90 +530,6 @@ void context_pop(Bdd_store* store) {
     --store->snapshot_context.size;
     while (store->snapshot_context.size and store->snapshot_context[store->snapshot_context.size-1])
         --store->snapshot_context.size;
-}
-
-// Take a temporary bdd and finalise it, i.e. do deduplication and removal of unnecessary
-// nodes. This will push a description of the operation performed onto the context stack. (If
-// nothing was done, an empty entry is pushed.)
-//  If the bdd had a name, it will be preserved.
-u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
-    assert(bdd.flags & Bdd::TEMPORARY);
-    bdd.flags &= ~Bdd::TEMPORARY;
-    
-    if (bdd.child0 == bdd.child1) {
-        context_append(store, "Node %d ist superflous, remove", bdd.id);
-        return bdd.child0;
-    } else {
-        u32 bdd_id = bdd_insert(store, bdd);
-        if (bdd_id == bdd.id) {
-            store->bdd_data[bdd.id] = bdd;
-            bdd_name_amend_id(store, store->name_next++);
-            bdd_name_assign(store, &bdd);
-            context_append(store, "");
-        } else {
-            context_append(store, "Merging node %d with %d", bdd.id, bdd_id);
-        }
-        return bdd_id;
-    }
-}
-
-// Store the current state of the store into a snapshot, together with the additional visualisation
-// information.
-void take_snapshot(Bdd_store* store) {
-    // Compute the reachable set of nodes from the ones in snapshot_parents
-    Array_dyn<u32> reachable;
-    Array_t<u64> reached {(u64*)calloc((store->bdd_data.size+63)/64, sizeof(u64)), (store->bdd_data.size+63)/64};
-    
-    defer { array_free(&reachable); };
-    defer { array_free(&reached); };
-
-    for (u32 i: store->snapshot_parents) {
-        if (not bitset_get(reached, i)) {
-            array_push_back(&reachable, i);
-            bitset_set(&reached, i, 1);
-        }
-    }
-    bitset_set(&reached, 0, 1);
-
-    for (s64 i = 0; i < reachable.size; ++i) {
-        Bdd bdd = store->bdd_data[reachable[i]];
-        // Works implicitly for T and F
-        if (not bitset_get(reached, bdd.child0)) {
-            array_push_back(&reachable, bdd.child0);
-            bitset_set(&reached, bdd.child0, 1);
-        }
-        if (not bitset_get(reached, bdd.child1)) {
-            array_push_back(&reachable, bdd.child1);
-            bitset_set(&reached, bdd.child1, 1);
-        }
-    }
-
-    // Set the cosmetic flags
-    for (Bdd& i: store->bdd_data) {
-        i.flags &= ~Bdd::COSMETIC;
-    }
-    if (store->snapshot_cur_node.size) {
-        u32 cur = store->snapshot_cur_node[store->snapshot_cur_node.size-1];
-        store->bdd_data[cur].flags |= Bdd::CURRENT;
-    }
-    for (u32 i: store->snapshot_marked) {
-        store->bdd_data[i].flags |= Bdd::MARKED;
-    }
-    for (u32 i: store->snapshot_marked_e) {
-        store->bdd_data[i >> 1].flags |= i & 1 ? Bdd::MARKED_E1 : Bdd::MARKED_E0;
-    }
-
-    // Save nodes and context into the snapshot
-    for (u32 i: reachable) {
-        array_push_back(&store->snapshot_data_bdd, store->bdd_data[i]);
-    }
-    array_append(&store->snapshot_data_context, store->snapshot_context);
-    // Commit the snapshot
-    array_push_back(&store->snapshots, {(u64)store->snapshot_data_bdd.size, (u64)store->snapshot_data_context.size});
-
-    // Reset the marked nodes
-    store->snapshot_marked.size = 0;
-    store->snapshot_marked_e.size = 0;
 }
 
 // Regarding the mapping: We map [22,127) in ASCII to [0,105), and then 128 | [22,127) to 105 +
@@ -659,6 +600,95 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
         context_amend(store, c_arr);
     }
     if (italics_on) context_amend(store, "</i>");
+}
+
+// Take a temporary bdd and finalise it, i.e. do deduplication and removal of unnecessary
+// nodes. This will push a description of the operation performed onto the context stack. (If
+// nothing was done, an empty entry is pushed.)
+//  If the bdd had a name, it will be preserved.
+u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
+    assert(bdd.flags & Bdd::TEMPORARY);
+    bdd.flags &= ~Bdd::TEMPORARY;
+    
+    if (bdd.child0 == bdd.child1) {
+        context_append(store, "Node ");
+        context_amend_bdd(store, bdd.id);
+        context_append(store, " is superflous, remove");
+        return bdd.child0;
+    } else {
+        u32 bdd_id = bdd_insert(store, bdd);
+        if (bdd_id == bdd.id) {
+            store->bdd_data[bdd.id] = bdd;
+            bdd_name_amend_id(store, store->name_next++);
+            bdd_name_assign(store, &bdd);
+            context_append(store, "");
+        } else {
+            context_append(store, "Merging node ");
+            context_amend_bdd(store, bdd.id);
+            context_amend(store, " with ");
+            context_amend_bdd(store, bdd_id);
+        }
+        return bdd_id;
+    }
+}
+
+// Store the current state of the store into a snapshot, together with the additional visualisation
+// information.
+void take_snapshot(Bdd_store* store) {
+    // Compute the reachable set of nodes from the ones in snapshot_parents
+    Array_dyn<u32> reachable;
+    Array_t<u64> reached {(u64*)calloc((store->bdd_data.size+63)/64, sizeof(u64)), (store->bdd_data.size+63)/64};
+    
+    defer { array_free(&reachable); };
+    defer { array_free(&reached); };
+
+    for (u32 i: store->snapshot_parents) {
+        if (not bitset_get(reached, i)) {
+            array_push_back(&reachable, i);
+            bitset_set(&reached, i, 1);
+        }
+    }
+    bitset_set(&reached, 0, 1);
+
+    for (s64 i = 0; i < reachable.size; ++i) {
+        Bdd bdd = store->bdd_data[reachable[i]];
+        // Works implicitly for T and F
+        if (not bitset_get(reached, bdd.child0)) {
+            array_push_back(&reachable, bdd.child0);
+            bitset_set(&reached, bdd.child0, 1);
+        }
+        if (not bitset_get(reached, bdd.child1)) {
+            array_push_back(&reachable, bdd.child1);
+            bitset_set(&reached, bdd.child1, 1);
+        }
+    }
+
+    // Set the cosmetic flags
+    for (Bdd& i: store->bdd_data) {
+        i.flags &= ~Bdd::COSMETIC;
+    }
+    if (store->snapshot_cur_node.size) {
+        u32 cur = store->snapshot_cur_node[store->snapshot_cur_node.size-1];
+        store->bdd_data[cur].flags |= Bdd::CURRENT;
+    }
+    for (u32 i: store->snapshot_marked) {
+        store->bdd_data[i].flags |= Bdd::MARKED;
+    }
+    for (u32 i: store->snapshot_marked_e) {
+        store->bdd_data[i >> 1].flags |= i & 1 ? Bdd::MARKED_E1 : Bdd::MARKED_E0;
+    }
+
+    // Save nodes and context into the snapshot
+    for (u32 i: reachable) {
+        array_push_back(&store->snapshot_data_bdd, store->bdd_data[i]);
+    }
+    array_append(&store->snapshot_data_context, store->snapshot_context);
+    // Commit the snapshot
+    array_push_back(&store->snapshots, {(u64)store->snapshot_data_bdd.size, (u64)store->snapshot_data_context.size});
+
+    // Reset the marked nodes
+    store->snapshot_marked.size = 0;
+    store->snapshot_marked_e.size = 0;
 }
 
 
@@ -1180,7 +1210,9 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
     } else if (numbers.size == 1) {
         // Only one number remains. Unnecessary in principle.
         context_pop(store);
-        context_append(store, "Only item %lld remains, connect directly", numbers[0]);
+        context_append(store, "Only item %lld (", numbers[0]);
+        context_amend_number_base(store, numbers[0], 2, -1, levels);
+        context_amend(store, ") remains, connect directly");
         u32 child = bdd_from_list(store, numbers, array_subarray(levels, 1, levels.size));
         if ((numbers[0] >> levels[0] & 1) == 0) {
             bdd_temp.child0 = child;
@@ -3294,7 +3326,7 @@ struct Webgl_context {
     
     Draw_param draw_param;
     float font_size_max; // Font size of a fully-sized node (i.e. rx == draw_param.node_radius)
-    float font_small_frac = 0.7f; // The size of the small font is this fraction the size of the big one
+    float font_small_frac = 0.68f; // The size of the small font is this fraction the size of the big one
     float font_ascent; // The ascent of the font
     s64 font_regenerate; // Frames until font regenerates, after the user resizes the window
 
@@ -3341,9 +3373,6 @@ struct Webgl_context {
 
     Array_dyn<float> buf_rect_pos;
     Array_dyn<u8>    buf_rect_fill;
-
-    Array_dyn<float> buf_ui_pos;
-    Array_dyn<u8>    buf_ui_fill;
 
     // Names of the buffers for the vertex attributes of each shader
     Array_t<GLuint> buffers_bdd;
@@ -3422,7 +3451,7 @@ void webgl_text_prepare(Webgl_context* context) {
 
     float ascent;
     platform_text_prepare(font_size, context->font_small_frac, &context->text_pos, &ascent);
-    
+
     context->font_size_max = (float)font_size / context->scale;
     context->font_ascent   = (float)ascent    / context->scale;
 
@@ -3441,9 +3470,11 @@ void webgl_init(Webgl_context* context) {
 
 #ifdef OBST_PLATFORM_EMSCRIPTEN
 #define OBST_SHADER_F_PREAMBLE "precision mediump float;\n"
+#define OBST_SHADER_TEXT_CHANNEL "a"
 #else
 #define OBST_SHADER_F_PREAMBLE "\n"
-#endif    
+#define OBST_SHADER_TEXT_CHANNEL "r"
+#endif
     
     GLbyte shader_v_bdd[] =  
         "attribute vec2 pos;\n"
@@ -3625,7 +3656,7 @@ void webgl_init(Webgl_context* context) {
         "uniform sampler2D sampler;\n"
         "void main() {\n"
         "    vec4 col = v_fill;\n"
-        "    col.a *= texture2D(sampler, v_tpos).r;\n"
+        "    col.a *= texture2D(sampler, v_tpos)." OBST_SHADER_TEXT_CHANNEL ";\n"
         "    gl_FragColor = col;\n"
         "}\n";
 
@@ -3877,13 +3908,13 @@ void webgl_draw_text_bdd(
 
     float w, size_adj, ascent;
     _measure_str(context, str, size, &w, &size_adj, nullptr);
-    u8 fill[] = {a.fill[0], a.fill[1], a.fill[2], (u8)(a.fill[3] * 0.93f * a.name_alpha)};
+    u8 fill[] = {a.fill[0], a.fill[1], a.fill[2], (u8)(a.fill[3] * 0.75f * a.name_alpha)};
 
     float pad = 0.01f;
     float line_fac = 0.6f;
     
     bool oneline = true;
-    if (w > 2.f*a.rx) {
+    if (w > 1.93f*a.rx) {
         if (size_adj < size) {
             oneline = false;
         } else if (do_draw) {
@@ -3891,6 +3922,12 @@ void webgl_draw_text_bdd(
         }
     }
 
+    auto alnum = [](u8 c) {
+        return ('0' <= c and c <= '9') or ('a' <= c and c <= 'z')
+            or ('A' <= c and c <= 'Z') or (22  <= c and c <= 31);
+    };
+        
+    
     float alpha = a.stroke[3]/255.f * a.name_alpha;
     if (oneline) {
         webgl_draw_text(context, a.font_x, a.font_y, str, size, alpha, 0.f, do_draw, x1_out, y1_out);
@@ -3898,23 +3935,37 @@ void webgl_draw_text_bdd(
         if (y2_out) *y2_out = 0.f;
     } else {
         float fs = fac / context->scale;
+        s64 best = str.size;
+        float best_val = INFINITY;
+        float best_wn = w;
         float wn = 0.f;
-        s64 i;
-        for (i = 0; i < str.size; ++i) {
+        for (s64 i = 0; i+1 < str.size; ++i) {
+            u8 c0 = str[i  ] & 127;
+            u8 c1 = str[i+1] & 127;
+            float val = alnum(c0) and alnum(c1) ? 0.13f :
+                c0 == '(' ? 0.08f :
+                c0 == '~' ? 0.08f :
+                c1 == ')' ? 0.08f :
+                c1 == ',' ? 0.05f :
+                _is_operator(c0) ? 0.01f : 0.0f;
+                
             s64 index = webgl_bddlabel_char_index(str[i]);
             if (index == -1) continue;
             wn += std::round(context->text_pos[index].advance) * fs;
-            bool breakable = (str[i]&127) == ',' or (i+1 < str.size and ((str[i+1]&127) == '&' or (str[i+1]&127) == '|'
-                or (str[i+1]&127) == '^' or (str[i+1]&127) == '>' or (str[i+1]&127) == '<' or (str[i+1]&127) == '='));
-            if (wn > w/2.f and breakable) break;
+
+            val += std::abs(wn - w/2.f) / w;
+            if (val < best_val) {
+                best = i+1;
+                best_val = val;
+                best_wn = wn;
+            }
         }
-        i += i+1 < str.size;
-        float yoff = i < str.size ? size_adj * line_fac : 0.f;
-        webgl_draw_text(context, a.font_x,  a.font_y  + yoff, array_subarray(str, 0, i       ), size, alpha, 0.f, do_draw, x1_out, y1_out);
-        webgl_draw_text(context, a.font_x2, a.font_y2 - yoff, array_subarray(str, i, str.size), size, alpha, 0.f, do_draw, x2_out, y2_out);
+        float yoff = best < str.size ? size_adj * line_fac : 0.f;
+        webgl_draw_text(context, a.font_x,  a.font_y  + yoff, array_subarray(str, 0,    best    ), size, alpha, 0.f, do_draw, x1_out, y1_out);
+        webgl_draw_text(context, a.font_x2, a.font_y2 - yoff, array_subarray(str, best, str.size), size, alpha, 0.f, do_draw, x2_out, y2_out);
         if (do_draw) {
-            webgl_draw_rect(context, a.font_x - (w-wn)/2.f - pad, a.font_y - size_adj/2.f - yoff - pad, w-wn + 2.f*pad, size_adj + 2.f*pad, fill);
-            webgl_draw_rect(context, a.font_x - wn/2.f - pad, a.font_y - size_adj/2.f + yoff - pad, wn + 2.f*pad, size_adj + 2.f*pad, fill);
+            webgl_draw_rect(context, a.font_x - (w-best_wn)/2.f - pad, a.font_y - size_adj/2.f - yoff - pad, w-best_wn + 2.f*pad, size_adj + 2.f*pad, fill);
+            webgl_draw_rect(context, a.font_x - best_wn/2.f - pad, a.font_y - size_adj/2.f + yoff - pad, best_wn + 2.f*pad, size_adj + 2.f*pad, fill);
         }
     }
 }
@@ -4387,7 +4438,7 @@ void webgl_frame_draw(Webgl_context* context) {
     OBST_DO_BUFFER(rect, RECT_POS,  buf_rect_pos,  3, GL_FLOAT, 0);
     OBST_DO_BUFFER(rect, RECT_FILL, buf_rect_fill, 4, GL_UNSIGNED_BYTE, 1);
 
-    glDrawArrays(GL_TRIANGLES, 0, context->buf_rect_pos.size / 2);
+    glDrawArrays(GL_TRIANGLES, 0, context->buf_rect_pos.size / 3);
 
     glUseProgram(context->program_text);
     glActiveTexture(GL_TEXTURE0);
@@ -5482,26 +5533,36 @@ void ui_frame_draw() {
     global_ui.time_diff[global_ui.time_diff_index] = now - then;}
 }
 
+void ui_set_frame(s64 frame) {
+    if (frame <= 0) {
+        frame = 0;
+    } else if (frame >= global_layouts.size) {
+        frame = global_layouts.size-1;
+    }
+    animation_set(&global_ui.anim_frame, (float)frame);
+    ui_context_refresh();
+    platform_main_loop_active(true);
+}
+
 // After updating the store, this re-renders the layouts and shows the results in the UI.
 void ui_commit_store() {
     layout_render(&global_layouts, &global_context.layout_max_x, &global_context.layout_max_y,
         &global_context.layout_max_points, global_store);
     global_context.font_regenerate = 1;
     global_context.not_completely_empty = true;
+
+    platform_fmt_store_simple(0, "", Text_fmt::SLOT_ERRORINFO);
     
     array_push_back(&global_ui.frame_section, global_layouts.size);
     float frame = global_ui.frame_section[global_ui.frame_section.size-2];
-    animation_set(&global_ui.anim_frame, frame);
-
-    ui_frame_draw();
-    
-    ui_context_refresh();
-    platform_fmt_store_simple(0, "", Text_fmt::SLOT_ERRORINFO);
+    ui_set_frame(frame);
 }
 
 // Called when the user presses the button responsible for union, intersection and negation.
 void ui_button_op() {
     if (not global_context.not_completely_empty) return;
+    
+    global_ui.novice_create_helper = 2; // Deactivate the "Create and Add doubleclick assistant"
 
     Array_t<u8> op_str   = platform_ui_value_get(Ui_elem::OPERATION);
     Array_t<u8> arg0_str = platform_ui_value_get(Ui_elem::OP_NODE0);
@@ -5651,6 +5712,7 @@ void ui_button_create() {
         global_ui.novice_create_helper = 2;
         global_ui.anim_frame.duration = (float)global_layouts.size * 0.5f;
         animation_add(&global_ui.anim_frame, INFINITY, 0.f, (float)std::max(global_layouts.size-1, 0ll));
+        global_ui.anim_frame.speed0 = (global_ui.anim_frame.value1 - global_ui.anim_frame.value0) / global_ui.anim_frame.duration;
         ui_context_refresh();
         platform_main_loop_active(true);
         return;
@@ -5675,6 +5737,8 @@ void ui_button_create() {
 
 // Called when the 'Remove all' button is pressed. Also used to initialise the UI.
 void ui_button_removeall() {
+    global_ui.novice_create_helper = 2; // Deactivate the "Create and Add doubleclick assistant"
+
     bdd_store_init(&global_store);
     global_layouts.size = 0;
 
@@ -5725,17 +5789,6 @@ void ui_button_move(float diff) {
     animation_add(&global_ui.anim_frame, diff, 0.f, (float)std::max(global_layouts.size-1, 0ll));
     ui_context_refresh();
     platform_main_loop_active(true);
-}
-
-void ui_set_frame(s64 frame) {
-    if (frame <= 0) {
-        frame = 0;
-    } else if (frame >= global_layouts.size) {
-        frame = global_layouts.size-1;
-    }
-    animation_set(&global_ui.anim_frame, (float)frame);
-    ui_context_refresh();
-    platform_main_loop_active(false);
 }
 
 // Used to jump to the next/last point where an algorithm started.
@@ -5799,6 +5852,8 @@ bool ui_key_press(Key key) {
 void application_init() {
     bdd_store_init(&global_store);
     ui_button_removeall();
+    
+    global_ui.novice_create_helper = 0; // Activate the "Create and Add doubleclick assistant"
 }
 
 // # License information
