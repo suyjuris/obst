@@ -214,7 +214,7 @@ struct Lui_context {
     };
     enum Font_instance_id: u8 {
         FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL,
-        FONT_LUI_SANS, FONT_BDD_NORMAL, FONT_BDD_ITALICS, FONT_BDD_SMALL,
+        FONT_LUI_SANS, FONT_LUI_BUTTON, FONT_BDD_NORMAL, FONT_BDD_ITALICS, FONT_BDD_SMALL,
         FONT_COUNT
     };
 
@@ -740,7 +740,7 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
     array_push_back(&prep->cache, *box);
 }
 
-void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* lineoff, float* ascent) {
+void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* linoff, float* ascent) {
     Lui_context* context = &global_platform.gl_context;
     
     _platform_init_font(Lui_context::FONT_BDD_NORMAL,  -1, font_size             );
@@ -1123,6 +1123,8 @@ void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
         font = Lui_context::FONT_LUI_SMALL;
     } else if (flags & Text_fmt::SANS) {
         font = Lui_context::FONT_LUI_SANS;
+    } else if (flags & Text_fmt::BUTTON) {
+        font = Lui_context::FONT_LUI_BUTTON;
     } else {
         font = Lui_context::FONT_LUI_NORMAL;
     }
@@ -1190,7 +1192,7 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
     assert(context);
 
     s64 text_w = 0, text_h = 0;
-    u8 font = Lui_context::FONT_LUI_SANS;
+    u8 font = Lui_context::FONT_LUI_BUTTON;
     
     Array_t<Text_box> boxes = context->fmt_slots[slot];
     if (boxes.size) {
@@ -1226,7 +1228,7 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
 }
 
 void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, Resizer* resizer=nullptr, bool only_measure=false) {
-    u8 font = Lui_context::FONT_LUI_SANS;
+    u8 font = Lui_context::FONT_LUI_BUTTON;
     auto font_inst = context->fonts[font];
     Padding pad = {7, 5, 3, 3};
     context->padding_entry = pad;
@@ -1363,7 +1365,8 @@ void _platform_init(Platform_state* platform) {
     _platform_init_font(Lui_context::FONT_LUI_BOLD, 2, 20);
     _platform_init_font(Lui_context::FONT_LUI_HEADER, 2, 26);
     _platform_init_font(Lui_context::FONT_LUI_SMALL, 0, 15);
-    _platform_init_font(Lui_context::FONT_LUI_SANS, 3, 16.7);
+    _platform_init_font(Lui_context::FONT_LUI_SANS, 3, 20);
+    _platform_init_font(Lui_context::FONT_LUI_BUTTON, 3, 16.7);
     _platform_init_font(Lui_context::FONT_BDD_NORMAL, 3, 20);
     _platform_init_font(Lui_context::FONT_BDD_ITALICS, 1, 20);
     _platform_init_font(Lui_context::FONT_BDD_SMALL, 3, 20);
@@ -1428,7 +1431,7 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(0, "First node:", Lui_context::SLOT_LABEL_FIRSTNODE);
     platform_fmt_store_simple(0, "Second node:", Lui_context::SLOT_LABEL_SECONDNODE);
 
-    u64 button_flag = Text_fmt::SANS | Text_fmt::COMPACT | Text_fmt::NOSPACE;
+    u64 button_flag = Text_fmt::BUTTON | Text_fmt::COMPACT | Text_fmt::NOSPACE;
     platform_fmt_store_simple(button_flag, "Create and add", Lui_context::SLOT_BUTTON_CREATE);
     platform_fmt_store_simple(button_flag, "Calculate union", Lui_context::SLOT_LABEL_OP_U);
     platform_fmt_store_simple(button_flag, "Calculate intersection", Lui_context::SLOT_LABEL_OP_I);
@@ -1814,7 +1817,7 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
             Text_box box;
 
             // This should basicall just do a lookup
-            lui_text_prepare_word(context, &context->prep_ui, Lui_context::FONT_LUI_SANS,
+            lui_text_prepare_word(context, &context->prep_ui, Lui_context::FONT_LUI_BUTTON,
                 array_subarray(entry->text, c_i, c_i+c_len), &box);
             
             width += (s64)std::round(box.advance);
@@ -1831,7 +1834,7 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
             auto c_arr = array_subarray(entry->text, entry->cursor, entry->cursor+c_len);
 
             // This should basicall just do a lookup
-            lui_text_prepare_word(context, &context->prep_ui, Lui_context::FONT_LUI_SANS, c_arr, &box);
+            lui_text_prepare_word(context, &context->prep_ui, Lui_context::FONT_LUI_BUTTON, c_arr, &box);
 
             s64 advance = (s64)std::round(box.advance);
             if (advance >= 2 * width) break;
@@ -2106,7 +2109,7 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
 
         if (action == Key::SCROLL_DOWN or action == Key::SCROLL_UP) {
             s64 diff = (action == Key::SCROLL_DOWN) - (action == Key::SCROLL_UP);
-            s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_SANS].newline);
+            s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_BUTTON].newline);
             entry->offset_y += diff * line;
 
             s64 total_rows = 1;
@@ -2125,7 +2128,7 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
         if (consumed) {
             Rect bb = context->elem_bb[entry->slot];
             Padding pad = context->padding_entry;
-            auto font_inst = context->fonts[Lui_context::FONT_LUI_SANS];
+            auto font_inst = context->fonts[Lui_context::FONT_LUI_BUTTON];
                 
             s64 tx = x - bb.x - pad.mar_x - pad.pad_x + entry->offset_x;
             s64 ty = y - bb.y - pad.mar_y - pad.pad_y + entry->offset_y;
@@ -2153,7 +2156,7 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
         } else if (width > entry->offset_x + entry->draw_w) {
             entry->offset_x = width - entry->draw_w;
         }
-        s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_SANS].newline);
+        s64 line = (s64)std::round(context->fonts[Lui_context::FONT_LUI_BUTTON].newline);
         s64 height = entry->cursor_row * line;
         if (height < entry->offset_y) {
             entry->offset_y = height;
