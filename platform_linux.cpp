@@ -37,7 +37,6 @@ typedef s32 stbtt_int32;
 Array_t<u8> array_load_from_file(Array_t<u8> path) {
     assert(*path.end() == 0);
     FILE* f = fopen((char*)path.data, "rb");
-    int exit_code;
 
     if (f == nullptr) {
         fprintf(stderr, "Error: Could not open file '%s' for reading (1)\n", path.data);
@@ -218,6 +217,9 @@ struct Lui_context {
         FONT_COUNT
     };
 
+constexpr static u8 font_magic[] = {(u8)15, (u8)183, (u8)0, (u8)188, (u8)140, (u8)140, (u8)156, (u8)250, (u8)81, (u8)112, (u8)36, (u8)51, (u8)118, (u8)200, (u8)159, (u8)15};
+    Array_t<u8*> font_files;
+    Array_t<Array_t<u8>> font_file_data;
     Array_t<stbtt_fontinfo> font_info;
     Array_t<Font_instance> fonts;
 
@@ -304,6 +306,8 @@ struct Lui_context {
     // State for helptext
     bool helptext_active = false;
 };
+
+constexpr u8 Lui_context::font_magic[];
 
 namespace Platform_clipboard {
 enum Types: u8 {
@@ -1339,27 +1343,21 @@ void _platform_init(Platform_state* platform) {
     _platform_init_gl(platform);
 
     // Font stuff
-    char* font_files[] = {
-        "DejaVuSerif.ttf",
-        "DejaVuSerif-Italic.ttf",
-        "DejaVuSerif-Bold.ttf",
-        "DejaVuSans.ttf",
-    };
-    context->font_info = array_create<stbtt_fontinfo>(sizeof(font_files) / sizeof(font_files[0]));
+    context->font_info = array_create<stbtt_fontinfo>(context->font_files.size);
 
-    for (s64 i = 0; i < context->font_info.size; ++i) {
-        // @Leak: We do not store a pointer to the font data directly. However, this data is freed
-        // precisely when we exit anyway.
-        Array_t<u8> font_data = array_load_from_file(font_files[i]);
-        int code = stbtt_InitFont(&context->font_info[i], font_data.data, 0);
+    // Note: Ignore the last one, as that is the license
+    for (s64 i = 0; i+1 < context->font_info.size; ++i) {
+        int code = stbtt_InitFont(&context->font_info[i], context->font_file_data[i].data, 0);
         if (code == 0) {
-            fprintf(stderr, "Error: Could not parse font data in file %s\n", font_files[i]);
+            fprintf(stderr, "Error: Could not parse font data in file %s\n", context->font_files[i]);
             exit(101);
         }
     }
 
     context->fonts = array_create<Lui_context::Font_instance>(Lui_context::FONT_COUNT);
-    
+
+    // Note that the indices at the second to last parameter refer to the indices of the font files
+    // in Lui_context::font_files
     _platform_init_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
     _platform_init_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
     _platform_init_font(Lui_context::FONT_LUI_BOLD, 2, 20);
@@ -2906,7 +2904,210 @@ void linux_handle_selection_response(Platform_state* platform, XSelectionEvent* 
     }
 }
 
+bool _platform_fonts_load(Lui_context* context) {
+    constexpr char const* font_files_[] = {
+        "fonts/DejaVuSerif.ttf",
+        "fonts/DejaVuSerif-Italic.ttf",
+        "fonts/DejaVuSerif-Bold.ttf",
+        "fonts/DejaVuSans.ttf",
+        "fonts/LICENSE", // Note: The last filename will not be instanciated in font_info
+    };
+    context->font_files = {(u8**)font_files_, sizeof(font_files_) / sizeof(font_files_[0])};
+    
+    char const* path = "/proc/self/exe";
+    FILE* f = fopen(path, "rb");
+
+    if (f == nullptr) {
+        fprintf(stderr, "Error: Could not open file '%s' for reading (7)\n", path);
+        perror("Error"); exit(1125);
+    }
+
+    if (fseek(f, 0, SEEK_END) == -1) {
+        fprintf(stderr, "Error: Could not open file '%s' for reading (8)\n", path);
+        perror("Error"); exit(1126);
+    }
+
+    s64 f_size = ftell(f);
+    if (f_size == -1) {
+        fprintf(stderr, "Error: Could not open file '%s' for reading (9)\n", path);
+        perror("Error"); exit(1127);
+    }
+
+    struct Trailer {
+        char magic[sizeof(Lui_context::font_magic)];
+        s64 data_offset;
+    };
+    static_assert(sizeof(Lui_context::font_magic) % 8 == 0, "Trailer struct is not packed anymore");
+
+    auto read = [f, path](u8* into, s64 bytes) {
+        if (fread(into, 1, bytes, f) < bytes) {
+            if (ferror(f)) {
+                fprintf(stderr, "Error: Could not open file '%s' for reading (10)\n", path);
+                perror("Error"); exit(1129);
+            } else {
+                fprintf(stderr, "Error: Could not open file '%s' for reading (11)\n", path);
+                fprintf(stderr, "Error: Unexpected eof while reading file. (Concurrent modification?)\n");
+                exit(1130);
+            }
+        }
+    };
+    
+    Trailer trailer;
+
+    if (f_size < sizeof(trailer)) {
+        fprintf(stderr, "Error: File '%s' is less than %d bytes long\n", path, (int)sizeof(trailer));
+        exit(1131);
+    }
+    if (fseek(f, -sizeof(trailer), SEEK_CUR) == -1) {
+        fprintf(stderr, "Error: Could not open file '%s' for seeking (1)\n", path);
+        perror("Error"); exit(1128);
+    }
+    read((u8*)&trailer, sizeof(trailer));
+
+    // @Leak: This is never freed intentionally, the fonts are used for the whole duration
+    // of the program.
+    context->font_file_data = array_create<Array_t<u8>>(context->font_files.size);
+    
+    bool result;
+    if (memcmp(trailer.magic, &Lui_context::font_magic, sizeof(Lui_context::font_magic)) != 0) {
+        // The magic number is not there, so we load the fonts as separate files
+
+        for (s64 i = 0; i < context->font_files.size; ++i) {
+            context->font_file_data[i] = array_load_from_file((char*)context->font_files[i]);
+        }
+        result = false;
+    } else {
+        // Extract the data from the executable
+
+        if (fseek(f, trailer.data_offset, SEEK_SET) == -1) {
+            fprintf(stderr, "Error: Could not open file '%s' for seeking (2)\n", path);
+            perror("Error"); exit(1132);
+        }
+
+        s64 font_count;
+        read((u8*)&font_count, sizeof(font_count));
+
+        if (font_count != context->font_files.size) {
+            fprintf(stderr, "Error: While loading fonts from executable, got a mismatch in number of fonts\n");
+            perror("Error"); exit(1133);
+        }
+
+        Array_t<s64> font_lengths {(s64*)alloca(font_count * sizeof(s64)), font_count};
+        read((u8*)font_lengths.data, font_count * sizeof(s64));
+
+        for (s64 i = 0; i < font_count; ++i) {
+            context->font_file_data[i] = array_create<u8>(font_lengths[i]);
+            read((u8*)context->font_file_data[i].data, context->font_file_data[i].size);
+        }
+        
+        result = true;
+    }
+
+    if (fclose(f)) {
+        // Something weird is happening here, but hey, we already have our data.
+        fprintf(stderr, "Warning: Could not close file '%s'\n", path);
+        perror("Warning:");
+    }
+    
+    return result;
+}
+
+void _platform_fonts_pack(Lui_context* context) {
+    char const* path1 = "/proc/self/exe";
+    char const* path2 = "obst_packed";
+    
+    FILE* f1 = fopen(path1, "rb");
+
+    if (f1 == nullptr) {
+        fprintf(stderr, "Error: Could not open file '%s' for reading (12)\n", path1);
+        perror("Error"); exit(1201);
+    }
+
+    FILE* f2 = fopen(path2, "wb");
+
+    if (f2 == nullptr) {
+        fprintf(stderr, "Error: Could not open file '%s' for writing (1)\n", path2);
+        perror("Error"); exit(1202);
+    }
+
+    char buf[4096];
+    bool done = false;
+    while (not done) {
+        s64 read = fread(buf, 1, sizeof(buf), f1);
+        if (read < sizeof(buf)) {
+            if (ferror(f1)) {
+                fprintf(stderr, "Error: Could not open file '%s' for reading (13)\n", path1);
+                perror("Error"); exit(1203);
+            }
+            done = true;
+        }
+        
+        if (fwrite(buf, 1, read, f2) < read) {
+            fprintf(stderr, "Error: Could not open file '%s' for writing (2)\n", path2);
+            perror("Error"); exit(1204);
+        }
+    }
+    
+    s64 f_size = ftell(f2);
+    if (f_size == -1) {
+        fprintf(stderr, "Error: Could not open file '%s' for reading (14)\n", path2);
+        perror("Error"); exit(1205);
+    }
+
+    auto write = [f2, path2](u8* data, s64 size) {
+        if (fwrite(data, 1, size, f2) < size) {
+            fprintf(stderr, "Error: Could not open file '%s' for writing (3)\n", path2);
+            perror("Error"); exit(1206);
+        }
+    };
+
+    write((u8*)&context->font_files.size, sizeof(s64));
+    for (Array_t<u8> i: context->font_file_data) {
+        write((u8*)&i.size, sizeof(s64));
+    }
+    for (Array_t<u8> i: context->font_file_data) {
+        write((u8*)i.data, i.size);
+    }
+    write((u8*)Lui_context::font_magic, sizeof(Lui_context::font_magic));
+    write((u8*)&f_size, sizeof(s64));
+
+    if (fclose(f2)) {
+        fprintf(stderr, "Error: Could not close file '%s'\n", path2);
+        perror("Error:"); exit(1207);
+    }
+    
+    if (fclose(f1)) {
+        // Something weird is happening here, but hey, we already have our data.
+        fprintf(stderr, "Warning: Could not close file '%s'\n", path1);
+        perror("Warning:");
+    }
+}
+
 int main(int argc, char** argv) {
+    bool print_help = false;
+    if (argc > 2) {
+        print_help = true;
+    } else {
+        _platform_fonts_load(&global_platform.gl_context);
+    }
+
+    if (argc == 2) {
+        Array_t<u8> arg = {(u8*)argv[1], (s64)strlen(argv[1])};
+        if (array_equal_str(arg, "--font-license")) {
+            
+        } else if (array_equal_str(arg, "--pack")) {
+            _platform_fonts_pack(&global_platform.gl_context);
+            printf("Packing successful.\n");
+            exit(0);
+        } else {
+            print_help = true;
+        }
+    }
+
+    if (print_help) {
+        exit(2);
+    }
+    
     // Do the OpenGL and X dance. I would recommend everyone to not read this code, if at all
     // possible, to preserve sanity. This should have been a single function call. If you must,
     // refer to the GLX 1.4 specification, the GLX_ARB_create_context extension, and the Xlib
