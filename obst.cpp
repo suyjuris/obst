@@ -607,13 +607,14 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
 // nothing was done, an empty entry is pushed.)
 //  If the bdd had a name, it will be preserved.
 u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
+    // @Cleanup: Give temporary nodes names
     assert(bdd.flags & Bdd::TEMPORARY);
     bdd.flags &= ~Bdd::TEMPORARY;
     
     if (bdd.child0 == bdd.child1) {
         context_append(store, "Node ");
         context_amend_bdd(store, bdd.id);
-        context_append(store, " is superflous, remove");
+        context_amend(store, " is superflous, remove");
         return bdd.child0;
     } else {
         u32 bdd_id = bdd_insert(store, bdd);
@@ -3327,6 +3328,7 @@ struct Webgl_context {
     Draw_param draw_param;
     float font_size_max; // Font size of a fully-sized node (i.e. rx == draw_param.node_radius)
     float font_small_frac = 0.68f; // The size of the small font is this fraction the size of the big one
+    float font_linoff; // Difference between the ascent of the font and the height of an E. Only used for emscripten.
     float font_ascent; // The ascent of the font
     s64 font_regenerate; // Frames until font regenerates, after the user resizes the window
 
@@ -3449,10 +3451,11 @@ void webgl_text_prepare(Webgl_context* context) {
         context->draw_param.node_radius * context->draw_param.squish_fac * context->draw_param.font_frac * context->scale
     );
 
-    float ascent;
-    platform_text_prepare(font_size, context->font_small_frac, &context->text_pos, &ascent);
+    float linoff, ascent;
+    platform_text_prepare(font_size, context->font_small_frac, &context->text_pos, &linoff, &ascent);
 
     context->font_size_max = (float)font_size / context->scale;
+    context->font_linoff   = (float)linoff    / context->scale;
     context->font_ascent   = (float)ascent    / context->scale;
 
     glGenerateMipmap(GL_TEXTURE_2D);
@@ -3815,7 +3818,7 @@ Array_t<u8> _get_bdd_name(Bdd_store* store, u32 name) {
     }
 }
 
-void _measure_str(Webgl_context* context, Array_t<u8> text, float size, float* w_, float* size_adj_, float* ascent_) {
+void _measure_str(Webgl_context* context, Array_t<u8> text, float size, float* w_, float* size_adj_, float* ascent_, bool* small) {
     float fs = 1.f / context->scale * size / context->font_size_max;
     float w = 0.f;
     for (u8 c: text) {
@@ -3828,15 +3831,21 @@ void _measure_str(Webgl_context* context, Array_t<u8> text, float size, float* w
     for (u8 c: text) only_small &= (bool)(c & 128);
     
     float size_adj = size;
-    float ascent = context->font_ascent * size / context->font_size_max;;
+    float ascent = context->font_ascent * size / context->font_size_max;
+    float linoff = context->font_linoff * size / context->font_size_max;
     if (only_small) {
         size_adj *= context->font_small_frac;
         ascent   *= context->font_small_frac;
+        linoff   *= context->font_small_frac;
     }
+
+    size_adj -= linoff;
+    ascent   -= linoff;
     
     if (w_) *w_ = w;
     if (size_adj_) *size_adj_ = size_adj;
     if (ascent_) *ascent_ = ascent;
+    if (small) *small = only_small;
 }
 
 void webgl_draw_text(
@@ -3857,8 +3866,8 @@ void webgl_draw_text(
     // pixel-coordinates has to be taken into account by the rounding.
 
     float fs = 1.f / context->scale * size / context->font_size_max;
-    float size_total, size_adj, ascent;
-    _measure_str(context, text, size, &size_total, &size_adj, &ascent);
+    float size_total, size_adj, linoff, ascent;
+    _measure_str(context, text, size, &size_total, &size_adj, &ascent, nullptr);
     
     x += - size_total * (0.5f + align * 0.5f) - 0.5f / context->scale;
     y += - (ascent - size_adj*0.5f)           - 0.5f / context->scale;
@@ -3907,7 +3916,8 @@ void webgl_draw_text_bdd(
     float size = context->font_size_max * fac;
 
     float w, size_adj, ascent;
-    _measure_str(context, str, size, &w, &size_adj, nullptr);
+    bool small;
+    _measure_str(context, str, size, &w, &size_adj, nullptr, &small);
     u8 fill[] = {a.fill[0], a.fill[1], a.fill[2], (u8)(a.fill[3] * 0.75f * a.name_alpha)};
 
     float pad = 0.01f;
@@ -3915,7 +3925,7 @@ void webgl_draw_text_bdd(
     
     bool oneline = true;
     if (w > 1.93f*a.rx) {
-        if (size_adj < size) {
+        if (small) {
             oneline = false;
         } else if (do_draw) {
             webgl_draw_rect(context, a.font_x - w/2.f - pad, a.font_y - size_adj/2.f - pad, w + 2.f*pad, size_adj + 2.f*pad, fill);
@@ -5123,8 +5133,21 @@ char* name[] = {
 
 struct Animation {
     double begin = 0.0, duration = 1.0;
-    float value0 = 0.f, value1, speed0;
+    float value0 = 0.f, value1, speed0, speed1;
 };
+
+// Return the coefficients for the polynomial of the animation. a is the constant term. The
+// polynomial p is the unique third-degree polynomial with
+//     p (0) = anim->value0
+//     p (1) = anim->speed0
+//     p'(0) = anim->value1
+//     p'(1) = anim->speed1
+void _animation_coeff(Animation* anim, float* a, float* b, float* c, float* d) {
+    *a = anim->value0;
+    *b = anim->speed0;
+    *c = 3.f*(anim->value1 - *a) - 2.f*(*b) - anim->speed1;
+    *d = 2.f*(*a - anim->value1) + *b + anim->speed1;
+}
 
 void animation_add(Animation* anim, float add, float min, float max) {
     double now = platform_now();
@@ -5133,16 +5156,18 @@ void animation_add(Animation* anim, float add, float min, float max) {
         anim->speed0 = 0.f;
         // value0 remains
         anim->value1 = anim->value0 + add;
+        anim->speed1 = 0.f;
     } else {
         float x = (float)((now - anim->begin) / anim->duration);
+        
+        float a, b, c, d;
+        _animation_coeff(anim, &a, &b, &c, &d);
+        
         anim->begin = now;
-        anim->value0 = anim->value0 + x * anim->speed0
-            + x*x * (anim->value1 - anim->value0 - anim->speed0)
-            + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
-        anim->speed0 = anim->speed0
-            + 2.f*x * (anim->value1 - anim->value0 - anim->speed0)
-            + (2.f-3.f*x)*x * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+        anim->value0 = ((d*x + c)*x + b)*x + a;
+        anim->speed0 = (3.f*d*x + 2.f*c)*x + b;
         anim->value1 += add;
+        anim->speed1 = 0.f;
     }
 
     anim->value1 = std::min(anim->value1, max);
@@ -5172,10 +5197,10 @@ float animation_get(Animation* anim, bool* need_redraw = nullptr) {
         anim->value0 = anim->value1;
         return anim->value0;
     }
-    
-    return anim->value0 + x * anim->speed0
-        + x*x * (anim->value1 - anim->value0 - anim->speed0)
-        + x*x*(1.f-x) * (2.f*anim->value1 - 2.f*anim->value0 - anim->speed0);
+
+    float a, b, c, d;
+    _animation_coeff(anim, &a, &b, &c, &d);
+    return ((d*x + c)*x + b)*x + a;
 }
 
 // Data for the UI
@@ -5710,9 +5735,10 @@ void ui_button_create() {
         global_ui.novice_create_helper = 1;
     } else if (global_ui.novice_create_helper == 1) {
         global_ui.novice_create_helper = 2;
-        global_ui.anim_frame.duration = (float)global_layouts.size * 0.5f;
+        global_ui.anim_frame.duration = (float)global_layouts.size * 0.2f;
         animation_add(&global_ui.anim_frame, INFINITY, 0.f, (float)std::max(global_layouts.size-1, 0ll));
-        global_ui.anim_frame.speed0 = (global_ui.anim_frame.value1 - global_ui.anim_frame.value0) / global_ui.anim_frame.duration;
+        global_ui.anim_frame.speed0 = (global_ui.anim_frame.value1 - global_ui.anim_frame.value0);
+        global_ui.anim_frame.speed1 = global_ui.anim_frame.speed0;
         ui_context_refresh();
         platform_main_loop_active(true);
         return;

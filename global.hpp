@@ -171,6 +171,7 @@ void array_reserve(Array_dyn<T>* into, s64 count) {
 // Set the array's size to count, reallocate if necessary.
 template <typename T>
 void array_resize(Array_t<T>* arr, s64 count) {
+    if (arr->size == count) return;
     arr->data = (T*)realloc(arr->data, count * sizeof(T));
     if (arr->size < count) {
         memset(arr->data + arr->size, 0, (count - arr->size) * sizeof(T));

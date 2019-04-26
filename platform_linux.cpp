@@ -740,7 +740,7 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
     array_push_back(&prep->cache, *box);
 }
 
-void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* ascent) {
+void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* lineoff, float* ascent) {
     Lui_context* context = &global_platform.gl_context;
     
     _platform_init_font(Lui_context::FONT_BDD_NORMAL,  -1, font_size             );
@@ -767,6 +767,7 @@ void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* o
         GL_RED, GL_UNSIGNED_BYTE, context->prep_bdd.image.data);
 
     if (ascent) *ascent = context->fonts[Lui_context::FONT_BDD_NORMAL].ascent;
+    if (linoff) *linoff = 0.f;
 }
 
 void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_, s64 w_, u8* fill, s64* x_out, s64* y_out, bool only_measure=false, s64* xw_out=nullptr) {

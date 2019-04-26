@@ -35,6 +35,9 @@ void platform_ui_error_clear () { _platform_ui_error_clear(); }
 struct Emscripten_state {
     Array_dyn<u8> fmt_buf;
     u64 fmt_flags;
+
+    Array_t<u8> prep_buf;
+    s64 prep_texture_size = 512;
 };
 Emscripten_state global_emscripten;
 
@@ -157,118 +160,168 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     return true;
 }
 
-EM_JS(int, _platform_text_prepare_init, (int canvas_size, float font_size), {
+EM_JS(void, _platform_text_prepare_init, (int canvas_size, float font_size), {
     //var canvas = document.createElement("canvas");
     var canvas = document.getElementById("canvas2");
     Module.text_prepare_canvas = canvas;
     canvas.width = canvas_size;
     canvas.height = canvas_size;
     var ctx = canvas.getContext("2d");
-    ctx.fillStyle = "grey";
     ctx.font = font_size + "px sans-serif";
     ctx.textAlign = "start";
     ctx.textBaseline = "top";
-
-    // I would really like to use the advanced text measurement options here, but they are not yet
-    // made available by Firefox. This measures how high the E is, which I found better for
-    // cross-browser consistency than just trusting the fonts to have similar offsets.
-    ctx.clearRect(0, 0, font_size, font_size);
-    var m = ctx.measureText("E");
-    ctx.fillText("E", 0.5, 0.5);
-    var i;
-    var data = ctx.getImageData(0, 0, m.width, font_size);
-    var actual_top = -1;
-    var actual_bot = -1;
-    var is_filled = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
-    var last_flag = false;
-    for (i = 0; i < font_size; i++) {
-        var flag = data.data.slice(i*4*m.width, (i+1)*4*m.width).some(is_filled);
-        if (!last_flag && flag) {
-            actual_top = font_size - i;
-        }
-        if (last_flag && !flag) {
-            actual_bot = font_size - i;
-        }
-        last_flag = flag;
-    }
+    ctx.fillStyle = "black";
 
     ctx.clearRect(0, 0, canvas_size, canvas_size);
-    ctx.fillStyle = "black";
-    
-    return font_size - actual_bot;
 });
 
-EM_JS(int, _platform_text_prepare_char, (char* c, bool italics, float size, int x, int y, int* out_width, int* out_height, int* out_advance, int* out_xoff), {
+EM_JS(void, _platform_text_prepare_measure, (char* c, bool italics, float size, int* out_x0, int* out_y0, int* out_x1, int* out_y1), {
     var canvas = Module.text_prepare_canvas;
     var ctx = canvas.getContext("2d");
+    var is_filled = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
 
-    var pad;
+    var w = size * 3;
+    ctx.clearRect(0, 0, w, w);
+    
+    ctx.fillStyle = "grey";
     if (italics) {
         ctx.font = "italic " + size + "px serif";
-        pad = size / 4;
     } else {
         ctx.font = size + "px sans-serif";
-        pad = 0;
     }
     
     var s = UTF8ToString(c);
-    ctx.fillText(s, x+pad+0.5, y+0.5);
-    var advance = ctx.measureText(s).width;
-    var width = advance + 2*pad;
-    setValue(out_width,   width,   'i32');
-    setValue(out_height,  size+2,  'i32');
-    setValue(out_advance, advance, 'i32');
-    setValue(out_xoff,    -pad,    'i32');
+    ctx.fillText(s, size+0.5, size+0.5);
+    
+    var x0 = -1;
+    var x1 = -1;
+    var y0 = -1;
+    var y1 = -1;
+    
+    var i;
+    for (i = 0; i < w; i++) {
+        var flag = ctx.getImageData(i, 0, 1, w).data.some(is_filled);
+        if (flag && x0 == -1) { x0 = i; }
+        if (flag && x0 != -1) { x1 = i+1; }
+    }
+    for (i = 0; i < w; i++) {
+        var flag = ctx.getImageData(0, i, w, 1).data.some(is_filled);
+        if (flag && y0 == -1) { y0 = i; }
+        if (flag && y0 != -1) { y1 = i+1; }
+    }
+
+    if (out_x0) setValue(out_x0, x0 - size, 'i32');
+    if (out_y0) setValue(out_y0, y0 - size, 'i32');
+    if (out_x1) setValue(out_x1, x1 - size, 'i32');
+    if (out_y1) setValue(out_y1, y1 - size, 'i32');
+    
+    ctx.clearRect(0, 0, w, w);
 });
 
 
-void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* ascent_out) {
-    int texture_size = 512; //@Cleanup Adaptive size
+EM_JS(int, _platform_text_prepare_draw, (char* c, bool italics, float size, int x, int y, int* out_advance), {
+    var canvas = Module.text_prepare_canvas;
+    var ctx = canvas.getContext("2d");
 
-    int ascent = _platform_text_prepare_init(texture_size, size);
-    if (ascent_out) *ascent_out = ascent;
+    ctx.fillStyle = "black";
+    if (italics) {
+        ctx.font = "italic " + size + "px serif";
+    } else {
+        ctx.font = size + "px sans-serif";
+    }
     
-    int x = 1, y = 1;
+    var s = UTF8ToString(c);
+    var advance = ctx.measureText(s).width;
+    //ctx.fillStyle = "#55555555";
+    //ctx.fillRect(x, y, advance, size);
+    ctx.fillStyle = "black";
+    ctx.fillText(s, x+0.5, y+0.5);
+    setValue(out_advance, advance, 'i32');
+});
+
+bool _platform_text_prepare_helper(int texture_size, int size, float small_frac, Array_t<Text_box>* offsets, float* linoff_out, float* ascent_out) {
+    _platform_text_prepare_init(texture_size, size);
+
+    int linoff, ascent;
+    _platform_text_prepare_measure("E", false, size, nullptr, &linoff, nullptr, &ascent);
+    printf("%d %d\n", linoff, ascent);
+    if (linoff_out) *linoff_out = (float)linoff;
+    if (ascent_out) *ascent_out = (float)ascent;
+
+    struct BB { int x0, y0, x1, y1; };
+    array_resize(&global_emscripten.prep_buf, offsets->size * sizeof(BB));
+    Array_t<BB> bbs = {(BB*)global_emscripten.prep_buf.data, offsets->size};
+    
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = webgl_bddlabel_index_char(i);
         bool italicized;
         auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
         bool small = c & 128;
 
-        float font_size = (float)size;
+        int font_size = size;
         if (small) font_size *= small_frac;
 
-        int width, height, advance, xoff;
-        _platform_text_prepare_char((char*)arr.data, italicized and not small, font_size, x, y, &width, &height, &advance, &xoff);
-        int ascent_i = small ? (int)std::round((float)ascent * small_frac) : ascent;
+        _platform_text_prepare_measure((char*)arr.data, italicized, font_size, &bbs[i].x0, &bbs[i].y0, &bbs[i].x1, &bbs[i].y1);
+    }
+    
+    int x = 1;
+    int y = 1;
+    int yh = 0;
+    for (s64 i = 0; i < offsets->size; ++i) {
+        u8 c = webgl_bddlabel_index_char(i);
+        bool italicized;
+        auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
+        bool small = c & 128;
+
+        int font_size = size;
+        if (small) font_size *= small_frac;
+
+        if (x + bbs[i].x1-bbs[i].x0 >= texture_size) {
+            x = 1;
+            y += yh + 1;
+            yh = 0;
+        }
+        if (y + bbs[i].y1-bbs[i].y0 >= texture_size) {
+            return false;
+        }
         
+        int advance;
+        _platform_text_prepare_draw((char*)arr.data, italicized and not small, font_size, x-bbs[i].x0, y-bbs[i].y0, &advance);
+        int ascent_i = small ? (int)std::round((float)ascent * small_frac) : ascent;
+
         Text_box box;
-        box.x0 = xoff;
-        box.y0 = (float)(-ascent_i);
-        box.x1 = (float)(xoff + width);
-        box.y1 = (float)(height-ascent_i);
-        box.s0 = (float) x           / (float)texture_size;
-        box.t0 = (float) y           / (float)texture_size;
-        box.s1 = (float)(x + width ) / (float)texture_size;
-        box.t1 = (float)(y + height) / (float)texture_size;
+        box.x0 = (float) bbs[i].x0;
+        box.y0 = (float)(bbs[i].y0 - ascent_i);
+        box.x1 = (float) bbs[i].x1;
+        box.y1 = (float)(bbs[i].y1 - ascent_i);
+        box.s0 = (float)(x) / (float)texture_size;
+        box.t0 = (float)(y) / (float)texture_size;
+        box.s1 = (float)(x + bbs[i].x1-bbs[i].x0) / (float)texture_size;
+        box.t1 = (float)(y + bbs[i].y1-bbs[i].y0) / (float)texture_size;
         box.advance = (float)advance;
         box.font = -1;
-        
-        x += width+1;
-        if (x >= texture_size) {
-            x = 1;
-            y += size+2 + 1;
-            --i;
-            continue;
-        }
-
         (*offsets)[i] = box;
+        
+        yh = std::max(yh, bbs[i].y1 - bbs[i].y0);
+        x += bbs[i].x1 - bbs[i].x0 + 1;
     }
 
     EM_ASM_({
         var gl = document.getElementById("canvas").getContext("webgl");
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.ALPHA, gl.ALPHA, gl.UNSIGNED_BYTE, Module.text_prepare_canvas);
     });
+    
+    return true;
+}
+
+void platform_text_prepare(int size, float small_frac, Array_t<Text_box>* offsets, float* linoff_out, float* ascent_out) {
+    while (true) {
+        bool flag = _platform_text_prepare_helper(
+            global_emscripten.prep_texture_size, size, small_frac, offsets, linoff_out, ascent_out
+        );
+        if (flag) break;
+        global_emscripten.prep_texture_size *= 2;
+    }
 }
     
 // Query the value of an input element
