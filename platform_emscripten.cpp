@@ -61,6 +61,9 @@ void platform_fmt_begin(u64 flags) {
     if (flags & Text_fmt::BOLD) {
         array_printf(&state->fmt_buf, "<b>");
     }
+    if (flags & Text_fmt::SANS) {
+        array_printf(&state->fmt_buf, "<span style=\"font-family: Dejavu Sans, sans\">");
+    }
     if (flags & Text_fmt::ITALICS) {
         array_printf(&state->fmt_buf, "<i>");
     }
@@ -82,6 +85,9 @@ void platform_fmt_end(u64 flags) {
 
     if (flags & Text_fmt::BOLD) {
         array_printf(&state->fmt_buf, "</b>");
+    }
+    if (flags & Text_fmt::SANS) {
+        array_printf(&state->fmt_buf, "</span>");
     }
     if (flags & Text_fmt::ITALICS) {
         array_printf(&state->fmt_buf, "</i>");
@@ -167,7 +173,8 @@ EM_JS(void, _platform_text_prepare_init, (int canvas_size, float font_size), {
     canvas.width = canvas_size;
     canvas.height = canvas_size;
     var ctx = canvas.getContext("2d");
-    ctx.font = font_size + "px sans-serif";
+
+    ctx.font = font_size + "px Dejavu Sans, sans-serif";
     ctx.textAlign = "start";
     ctx.textBaseline = "top";
     ctx.fillStyle = "black";
@@ -185,9 +192,9 @@ EM_JS(void, _platform_text_prepare_measure, (char* c, bool italics, float size, 
     
     ctx.fillStyle = "grey";
     if (italics) {
-        ctx.font = "italic " + size + "px serif";
+        ctx.font = "italic " + size + "px Dejavu Serif, serif";
     } else {
-        ctx.font = size + "px sans-serif";
+        ctx.font = size + "px Dejavu Sans, sans-serif";
     }
     
     var s = UTF8ToString(c);
@@ -225,9 +232,9 @@ EM_JS(int, _platform_text_prepare_draw, (char* c, bool italics, float size, int 
 
     ctx.fillStyle = "black";
     if (italics) {
-        ctx.font = "italic " + size + "px serif";
+        ctx.font = "italic " + size + "px Dejavu Serif, serif";
     } else {
-        ctx.font = size + "px sans-serif";
+        ctx.font = size + "px Dejavu Sans, sans-serif";
     }
     
     var s = UTF8ToString(c);
@@ -244,7 +251,6 @@ bool _platform_text_prepare_helper(int texture_size, int size, float small_frac,
 
     int linoff, ascent;
     _platform_text_prepare_measure("E", false, size, nullptr, &linoff, nullptr, &ascent);
-    printf("%d %d\n", linoff, ascent);
     if (linoff_out) *linoff_out = (float)linoff;
     if (ascent_out) *ascent_out = (float)ascent;
 

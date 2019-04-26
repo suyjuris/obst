@@ -193,6 +193,7 @@ struct Bdd_store {
     Array_dyn<s64> names; // Offsets into name_data, with a dummy element at the end. First name has length 0
     Array_dyn<u8> name_data; // utf-8 encoded names
     s64 name_next; // The final names for nodes are given in sequential order
+    s64 name_next_temp; // Final names for temporary nodes
 };
 
 // Initialises the store. Can be used for re-initialisation.
@@ -221,6 +222,7 @@ void bdd_store_init(Bdd_store* store) {
     store->names.size = 0;
     store->name_data.size = 0;
     store->name_next = 0;
+    store->name_next_temp = 0;
 
     // The F and T nodes.
     array_push_back(&store->bdd_data, {0, 0, 0, 0, 0, 1});
@@ -311,6 +313,11 @@ void bdd_name_amend_id(Bdd_store* store, u32 number) {
         buf[--j] = (u8)('a' + number % base);
         number = number / base - 1;
     }
+}
+
+void bdd_name_amend_tempid(Bdd_store* store, u32 number) {
+    array_printf(&store->name_data, "%");
+    bdd_name_amend_number_base(store, number);
 }
 
 void bdd_name_amend_name(Bdd_store* store, u32 bdd) {
@@ -590,6 +597,8 @@ Array_t<u8> webgl_bddlabel_char_utf8(u8 c) {
 void context_amend_bdd(Bdd_store* store, u32 id) {
     u32 name = store->bdd_data[id].name;
     auto arr = array_subarray(store->name_data, store->names[name], store->names[name+1]);
+
+    if (id <= 1) context_amend(store, "<s>");
     bool italics_on = false;
     for (u8 c: arr) {
         bool italicized;
@@ -600,6 +609,7 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
         context_amend(store, c_arr);
     }
     if (italics_on) context_amend(store, "</i>");
+    if (id <= 1) context_amend(store, "</s>");
 }
 
 // Take a temporary bdd and finalise it, i.e. do deduplication and removal of unnecessary
@@ -612,6 +622,9 @@ u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
     bdd.flags &= ~Bdd::TEMPORARY;
     
     if (bdd.child0 == bdd.child1) {
+        bdd_name_amend_tempid(store, store->name_next_temp++);
+        bdd_name_assign(store, &bdd);
+            
         context_append(store, "Node ");
         context_amend_bdd(store, bdd.id);
         context_amend(store, " is superflous, remove");
@@ -624,6 +637,9 @@ u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
             bdd_name_assign(store, &bdd);
             context_append(store, "");
         } else {
+            bdd_name_amend_tempid(store, store->name_next_temp++);
+            bdd_name_assign(store, &bdd);
+            
             context_append(store, "Merging node ");
             context_amend_bdd(store, bdd.id);
             context_amend(store, " with ");
@@ -762,16 +778,16 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         bdd_final = 1;
         context_pop(store);
         context_append(store, a == 1 ? "First" : "Second");
-        context_amend(store, " node is T, connect to T");
+        context_amend(store, " node is <s>T</s>, connect to <s>T</s>");
     } else if (a == 0 or b == 0) {
         // One node is F
         bdd_final = a == 0 ? b : a;
         context_pop(store);
         if (bdd_final == 0) {
-            context_append(store, "Both nodes are F, no connection");
+            context_append(store, "Both nodes are <s>F</s>, no connection");
         } else {
             context_append(store, a == 0 ? "First" : "Second");
-            context_amend(store, " node is F, connect to ");
+            context_amend(store, " node is <s>F</s>, connect to ");
             context_amend_bdd(store, bdd_final);
         }
     } else if (a == b) {
@@ -953,15 +969,15 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 
         bdd_final = 0;
         context_pop(store);
         context_append(store, a == 0 ? "First" : "Second");
-        context_amend(store, " node is F, no connection");
+        context_amend(store, " node is <s>F</s>, no connection");
     } else if (a == 1 or b == 1) {
         bdd_final = a == 1 ? b : a;
         context_pop(store);
         if (bdd_final == 1) {
-            context_append(store, "Both nodes are T, connect to T");
+            context_append(store, "Both nodes are <s>T</s>, connect to <s>T</s>");
         } else {
             context_append(store, a == 1 ? "First" : "Second");
-            context_amend(store, " node is T, connect to ");
+            context_amend(store, " node is <s>T</s>, connect to ");
             context_amend_bdd(store, bdd_final);
         }
     } else if (a == b) {
@@ -1207,7 +1223,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         // No layers left, but still some items in there.
         bdd_final = 1;
         context_pop(store);
-        context_append(store, "All layers done, connect to T");
+        context_append(store, "All layers done, connect to <s>T</s>");
     } else if (numbers.size == 1) {
         // Only one number remains. Unnecessary in principle.
         context_pop(store);
@@ -1252,7 +1268,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         if (index) {
             bdd_temp.child0 = 1;
             store->bdd_data[bdd_temp.id] = bdd_temp;
-            context_append(store, "Connect child 0 to T (is item %lld)", numbers[0]);
+            context_append(store, "Connect child 0 to <s>T</s> (is item %lld)", numbers[0]);
             take_snapshot(store);
             context_pop(store);
         } else {
@@ -1265,7 +1281,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         if (index < numbers.size) {
             bdd_temp.child1 = 1;
             store->bdd_data[bdd_temp.id] = bdd_temp;
-            context_append(store, "Connect child 1 to T (is item %lld)", numbers[index]);
+            context_append(store, "Connect child 1 to <s>T</s> (is item %lld)", numbers[index]);
             take_snapshot(store);
             context_pop(store);
         } else {
@@ -1722,7 +1738,7 @@ void context_amend_formula_var(Bdd_store* store, Formula_store* fstore, s64 var)
         }
     }
 }
-void context_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
+void _context_amend_formula_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
     Formula f = fstore->formulae[f_id];
     if (f.type == Formula::NONE) {
         assert(false);
@@ -1731,19 +1747,25 @@ void context_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s6
     } else if (f.type == Formula::NEG) {
         auto cc = webgl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
         context_amend(store, cc);
-        context_amend_formula(store, fstore, f.arg, _get_operator_precedence(f.type));
+        _context_amend_formula_helper(store, fstore, f.arg, _get_operator_precedence(f.type));
     } else {
         bool paren = _get_operator_precedence(f.type) <= parent_prec;
         bool right_assoc = f.type == Formula::IMPL_R;
         if (paren) context_amend(store, "(");
-        context_amend_formula(store, fstore, f.arg_l, f.type + 1-right_assoc);
+        _context_amend_formula_helper(store, fstore, f.arg_l, f.type + 1-right_assoc);
         auto cc = webgl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
         context_amend(store, cc);
-        context_amend_formula(store, fstore, f.arg_r, f.type +   right_assoc);
+        _context_amend_formula_helper(store, fstore, f.arg_r, f.type +   right_assoc);
         if (paren) context_amend(store, ")");
     }
 }
 
+void context_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
+    context_amend(store, "<s>");
+    _context_amend_formula_helper(store, fstore, f_id, parent_prec);
+    context_amend(store, "</s>");
+}
+    
 void bdd_name_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
     Formula f = fstore->formulae[f_id];
     if (f.type == Formula::NONE) {
@@ -2206,13 +2228,14 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
     if (bdd == (u32)-1) {
         context_append(store, "Creating BDD from formula ");
         context_amend_formula(store, fstore, f_id);
-        context_amend(store, " using variable order ");
+        context_amend(store, " using variable order <s>");
         bool first = true;
         for (s64 i: fstore->order_var) {
             if (not first) context_amend(store, ", ");
             first = false;
             context_amend_formula_var(store, fstore, i);
         }
+        context_amend(store, "</s>");
 
         bdd_name_amend_formula(store, fstore, f_id);
         
@@ -2247,16 +2270,16 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
     } else if (f_id == 1) {
         bdd_final = 1;
         context_pop(store);
-        context_append(store, "Formula is tautology, connect to T");
+        context_append(store, "Formula is tautology, connect to <s>T</s>");
     } else {
         s64 order_level = fstore->order_var.size - bdd_temp.level;
         s64 f0_id = formula_assign_var(fstore, f_id, fstore->order_var[order_level], 0);
         s64 f1_id = formula_assign_var(fstore, f_id, fstore->order_var[order_level], 1);
 
         if (f0_id == f1_id) {
-            context_append(store, "Splitting at variable ");
+            context_append(store, "Splitting at variable <s>");
             context_amend_formula_var(store, fstore, fstore->order_var[order_level]);
-            context_amend(store, " (level %lld), which leaves the formula unchanged", order_level);
+            context_amend(store, "</s> (level %lld), which leaves the formula unchanged", order_level);
         
             --bdd_temp.level;
             store->bdd_data[bdd_temp.id] = bdd_temp;
@@ -2287,9 +2310,9 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
             context_pop(store);
             bdd_final = bdd_finalize(store, bdd_temp);
         } else {
-            context_append(store, "Splitting at variable ");
+            context_append(store, "Splitting at variable <s>");
             context_amend_formula_var(store, fstore, fstore->order_var[order_level]);
-            context_amend(store, " (level %lld) into subformulae. The child 0 subformula is ", order_level);
+            context_amend(store, "</s> (level %lld) into subformulae. The child 0 subformula is ", order_level);
             context_amend_formula(store, fstore, f0_id);
             context_amend(store, ", the child 1 subformula is ");
             context_amend_formula(store, fstore, f1_id);
@@ -5255,8 +5278,10 @@ void ui_context_refresh() {
     {
         bool flush = false;
         if (strncmp((char*)&sd[i], "<b>", 3) == 0)  flush = true;
+        if (strncmp((char*)&sd[i], "<s>", 3) == 0)  flush = true;
         if (strncmp((char*)&sd[i], "<i>", 3) == 0)  flush = true;
         if (strncmp((char*)&sd[i], "</b>", 4) == 0) flush = true;
+        if (strncmp((char*)&sd[i], "</s>", 4) == 0) flush = true;
         if (strncmp((char*)&sd[i], "</i>", 4) == 0) flush = true;
         if (sd[i] == 0) flush = true;
 
@@ -5266,8 +5291,10 @@ void ui_context_refresh() {
         platform_fmt_text(nospace, array_subarray(sd, last, i));
             
         if (strncmp((char*)&sd[i], "<b>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::BOLD); }
+        if (strncmp((char*)&sd[i], "<s>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::SANS); }
         if (strncmp((char*)&sd[i], "<i>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::ITALICS); }
         if (strncmp((char*)&sd[i], "</b>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::BOLD); }
+        if (strncmp((char*)&sd[i], "</s>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::SANS); }
         if (strncmp((char*)&sd[i], "</i>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::ITALICS); }
         if (sd[i] == 0 and i+1 < global_store.snapshots[frame+1].offset_context) {
             platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
