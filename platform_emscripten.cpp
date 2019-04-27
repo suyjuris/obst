@@ -239,9 +239,6 @@ EM_JS(int, _platform_text_prepare_draw, (char* c, bool italics, float size, int 
     
     var s = UTF8ToString(c);
     var advance = ctx.measureText(s).width;
-    //ctx.fillStyle = "#55555555";
-    //ctx.fillRect(x, y, advance, size);
-    ctx.fillStyle = "black";
     ctx.fillText(s, x+0.5, y+0.5);
     setValue(out_advance, advance, 'i32');
 });
@@ -267,7 +264,8 @@ bool _platform_text_prepare_helper(int texture_size, int size, float small_frac,
         int font_size = size;
         if (small) font_size *= small_frac;
 
-        _platform_text_prepare_measure((char*)arr.data, italicized, font_size, &bbs[i].x0, &bbs[i].y0, &bbs[i].x1, &bbs[i].y1);
+        _platform_text_prepare_measure((char*)arr.data, italicized and not small, font_size,
+            &bbs[i].x0, &bbs[i].y0, &bbs[i].x1, &bbs[i].y1);
     }
     
     int x = 1;
