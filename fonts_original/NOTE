@@ -1,0 +1,6 @@
+This directory is intended to contain the original font files, which are then stripped of unnecessary characters by the strip_font.py script. The resulting files are included in both the repository and the shipped version of obst. However, if you want to rebuild them, download the fonts from https://dejavu-fonts.github.io/ and put the following files into this directory:
+ - DejaVuSans.ttf
+ - DejaVuSerif-Bold.ttf
+ - DejaVuSerif-Italic.ttf
+ - DejaVuSerif.ttf
+ - LICENSE

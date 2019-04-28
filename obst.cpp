@@ -1526,6 +1526,15 @@ bool _is_operator(u32 c) {
     case '#':
     case '\\':
     case ',':
+    case U'∪':
+    case U'∩':
+    case U'¬':
+    case U'∨':
+    case U'∧':
+    case U'←':
+    case U'→':
+    case U'↔':
+    case U'⊕':
         return true;
     default:
         return false;
@@ -1537,6 +1546,7 @@ bool _is_operator_flush(u32 c) {
     case '~':
     case '(':
     case ')':
+    case U'¬':
         return true;
     default:
         return false;
@@ -1545,6 +1555,32 @@ bool _is_operator_flush(u32 c) {
 
 bool _is_space(u32 c) {
     return c == ' ' or c == '\t';
+}
+
+s64 _get_digit(u32 c) {
+    switch (c) {
+    case '0': return 0;
+    case '1': return 1;
+    case '2': return 2;
+    case '3': return 3;
+    case '4': return 4;
+    case '5': return 5;
+    case '6': return 6;
+    case '7': return 7;
+    case '8': return 8;
+    case '9': return 9;
+    case U'₀': return 0;
+    case U'₁': return 1;
+    case U'₂': return 2;
+    case U'₃': return 3;
+    case U'₄': return 4;
+    case U'₅': return 5;
+    case U'₆': return 6;
+    case U'₇': return 7;
+    case U'₈': return 8;
+    case U'₉': return 9;
+    default: return -1;
+    }
 }
 
 s64 helper_decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
@@ -1564,6 +1600,7 @@ s64 helper_decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
         c = (buf[0]&0x7) << 18 | (buf[1]&0x3f) << 12 | (buf[2]&0x3f) << 6 | (buf[3]&0x3f);
     } else {
         if (not warning_was_given) {
+            printf("%s\n", buf.data);
             fprintf(stderr, "Warning: encountered invalid utf-8 sequence (this warning will not show again)\n");
             warning_was_given = true;
         }
@@ -1579,7 +1616,7 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
     if (store->str_i >= store->str.size) return {};
 
     s64 state = 0;
-    s64 beg, end;
+    s64 beg = 0, end = 0;
     while (store->str_i <= store->str.size) {
         u32 c;
         s64 bytes;
@@ -1595,7 +1632,7 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
         if (state == 0) {
             if (_is_space(c))  {
                 // nothing
-            } else if ('0' <= c and c <= '9') {
+            } else if (_get_digit(c) != -1) {
                 beg = store->str_i;
                 state = 1;
             } else if (c == '\n' or c == ';') {
@@ -1606,8 +1643,9 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
                 return {};
             } else if (_is_operator_flush(c)) {
                 beg = store->str_i;
-                end = store->str_i+1;
-                ++store->str_i;
+                end = store->str_i + bytes;
+                store->str_i += bytes;
+                ++store->str_char;
                 break;
             } else if (_is_operator(c)) {
                 beg = store->str_i;
@@ -1617,7 +1655,7 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
                 state = 3;
             }
         } else if (state == 1) {
-            if ('0' <= c and c <= '9') {
+            if (_get_digit(c) != -1) {
                 // nothing
             } else if (_is_operator(c) or _is_space(c) or c == ';' or c == '\n' or c == 0) {
                 end = store->str_i;
@@ -1683,6 +1721,17 @@ u8 _get_operator_type(Array_t<u8> op) {
     if (array_equal_str(op, "<=")) return Formula::IMPL_L;
     if (array_equal_str(op, "<->")) return Formula::IMPL_RL;
     if (array_equal_str(op, "<=>")) return Formula::IMPL_RL;
+
+    if (array_equal_str(op, u8"∪")) return Formula::OR;
+    if (array_equal_str(op, u8"∩")) return Formula::AND;
+    if (array_equal_str(op, u8"¬")) return Formula::NEG;
+    if (array_equal_str(op, u8"∨")) return Formula::OR;
+    if (array_equal_str(op, u8"∧")) return Formula::AND;
+    if (array_equal_str(op, u8"←")) return Formula::IMPL_L;
+    if (array_equal_str(op, u8"→")) return Formula::IMPL_R;
+    if (array_equal_str(op, u8"↔")) return Formula::IMPL_RL;
+    if (array_equal_str(op, u8"⊕")) return Formula::XOR;
+    
     if (array_equal_str(op, "=")) return Formula::ASSIGN;
     if (array_equal_str(op, "(")) return Formula::_PAREN_L;
     if (array_equal_str(op, ")")) return Formula::_PAREN_R;
@@ -1730,8 +1779,8 @@ void formula_print(Formula_store* store, s64 f_id, s64 parent_prec = 0) {
 void context_amend_formula_var(Bdd_store* store, Formula_store* fstore, s64 var) {
     auto name = array_subarray(fstore->var_names, fstore->vars[var], fstore->vars[var+1]);
     for (u8 c: name) {
-        if (var > 1 and '0' <= c and c <= '9') {
-            u8 cc[] = {0xe2, 0x82, (u8)(0x80 + c-'0')};
+        if (var > 1 and _get_digit(c) != -1) {
+            u8 cc[] = {0xe2, 0x82, (u8)(0x80 + _get_digit(c))};
             context_amend(store, {cc, 3});
         } else {
             context_amend(store, {&c, 1});
@@ -1791,17 +1840,31 @@ void bdd_name_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s
 }
 
 s64 formula_parse_var(Formula_store* store, Array_t<u8> tok) {
+    s64 var_names_size = store->var_names.size;
+    for (s64 i = 0; i < tok.size;) {
+        u32 c;
+        s64 bytes = helper_decode_utf8(array_subarray(tok, i, tok.size), &c);
+        if (_get_digit(c) != -1) {
+            array_push_back(&store->var_names, (u8)('0' + _get_digit(c)));
+        } else {
+            array_append(&store->var_names, array_subarray(tok, i, i+bytes));
+        }
+        i += bytes;
+    }
+    auto name = array_subarray(store->var_names, var_names_size, store->var_names.size);
+    
     s64 var = -1;
     for (s64 i = 0; i+1 < store->vars.size; ++i) {
-        if (array_equal(tok, array_subarray(store->var_names, store->vars[i], store->vars[i+1]))) {
+        if (array_equal(name, array_subarray(store->var_names, store->vars[i], store->vars[i+1]))) {
             var = i;
             break;
         }
     }
     if (var == -1) {
         var = store->vars.size-1;
-        array_append(&store->var_names, tok);
         array_push_back(&store->vars, store->var_names.size);
+    } else {
+        store->var_names.size = var_names_size;
     }
     return var;
 }
@@ -1826,8 +1889,11 @@ void formula_parse_statement(Formula_store* store) {
     while (true) {
         auto tok = formula_token_pop(store);
         if (store->error_flag) return;
+
+        u32 tok_0 = 0;
+        if (tok.size != 0) helper_decode_utf8(tok, &tok_0);
         
-        if (tok.size == 0 or tok[0] == '\n' or tok[0] == ';') {
+        if (tok.size == 0 or tok_0 == '\n' or tok_0 == ';') {
             if (store->parser_ids.size == 0) break;
             if (store->parser_diff == 0) {
                 ui_error_report("Error: Unexpected end of statement");
@@ -1861,7 +1927,7 @@ void formula_parse_statement(Formula_store* store) {
             }
 
             break;
-        } else if (tok[0] == ')') {
+        } else if (tok_0 == ')') {
             while (true) {
                 s64 s = store->parser_ops.size;
                 if (not s) {
@@ -1879,7 +1945,7 @@ void formula_parse_statement(Formula_store* store) {
             while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
                 pop_unop();
             }
-        } else if (_is_operator(tok[0])) {
+        } else if (_is_operator(tok_0)) {
             u8 typ = _get_operator_type(tok);
             if (typ == Formula::NONE) {
                 Array_dyn<u8> str;
@@ -1924,9 +1990,9 @@ void formula_parse_statement(Formula_store* store) {
             }
             
             array_push_back(&store->parser_ops, typ);
-        } else if ('0' <= tok[0] and tok[0] <= '9') {
-            assert(tok[0] == '0' or tok[0] == '1');
-            array_push_back(&store->parser_ids, (s64)(tok[0] - '0'));
+        } else if (_get_digit(tok_0) != -1) {
+            assert(tok_0 == '0' or tok_0 == '1');
+            array_push_back(&store->parser_ids, (s64)(tok_0 - '0'));
 
             if (store->parser_diff != 0) {
                 ui_error_report("Error: Expected operator, got constant");
@@ -2039,9 +2105,11 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
         first = false;
         
         if (tok.size == 0) break;
-        if (_is_operator(tok[0])) continue;
+
+        u32 tok_0; helper_decode_utf8(tok, &tok_0);
+        if (_is_operator(tok_0)) continue;
         
-        if ('0' <= tok[0] and tok[0] <= '9') {
+        if (_get_digit(tok_0) != -1) {
             ui_error_report("Error: Unexpected number in variable order list, which should consist "
                 "only of comma-separated variable names");
             return -1;

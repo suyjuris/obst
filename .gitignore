@@ -9,3 +9,7 @@ obst.wasm.map
 obst.wasm.pre
 obst.html
 test
+obst
+obst_packed
+fonts_original/*.ttf
+fonts_original/LICENSE

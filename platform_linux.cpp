@@ -597,8 +597,14 @@ void lui_text_prepare_init(Text_preparation* prep, s64 texture_size) {
 void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font, Array_t<u8> word, Text_box* box, float letter_fac=1.f) {
     assert(box);
 
+    union {
+        float letter_fac_;
+        u32 letter_fac_u;
+    };
+    letter_fac_ = letter_fac;
+    
     // Lookup in hash table
-    u64 hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ ((u64)*(u32*)&letter_fac << 32);
+    u64 hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ ((u64)letter_fac_u << 32);
     for (u8 c: word) {
         hash = hash * 1099511628211ull ^ c;
     }
@@ -1409,6 +1415,8 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F1");
     platform_fmt_text(Text_fmt::PARAGRAPH, ": Show/hide help.");
     platform_fmt_end(Text_fmt::ITEMIZED);
+    platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Font license");
+    platform_fmt_text(Text_fmt::PARAGRAPH, "Fonts of the DejaVu family are used by obst. Their license information is included either in the fonts subdirectory, or can be viewed by running obst with --font-license as argument.");
     platform_fmt_store(Lui_context::SLOT_HELPTEXT);
 
     platform_fmt_store_simple(Text_fmt::PARAGRAPH, "Adds the BDD to the graph.", Lui_context::SLOT_BUTTON_DESC_CREATE);
@@ -1619,6 +1627,7 @@ void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col,
     case Ui_elem::CREATE_BASE:  entry = &context->entries[Lui_context::ENTRY_BASE]; break;
     case Ui_elem::CREATE_BITS:  entry = &context->entries[Lui_context::ENTRY_BITORDER]; break;
     case Ui_elem::CREATE_VARS:  entry = &context->entries[Lui_context::ENTRY_VARORDER]; break;
+    default: assert(false);
     };
 
     assert(0 <= cursor and cursor <= entry->text.size);
@@ -2165,13 +2174,6 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
         // Reset blinking cycle
         context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
         context->cursor_blinked = false;
-
-        //printf("text=%p,%lld cursor=%lld,%lld,%lld offset=%lld,%lld draw=%lld,%lld selection=%lld,%lld,%lld slot=%lld cursor_draw=%d\n", entry->text.data, entry->text.size, entry->cursor, entry->cursor_row, entry->cursor_col, entry->offset_x, entry->offset_y, entry->draw_w, entry->draw_h, entry->selection, entry->selection_row, entry->selection_col, entry->slot, (int)entry->cursor_draw);
-        //printf("-- undo\n");
-        //print_undo_stack(entry->undo_stack, entry->undo_data);
-        //printf("-- redo\n");
-        //print_undo_stack(entry->redo_stack, entry->redo_data);
-        //puts("");
     }
 
     return consumed;
@@ -2906,17 +2908,17 @@ void linux_handle_selection_response(Platform_state* platform, XSelectionEvent* 
 
 bool _platform_fonts_load(Lui_context* context) {
     constexpr char const* font_files_[] = {
-        "fonts/DejaVuSerif.ttf",
-        "fonts/DejaVuSerif-Italic.ttf",
-        "fonts/DejaVuSerif-Bold.ttf",
-        "fonts/DejaVuSans.ttf",
-        "fonts/LICENSE", // Note: The last filename will not be instanciated in font_info
+        "fonts_stripped/DejaVuSerif.ttf",
+        "fonts_stripped/DejaVuSerif-Italic.ttf",
+        "fonts_stripped/DejaVuSerif-Bold.ttf",
+        "fonts_stripped/DejaVuSans.ttf",
+        "fonts_stripped/LICENSE", // Note: The last filename will not be instanciated in font_info
     };
     context->font_files = {(u8**)font_files_, sizeof(font_files_) / sizeof(font_files_[0])};
     
     char const* path = "/proc/self/exe";
     FILE* f = fopen(path, "rb");
-
+    
     if (f == nullptr) {
         fprintf(stderr, "Error: Could not open file '%s' for reading (7)\n", path);
         perror("Error"); exit(1125);
@@ -3083,18 +3085,36 @@ void _platform_fonts_pack(Lui_context* context) {
     }
 }
 
+void _platform_print_help(char* argv0, bool is_packed) {
+    printf("Usage:\n  %s\n", argv0);
+    if (is_packed) {
+        printf("  %s --font-license\n", argv0);
+    } else {
+        printf("  %s --pack\n", argv0);
+    }
+    printf("  %s --help\n\n", argv0);
+
+    puts("This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018. Running the program without any arguments starts the GUI, which is the main part of this application.\n");
+    if (is_packed) {
+        puts("You are running the packed version of obst, which meas that the font data is included in the binary. To view the license under which the fonts are distributed, run obst with the --font-license option.");
+    } else {
+        puts("You are running the unpacked version of the binary, which means that it will load fonts from the 'fonts/' subdirectory of the CWD. You can run this programm with the '--pack' option, which will create a 'obst_packed' binary in the CWD that contains the font data.");
+    }
+}
+
 int main(int argc, char** argv) {
     bool print_help = false;
+    bool is_packed = _platform_fonts_load(&global_platform.gl_context);
+    
     if (argc > 2) {
         print_help = true;
-    } else {
-        _platform_fonts_load(&global_platform.gl_context);
-    }
-
-    if (argc == 2) {
+    } else if (argc == 2) {
         Array_t<u8> arg = {(u8*)argv[1], (s64)strlen(argv[1])};
         if (array_equal_str(arg, "--font-license")) {
-            
+            auto arr = global_platform.gl_context.font_file_data;
+            fwrite(arr[arr.size-1].data, 1, arr[arr.size-1].size, stdout);
+            puts("");
+            exit(0);
         } else if (array_equal_str(arg, "--pack")) {
             _platform_fonts_pack(&global_platform.gl_context);
             printf("Packing successful.\n");
@@ -3105,6 +3125,7 @@ int main(int argc, char** argv) {
     }
 
     if (print_help) {
+        _platform_print_help(argv[0], is_packed);
         exit(2);
     }
     

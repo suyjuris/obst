@@ -146,7 +146,7 @@ EM_JS(void, _platform_ui_cursor_set, (char* name, int pos), {
 })
 
 void platform_ui_cursor_set(u8 elem, s64, s64, s64, s64 cursor_char) {
-    _platform_ui_cursor_set(_platform_get_elem(elem), cursor_char);
+    _platform_ui_cursor_set(Ui_elem::name[elem], cursor_char);
 }
 
 // Called whenever the canvas resizes. This causes the internal viewport to adopt the new
