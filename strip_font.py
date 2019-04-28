@@ -1,6 +1,7 @@
 #!/usr/bin/python2
 
-# Based on a StackOverflow answer written by SadaleNet (https://stackoverflow.com/a/34132900)
+# Written by Philipp Czerner, 2018. Public Domain.
+# See LICENSE.md for license information.
 
 import os
 import glob

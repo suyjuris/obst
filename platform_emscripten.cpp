@@ -1,4 +1,7 @@
 
+// Written by Philipp Czerner, 2018. Public Domain.
+// See LICENSE.md for license information.
+
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #include <GLES2/gl2.h>

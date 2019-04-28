@@ -1,7 +1,8 @@
+
+// Written by Philipp Czerner, 2018. Public Domain.
+// See LICENSE.md for license information.
+
 #pragma once
-
-
-// The README contains some high-level remarks about the code, you might want to take a look.
 
 // I usually do not pay attention to assertions with side-effects, so let us define them here to
 // execute the expressions regardless. Also, the compiler cannot figure out that assert(false) means

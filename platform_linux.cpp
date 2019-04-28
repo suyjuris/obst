@@ -1,6 +1,6 @@
 
-// Written by Philipp Czerner, 2018
-// See the file obst.cpp for license information.
+// Written by Philipp Czerner, 2018. Public Domain.
+// See LICENSE.md for license information.
 
 // This file contains platform-specific code for Linux, responsible for initialising a window and 3D
 // rendering context, as well as drawing a UI.

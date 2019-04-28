@@ -1,6 +1,9 @@
 #!/usr/bin/python3
 # coding: utf-8
 
+# Written by Philipp Czerner, 2018. Public Domain.
+# See LICENSE.md for license information.
+
 import sys
 import subprocess
 

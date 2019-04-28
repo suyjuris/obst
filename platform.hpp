@@ -1,3 +1,7 @@
+
+// Written by Philipp Czerner, 2018. Public Domain.
+// See LICENSE.md for license information.
+
 #pragma once
 
 struct Key {
