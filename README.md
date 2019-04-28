@@ -1,5 +1,7 @@
 # Online BDD Simulation Tool (obst)
 
+@Cleanup: Update the README
+
 Binary Decision Diagrams (BDDs, see also [Wikipedia](https://en.wikipedia.org/wiki/Binary_decision_diagram)) are a compact way of representing sets of numbers, so that certain set operations (e.g. union, intersection, complement) can still be executed efficiently. They are used extensively in logic synthesis as well as formal verification.
 
 obst is a web application that shows how the algorithms for constructing and operating on BDDs work on a step-by-step basis. You can try it out [here](https://nicze.de/philipp/bdds). It is intended to be useful for both exploring the inner workings of BDDs interactively, as well as demonstrating the intermediate steps of a BDD computation in a classroom environment.

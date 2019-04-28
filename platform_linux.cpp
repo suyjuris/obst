@@ -11,6 +11,7 @@
 #include <GL/glx.h>
 #include <time.h>
 #include <locale.h>
+#include <sys/stat.h>
 
 typedef GLXContext (*glXCreateContextAttribsARB_t) (
     Display *dpy, GLXFBConfig config, GLXContext share_context, Bool direct, const int *attrib_list
@@ -663,7 +664,7 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
         int adv, lsb;
         stbtt_GetGlyphHMetrics(fontinfo, glyphs[k], &adv, &lsb);
 
-        s64 x0 = (s64)((float)x+shift) + ix0; //@Cleanup x + ix0
+        s64 x0 = x + ix0;
         s64 y0 = y + iy0;
 
         if (not draw) {
@@ -3032,6 +3033,12 @@ void _platform_fonts_pack(Lui_context* context) {
         perror("Error"); exit(1202);
     }
 
+    int fd = fileno(f2);
+    if (fchmod(fd, 0755)) {
+        fprintf(stderr, "Warning: Could not mark file '%s' as executable\n", path2);
+        perror("Warning");
+    }
+    
     char buf[4096];
     bool done = false;
     while (not done) {
