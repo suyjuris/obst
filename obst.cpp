@@ -13,7 +13,7 @@
 
 
 // Display an error somewhere, somehow. This is not for critical errors where we exit the program,
-// just to tell the user that the did something we do not like. ui_error_report is a printf-like
+// just to tell the user that they did something we do not like. ui_error_report is a printf-like
 // function.
 
 Array_dyn<u8> ui_error_buf;
@@ -158,7 +158,7 @@ struct Bdd {
     u8 level = 0;
     u8 flags = 0;
     u32 id = 0; // 0 is F, the false-node, and 1 is T, the true-node
-    u32 name = 0;
+    u32 name = 0; // Index into Bdd_store::names
 };
 
 struct Snapshot {
@@ -275,6 +275,8 @@ u32 bdd_insert(Bdd_store* store, Bdd bdd) {
     return store->bdd_lookup[slot].id;
 }
 
+// Append a number to the next BDD name. The next time a name is assigned, it will consume this
+// data.
 void bdd_name_amend_number_base(Bdd_store* store, u64 number, s64 base = 10, bool small = false) {
     s64 digit_count = 0;
     for (u64 ii = number; ii or digit_count == 0; ii /= base) ++digit_count;
@@ -290,6 +292,8 @@ void bdd_name_amend_number_base(Bdd_store* store, u64 number, s64 base = 10, boo
     }
 }
 
+// Append a list of numbers to the next BDD name. The next time a name is assigned, it will consume
+// this data.
 void bdd_name_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base) {
     bool first = true;
     
@@ -300,6 +304,8 @@ void bdd_name_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base) {
     }
 }
 
+// Append an id based on the number to the next BDD name. These ids are of the form 'a', 'b', ...,
+// 'z', 'aa', 'ab', ... and so on. The next time a name is assigned, it will consume this data.
 void bdd_name_amend_id(Bdd_store* store, u32 number) {
     s64 base = 26;
     s64 digit_count = 1;
@@ -315,17 +321,23 @@ void bdd_name_amend_id(Bdd_store* store, u32 number) {
     }
 }
 
+// Append a temporary id based on the number to the next BDD name. These temporary ids are of the
+// form '%0', '%1', ... and so on. The next time a name is assigned, it will consume this data.
 void bdd_name_amend_tempid(Bdd_store* store, u32 number) {
     array_printf(&store->name_data, "%");
     bdd_name_amend_number_base(store, number);
 }
 
+// Append an existing bdd name to the next BDD name. The next time a name is assigned, it will
+// consume this data.
 void bdd_name_amend_name(Bdd_store* store, u32 bdd) {
     u32 name = store->bdd_data[bdd].name;
     auto arr = array_subarray(store->name_data, store->names[name], store->names[name+1]);
     array_append(&store->name_data, arr);
 }
 
+// Append a name representing a set operation to the bdd name. The next time a name is assigned, it
+// will consume this data.
 void bdd_name_amend_setop(Bdd_store* store, u32 a, u32 b, char op) {
     assert(store->names.size > 0);
     bdd_name_amend_name(store, a);
@@ -333,6 +345,7 @@ void bdd_name_amend_setop(Bdd_store* store, u32 a, u32 b, char op) {
     bdd_name_amend_name(store, b);
 }
 
+// Assign the next bdd name. This will consume the data given by the bdd_name_amend function.
 void bdd_name_assign(Bdd_store* store, Bdd* bdd) {
     assert(store->names.size > 0);
     if (store->name_data.size != store->names[store->names.size-1]) {
@@ -465,6 +478,8 @@ void context_amend_list(Bdd_store* store, Array_t<T> list, char const* fmt) {
     context_amend(store, "]");
 }
 
+// Like context_amend, but write number in base base with digit_count digits. If digit_count is -1,
+// then it will be determined automatically. marked contains digits that should be shown in bold.
 void context_amend_number_base(Bdd_store* store, u64 number, s64 base, s64 digit_count = -1, Array_t<u8> marked = {}) {
     // If there is no fixed count, determine the actual amount here
     if (digit_count == -1) {
@@ -519,7 +534,7 @@ void context_amend_number_base(Bdd_store* store, u64 number, s64 base, s64 digit
     }
 }
 
-    
+// Like context_amend_list, but prints the numbers ith context_amend_number_base instead of printf.
 void context_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base, s64 digit_count = -1, s64 digit_mark = -1) {
     context_amend(store, "[");
     bool first = true;
@@ -539,9 +554,23 @@ void context_pop(Bdd_store* store) {
         --store->snapshot_context.size;
 }
 
-// Regarding the mapping: We map [22,127) in ASCII to [0,105), and then 128 | [22,127) to 105 +
-// [0,105).
-constexpr s64 webgl_bddlabel_index_size = 210;
+// Note on bdd labels: The names are stored with one byte per character. Why not use the existing
+// system for formatted text you ask? Two reasons: The labels need to be rendered by GL, even in the
+// browser. Hence I cannot use the same backend I use for the other formatted text, which emit
+// HTML. Additionally, the names are stored in the Bdd_store, and the formatted text API would need
+// additional interfaces to enable outside storage. So it is not really a good fit here.
+//  Instead I store the labels as simple sequences of bytes with an ASCII-like encoding. The range
+// [32,127] is mapped to itself and contains the printable characters. While drawing, a few of these
+// will be mapped to other unicode glyphs, e.g. & becomes set union. [22,32) are then mapped to
+// subscripts. Finally, some of the labels are written in a smaller font, so that they can be
+// wrapped into two lines. The small characters are mapped in exactly the same fashion, but with
+// their high-bit set.
+//  Finally, the bytes are then mapped to indices into the texture in a simple fashio, we map
+// [22,127) to [0,105), and then 128 | [22,127) to 105 + [0,105).
+
+constexpr s64 webgl_bddlabel_index_size = 210; // Total number of slots in the texture
+
+// Return the index of bytes c according to the above mapping and the other way around.
 s64 webgl_bddlabel_char_index(u8 c) {
     if (22 <= (c&127) and (c&127) < 127) {
         return (c&127) - 22 + (c>>7) * 105;
@@ -553,6 +582,9 @@ u8 webgl_bddlabel_index_char(s64 index) {
     assert(0 <= index and index < 210);
     return (u8)(index < 105 ? index + 22 : index + 45);
 }
+
+// Convert an index into the texture into a unicode codepoint represented in UTF-8 as well as
+// information on how to draw it.
 Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bool* draw_italics_=nullptr) {
     assert(0 <= index and index < 210);
     static char c[2];
@@ -1390,11 +1422,13 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
     return bdd_final;
 }
 
+// Now comes the part responsible for parsing formulae and dealing with them. This represents an
+// expression.
 struct Formula {
     enum Type: u8 {
         NONE, VAR, NEG, OR, AND, XOR, IMPL_R, IMPL_L, IMPL_RL, ASSIGN,
 
-        _PAREN_L, _PAREN_R
+        _PAREN_L, _PAREN_R // The parentheses are not used in a formula, but some of the functions dealing with operators want to talk about them for convenience
     };
     static constexpr char const* type_names[] = {
         "", "", "~", "|", "&", "^", "->", "<-", "<->", "=", "(", ")"
@@ -1404,32 +1438,34 @@ struct Formula {
     u8 type;
     s64 id;
     union {
-        s64 var;
-        s64 arg;
-        struct { s64 arg_l, arg_r; };
+        s64 var; // type == VAR
+        s64 arg; // type == NEG
+        struct { s64 arg_l, arg_r; }; // else
     };
-    u64 hash;
+    u64 hash; // Used for some of the simplifications
 };
 constexpr char const* Formula::type_names[];
 constexpr char Formula::type_names_bdd[];
 
+// Stores the state for the parser. Note that there are two types of ids here: Formulae and
+// variables. The former index into formulae, the latter into vars and vars_formula.
 struct Formula_store {
-    Array_dyn<Formula> formulae;
-    Array_dyn<s64> statements;
-    Array_dyn<s64> vars;
-    Array_dyn<u8> var_names;
-    Array_dyn<s64> vars_formula;
+    Array_dyn<Formula> formulae; // All the formulae which are currently in use. Immutable. The first two are the constants 0 and 1. Also formulae[i].id == i.
+    Array_dyn<s64> statements; // The list of statements, i.e. top-level formulae
+    Array_dyn<s64> vars; // Indices into the var_names array with a dummy at the end
+    Array_dyn<u8> var_names; // Data for the names of variables
+    Array_dyn<s64> vars_formula; // One entry for each variable, either -1 for normal variables, or the index of the subformula, for variables representing subformulae.
     
-    Array_dyn<s64> order_var;
+    Array_dyn<s64> order_var; // The order of the variables for the purpose of bdd levels
     
-    Array_dyn<s64> parser_ids;
-    Array_dyn<u8> parser_ops;
-    s64 parser_diff = 0;
+    Array_dyn<s64> parser_ids; // identifier stack for the shunting-yard algorithm
+    Array_dyn<u8> parser_ops; // operator stack for the shunting-yard algorithm
+    s64 parser_diff = 0; // Difference in size of parser_ids and parser_ops
     
-    Array_t<u8> str;
-    s64 str_i, str_row, str_col, str_char;
+    Array_t<u8> str; // The string we are currently parsing
+    s64 str_i, str_row, str_col, str_char; // Current position in the string
 
-    bool error_flag;
+    bool error_flag; // A flag allowing errors to propagate upwards
 };
 
 Formula_store global_formula_store;
@@ -1454,10 +1490,18 @@ bool _is_operator_commutative(u8 type) {
     }
 }
 
+// Create a new formula and store it. Returns the id of the new formula.
 s64 formula_create(Formula_store* store, u8 type, s64 arg0 = 0, s64 arg1 = 0) {
     Formula f;
     f.type = type;
     f.id = store->formulae.size;
+
+    // Note on formula hashes: To facilitate simplifications, we want to detect whether two formulae
+    // are equivalent. This is obviously too difficult in general, but I can do a simple syntatical
+    // analysis by computing hashes based on the terms involved. As a neat trick I also compute the
+    // hashes in a commutative fashion for the commutative operators, so that the order of their
+    // arguments does not matter.
+    
     if (type == Formula::NONE) {
         assert(false);
     } else if (type == Formula::NEG) {
@@ -1483,6 +1527,7 @@ s64 formula_create(Formula_store* store, u8 type, s64 arg0 = 0, s64 arg1 = 0) {
     return f.id;
 }
 
+// Initialise/reset a Formula_store.
 void formula_store_init(Formula_store* store) {
     store->formulae.size = 0;
     store->statements.size = 0;
@@ -1583,6 +1628,7 @@ s64 _get_digit(u32 c) {
     }
 }
 
+// Decode the first unicode codepoint in buf, return the number of bytes it is long. The result value of the codepoint is written into c_out.
 s64 helper_decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
     static bool warning_was_given;
     
@@ -1600,7 +1646,6 @@ s64 helper_decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
         c = (buf[0]&0x7) << 18 | (buf[1]&0x3f) << 12 | (buf[2]&0x3f) << 6 | (buf[3]&0x3f);
     } else {
         if (not warning_was_given) {
-            printf("%s\n", buf.data);
             fprintf(stderr, "Warning: encountered invalid utf-8 sequence (this warning will not show again)\n");
             warning_was_given = true;
         }
@@ -1612,9 +1657,12 @@ s64 helper_decode_utf8(Array_t<u8> buf, u32* c_out = nullptr) {
     return c_bytes;
 }
 
+// Read the next token from the input and return its characters.
 Array_t<u8> formula_token_pop(Formula_store* store) {
     if (store->str_i >= store->str.size) return {};
 
+    // Note that identifiers consist of non-numeric, non-operator characters.
+    
     s64 state = 0;
     s64 beg = 0, end = 0;
     while (store->str_i <= store->str.size) {
@@ -1739,6 +1787,8 @@ u8 _get_operator_type(Array_t<u8> op) {
 }
 
 s64 _get_operator_precedence(u8 op) {
+    // Only return even precedences here, to allow the other code to add 1 to deal with
+    // associativity.
     switch (op) {
     case Formula::_PAREN_L: return 16;
     case Formula::_PAREN_R: return 16;
@@ -1755,6 +1805,10 @@ s64 _get_operator_precedence(u8 op) {
     }
 }
 
+// Now we get a bunch of functions that generate a human-readable version of a formula. These all
+// work the same, but the details of the output format differ.
+
+// Print to stdout for debugging.
 void formula_print(Formula_store* store, s64 f_id, s64 parent_prec = 0) {
     Formula f = store->formulae[f_id];
     if (f.type == Formula::NONE) {
@@ -1776,6 +1830,7 @@ void formula_print(Formula_store* store, s64 f_id, s64 parent_prec = 0) {
     }
 }
 
+// Like context_amend
 void context_amend_formula_var(Bdd_store* store, Formula_store* fstore, s64 var) {
     auto name = array_subarray(fstore->var_names, fstore->vars[var], fstore->vars[var+1]);
     for (u8 c: name) {
@@ -1814,7 +1869,8 @@ void context_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s6
     _context_amend_formula_helper(store, fstore, f_id, parent_prec);
     context_amend(store, "</s>");
 }
-    
+
+// Like bdd_name_amend_*
 void bdd_name_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
     Formula f = fstore->formulae[f_id];
     if (f.type == Formula::NONE) {
@@ -1839,7 +1895,10 @@ void bdd_name_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s
     }
 }
 
+// Read the variable name and create a new variable, or take an existing one, if it exists.
 s64 formula_parse_var(Formula_store* store, Array_t<u8> tok) {
+    // Replace subscripts with ASCII digits, so that a user can simply copy-paste the formulae when
+    // printed with unicode characters.
     s64 var_names_size = store->var_names.size;
     for (s64 i = 0; i < tok.size;) {
         u32 c;
@@ -1852,7 +1911,9 @@ s64 formula_parse_var(Formula_store* store, Array_t<u8> tok) {
         i += bytes;
     }
     auto name = array_subarray(store->var_names, var_names_size, store->var_names.size);
-    
+
+    // Try to find an existing variable with the same name
+    // @Speed: This is quadratic, could be linear
     s64 var = -1;
     for (s64 i = 0; i+1 < store->vars.size; ++i) {
         if (array_equal(name, array_subarray(store->var_names, store->vars[i], store->vars[i+1]))) {
@@ -1860,6 +1921,7 @@ s64 formula_parse_var(Formula_store* store, Array_t<u8> tok) {
             break;
         }
     }
+    
     if (var == -1) {
         var = store->vars.size-1;
         array_push_back(&store->vars, store->var_names.size);
@@ -1869,7 +1931,10 @@ s64 formula_parse_var(Formula_store* store, Array_t<u8> tok) {
     return var;
 }
 
+// Parse a single top-level statement and add it to store->statements
 void formula_parse_statement(Formula_store* store) {
+    // This is an operator precedence parser using the shunting-yard algorithm.
+    
     auto pop_binop = [store]() {
         assert(store->parser_ids.size >= 2);
         u8 top_typ = store->parser_ops[store->parser_ops.size-1];
@@ -1894,13 +1959,18 @@ void formula_parse_statement(Formula_store* store) {
         if (tok.size != 0) helper_decode_utf8(tok, &tok_0);
         
         if (tok.size == 0 or tok_0 == '\n' or tok_0 == ';') {
+            // End of statement, flush what we have and return
+
+            // Check for empty statement
             if (store->parser_ids.size == 0) break;
+            
             if (store->parser_diff == 0) {
                 ui_error_report("Error: Unexpected end of statement");
                 store->error_flag = true;
                 return;
             }
-            
+
+            // Flush the operators on the stack
             while (true) {
                 s64 s = store->parser_ops.size;
                 if (not s) break;
@@ -1919,6 +1989,7 @@ void formula_parse_statement(Formula_store* store) {
                 }
             }
 
+            // Clear the stacks and write the formula into statements
             assert(store->parser_ids.size <= 1);
             if (store->parser_ids.size == 1) {
                 array_push_back(&store->statements, store->parser_ids[0]);
@@ -1928,6 +1999,8 @@ void formula_parse_statement(Formula_store* store) {
 
             break;
         } else if (tok_0 == ')') {
+            // Flush the stack until the last '('
+            
             while (true) {
                 s64 s = store->parser_ops.size;
                 if (not s) {
@@ -1942,10 +2015,12 @@ void formula_parse_statement(Formula_store* store) {
                 pop_binop();
             }
 
-            while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
+            while (store->parser_ops.size
+                   and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
                 pop_unop();
             }
         } else if (_is_operator(tok_0)) {
+            // Parse the operator
             u8 typ = _get_operator_type(tok);
             if (typ == Formula::NONE) {
                 Array_dyn<u8> str;
@@ -1959,6 +2034,7 @@ void formula_parse_statement(Formula_store* store) {
                 return;
             }
 
+            // Flush operators with higher precedence from the stack
             s64 prec = _get_operator_precedence(typ);
             s64 right_assoc = typ == Formula::IMPL_R;
             while (true) {
@@ -1980,6 +2056,7 @@ void formula_parse_statement(Formula_store* store) {
                 pop_binop();
             }
 
+            // Check whether this is all fine
             if (typ != Formula::_PAREN_L and typ != Formula::NEG) {
                 if (store->parser_diff != 1) {
                     ui_error_report("Error: Expected identifier or constant, got operator");
@@ -1991,6 +2068,8 @@ void formula_parse_statement(Formula_store* store) {
             
             array_push_back(&store->parser_ops, typ);
         } else if (_get_digit(tok_0) != -1) {
+            // Got a constant
+            
             assert(tok_0 == '0' or tok_0 == '1');
             array_push_back(&store->parser_ids, (s64)(tok_0 - '0'));
 
@@ -2001,10 +2080,13 @@ void formula_parse_statement(Formula_store* store) {
             }
             store->parser_diff = 1;
 
-            while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
+            while (store->parser_ops.size
+                   and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
                 pop_unop();
             }
         } else {
+            // Else, it must be an identifier
+            
             s64 var = formula_parse_var(store, tok);
             array_push_back(&store->parser_ids, formula_create(store, Formula::VAR, var));
 
@@ -2015,13 +2097,15 @@ void formula_parse_statement(Formula_store* store) {
             }
             store->parser_diff = 1;
 
-            while (store->parser_ops.size and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
+            while (store->parser_ops.size
+                   and store->parser_ops[store->parser_ops.size-1] == Formula::NEG) {
                 pop_unop();
             }
         }
     }
 }
 
+// Parse the whole formula written in str, with variable order order.
 s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
     formula_store_init(store);
     store->str = str;
@@ -2054,7 +2138,8 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
         };
         return _rec(f_id, _rec);
     };
-    
+
+    // Determine what variables are responsible for subformulae, i.e. perform the assignments
     array_resize(&store->vars_formula, store->vars.size);
     memset(store->vars_formula.data, -1, store->vars_formula.size * sizeof(store->vars_formula[0]));
     store->vars_formula[0] = 0;
@@ -2090,6 +2175,7 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
         return -1;
     }
 
+    // Parse the variable order
     store->str = order;
     store->str_i = 0;
     store->str_row = 0;
@@ -2106,6 +2192,7 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
         
         if (tok.size == 0) break;
 
+        // Ignore operators
         u32 tok_0; helper_decode_utf8(tok, &tok_0);
         if (_is_operator(tok_0)) continue;
         
@@ -2116,6 +2203,12 @@ s64 formula_parse(Formula_store* store, Array_t<u8> str, Array_t<u8> order) {
         }
 
         s64 var = formula_parse_var(store, tok);
+
+        if (store->vars_formula[var] != -1) {
+            ui_error_report("Error: Variable in variable order list is actually a subformula");
+            return -1;
+        }
+        
         for (s64 i: store->order_var) {
             if (var == i) {
                 ui_error_report("Error: Variable appears twice in variable order list");

@@ -2,47 +2,69 @@
 
 Binary Decision Diagrams (BDDs, see also [Wikipedia](https://en.wikipedia.org/wiki/Binary_decision_diagram)) are a compact way of representing sets of numbers, so that certain set operations (e.g. union, intersection, complement) can still be executed efficiently. They are used extensively in logic synthesis as well as formal verification.
 
-obst is a web application that shows how the algorithms for constructing and operating on BDDs work on a step-by-step basis. You can try it out [here](https://nicze.de/philipp/bdds). It is intended to be useful for both exploring the inner workings of BDDs interactively, as well as demonstrating the intermediate steps of a BDD computation in a classroom environment.
+obst is an application that shows how the algorithms for constructing and operating on BDDs work on a step-by-step basis. You can try it out [here](https://nicze.de/philipp/bdds). It is intended to be useful for both exploring the inner workings of BDDs interactively, as well as demonstrating the intermediate steps of a BDD computation in a classroom environment.
 
-As obst is built on WebAssembly, it requires a reasonably modern browser to run. I have tested it on both Firefox 61 and Chrome 68. If you want to be able to run the website offline, either grab one of the releases from the GitHub repository, or just download `index.html`, `obst.js`, and `obst.wasm` from the live version. Currently, obst only runs in a website. If you are interested in running it as a native application over a CLI, e.g. to generated a pdf slideshow out of the animation, feel free to contact me.
+It has both a web interface as well as a native one, the latter of which currently runs only on Linux. While the functionality is almost identical, the native version is more performant and the animations look better.
+
+As the web interface of obst is built on WebAssembly, it requires a reasonably modern browser to run. I have tested it on both Firefox 61 and Chrome 68. If you want to be able to run the website offline, either grab one of the releases from the GitHub repository, or just download `index.html`, `obst.js`, and `obst.wasm` from the live version.
 
 obst was written by Philipp Czerner in 2018. You can contact me via e-mail (contact@nicze.de) or on GitHub. Do feel free to send me any feedback, suggestions, etc., I would love to hear them!
 
 ## Usage instructions
 
-I hope the website is pretty self-explanatory, but a few details are not documented there. So, here is the full list of keybindings:
+I hope the application is pretty self-explanatory, but a few details are not documented there. So, here is the full list of keybindings:
 
 * *Left, Right*: Move to the previous/next frame of the animation.
 * *Page down, Page up*: Move to the previous/next checkpoint, that is the first frame of an operation.
 * *Home, End*: Move to the first/last frame.
 * *F1*: Show/hide the help.
-* *Shift-1* (well, `!` actually): Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside obst and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Finally, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
+* *F2*: Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside obst and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Finally, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
 
-When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid.
+When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid. 
 
 For entering nodes, just write down the index of the node. `T` and `F` also work, respectively denoting the True and False node.
 
 The 'Bit order' field determines the mapping between levels and bits. If you leave it at 'auto', the number of levels is chosen as the largest index of the highest bit of each number, and the order is such that higher levels correspond to more significant bits.
 
-## Building and running the program
+The parser for boolean formulae accepts a list of statements separated by either newlines or semicolons. Each statement is either of the form `x = <expr>` or `<expr>`, with `<expr>` being a boolean expression using negation `~` and the following binary operators: `&`, `|`, `->`, `<-`, `^`, `<->`. I accept a few variants of these operators, notably their usual unicode symbols ¬, ∧, ∨, ←, →, ⊕, ↔. (If you want the full list, see `_get_operator_type` in `obst.cpp`.) The operators are listed in order of precedence, `<-` is right-associative. You can use the constants `0` and `1` as well as arbitrary identifiers. `x = <expr>` assigns `x` to be the subformula `<expr>`. Unassigned identifiers are treated as variables. The statement '<expr>' adds the expression to the formula the bdd stores.
+
+Variable order is the string 'auto' or a comma-separated list of variable names. (Actually, a list of identifiers and operators, the latter of which are ignored.)
+
+## Building and running the web-interface
 
 Take care to set up your Emscripten environment beforehand, e.g. by executing `source /path/to/emscripten/emsdk_env.sh`.
 
 Debug build:
 
-    ./build.sh
+    ./build.sh emcc debug
 
 Release build:
 
-    ./build_release.sh
+    ./build.sh emcc release
 
-To give a bit more context, the project consists of a single C++ source file, as well as a small HTML page. You need to define the OS_EMSCRIPTEN macro while compiling, as well as enabling C++14. Apart from that, no special treatment is necessary. I used `emcc` version 1.38.12 during development.
+To give a bit more context, the project consists of a few C++ source files, as well as a small HTML page. You need to compile and link only `platform_emscripten.cpp`. C++14 has to be enabled. Apart from that, no special treatment is necessary. I used `emcc` version 1.38.12 during development.
 
 Testing the web page locally can be done by simply pointing the browser at the `index.html` file. However, the code will complain about not being able to perform a WebAssembly streaming compile, as the MIME type is not set correctly. For this, run
 
     emrun index.html
 
 and ignore the warning about stdout capture (the console in the browser will still work just fine). This hosts a local webserver, which advertises the correct MIME type.
+
+## Building and running the native interface
+
+A simple
+
+    ./build.sh gcc debug
+
+suffices for a debug build. This will compile and link `platform_linux.cpp`, enabling C++14. You can do that by hand, if you prefer. In terms of dependencies, you need OpenGL 3.2, X11 and Xrandr, which should be present on any Linux desktop set up in the last decade.
+
+    ./build.sh gcc release
+
+creates the release build. There is one additional consideration for shipping: I prefer distributing just a single executable. Hence, you can run
+
+    ./obst --pack
+
+to pack the necessary ressources (the fonts) into the binary. This will create an `obst_packed` executable. It still needs the dynamic libraries present at runtime, but I am reasonably confident that these are preinstalled on any somewhat modern system.
 
 ## The source code
 
@@ -62,6 +84,12 @@ The program is strucured into the following layers:
 
 5. UI. Finally, someone has to react to button presses and glue the lower layers together. There is not a lot of interesting stuff happening here.
 
+6. Platform. This provides an API for the UI to interact with the underlying platform and calls into the UI for initialisation and updates.
+
+  1. Linux. Here the window is in the tender and loving hands of X, while we render using OpenGL. Fonts are loaded from disk and rasterised using `stb_truetype`. This layer contains an implementation of a GUI.
+
+  2. Emscripten. The browser is responsible for everything, so most things emit the appropiate HTML code instead of doing any actual work. `index.html` defines the GUI structure, WebGL is used for rendering.
+
 Some random implementation details:
 
 * In the code I use the word 'BDD' to refer to nodes in a BDD.
@@ -70,7 +98,8 @@ Some random implementation details:
 * Layouts are computed going backwards in time, so the iterative graph layout starts with the last frame.
 * Both the ellipses and quadratic spline are drawn in the fragment shader.
 * To have accurate gaps while drawing the quadratic splines, the relationship between t (the curve parameter) and the length of the curve, which is decidedly non-linear, is approximated by a third-degree polynomial for the fragment shader.
-* Text is rendered by first getting the browser to draw it in a 2D canvas environment, and then copying it onto a WebGL texture. This process is performed whenever the scale changes, in the hope of having pixel-perfect text.
+* Text is rendered by first getting the browser to draw it in a 2D canvas environment, and then copying it onto a WebGL texture. This process is performed whenever the scale changes.
+* Labels are offset by a subpixel amount to make the glyph texture map exactly onto the screen pixels. But that is only for the start and end points of an animation, the others are interpolated normally so that the animation feels smooth.
 
 ## Trivia
 
@@ -78,4 +107,3 @@ Some random implementation details:
 * The background of coloured nodes is not white, but a very washed-out version of their colour
 * Arrows do not end precisely where the border begins, but a tiny bit later
 * Interpolation is not linear. Instead it is smoothed out a bit.
-* Labels are offset by a subpixel amount to make the glyph texture map exactly onto the screen pixels. But that is only for the start and end points of an animation, the others are interpolated normally so that the animation feels smooth.
