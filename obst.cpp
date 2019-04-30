@@ -4220,7 +4220,8 @@ float spline_find_offset(Pos p0, Pos p1, Pos p2, float length, s64 n = 50) {
         c += f1 + f2;
 
         if (l+c > length) {
-            return t + (length - l) / c * 2.f*dt;
+            // We want to ensure that this function always returns a result in [0,1]
+            return std::min(t + (length - l) / c * 2.f*dt, 1.f);
         }
         l += c;
         c = f2;

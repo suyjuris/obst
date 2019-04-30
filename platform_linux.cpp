@@ -1416,6 +1416,7 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F1");
     platform_fmt_text(Text_fmt::PARAGRAPH, ": Show/hide help.");
     platform_fmt_end(Text_fmt::ITEMIZED);
+    platform_fmt_spacing(Text_fmt::NEWLINE);
     platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Font license");
     platform_fmt_text(Text_fmt::PARAGRAPH, "Fonts of the DejaVu family are used by obst. Their license information is included either in the fonts subdirectory, or can be viewed by running obst with --font-license as argument.");
     platform_fmt_store(Lui_context::SLOT_HELPTEXT);
