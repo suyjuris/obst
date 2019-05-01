@@ -334,7 +334,7 @@ struct Platform_state {
     u8 cursor_type = Cursor_type::NORMAL;
     Cursor cursor_text, cursor_resize;
 
-    Lui_context gl_context; //@Cleanup: Rename to lui_context
+    Lui_context lui_context;
 
     double redraw_next = -1;
     double redraw_last = 0.f;
@@ -346,18 +346,18 @@ struct Platform_state {
 Platform_state global_platform;
 
 void platform_ui_bddinfo_show(float x, float y, float pad) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     context->bddinfo_active = true;
     context->bddinfo_x   =  (s64)std::round((x - global_context.origin_x) * global_context.scale);
     context->bddinfo_y   = -(s64)std::round((y - global_context.origin_y) * global_context.scale) + global_context.height;
     context->bddinfo_pad =  (s64)std::round( pad                          * global_context.scale);
 }
 void platform_ui_bddinfo_hide() {
-    global_platform.gl_context.bddinfo_active = false;
+    global_platform.lui_context.bddinfo_active = false;
 }
 
 void platform_main_loop_active(bool active) {
-    global_platform.gl_context.main_loop_active = active;
+    global_platform.lui_context.main_loop_active = active;
 }
 
 void platform_redraw(double t) {
@@ -374,7 +374,7 @@ void _platform_handle_resize(s64 width = -1, s64 height = -1) {
     if (width  != -1) global_context.screen_w = width;
     if (height != -1) global_context.screen_h = height;
 
-    s64 plw = global_platform.gl_context.panel_left_hidden ? 0 : global_platform.gl_context.panel_left_width;
+    s64 plw = global_platform.lui_context.panel_left_hidden ? 0 : global_platform.lui_context.panel_left_width;
     global_context.width = std::max(global_context.screen_w - plw, 400ll);
     global_context.height = global_context.screen_h;
     global_context.canvas_x = plw;
@@ -386,12 +386,12 @@ void _platform_handle_resize(s64 width = -1, s64 height = -1) {
 }
 
 void platform_panel_toggle() {
-    global_platform.gl_context.panel_left_hidden ^= 1;
+    global_platform.lui_context.panel_left_hidden ^= 1;
     _platform_handle_resize();
 }
 
 void _platform_init_font(s64 font_style, s64 index, float size) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
 
     if (index == -1) index = context->fonts[font_style].info_index;
     
@@ -416,14 +416,14 @@ void _platform_init_gl(Platform_state* platform) {
     assert(platform);
     _platform_init_gl_pointers();
 
-    // WebGL has no vertex array objects, OpenGL requires them. Yay. However, creating a single one
-    // is fine, and we can do everything else WebGL style.
+    // Opengl has no vertex array objects, OpenGL requires them. Yay. However, creating a single one
+    // is fine, and we can do everything else Opengl style.
     GLuint vao;
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
 
     // This loads all the application shaders
-    webgl_init(&global_context);
+    opengl_init(&global_context);
 
     // Now we load our own shaders
     
@@ -526,7 +526,7 @@ void _platform_init_gl(Platform_state* platform) {
         "}\n";
 
     GLuint program;
-    auto context = &platform->gl_context; // The macros expect a local context variable
+    auto context = &platform->lui_context; // The macros expect a local context variable
     context->uniforms = array_create<GLint>(context->UNIFORMS_COUNT);
     
     OBST_PROGRAM_INIT(uirect);
@@ -761,7 +761,7 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
 }
 
 void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* linoff, float* ascent) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     
     _platform_init_font(Lui_context::FONT_BDD_NORMAL,  -1, font_size             );
     _platform_init_font(Lui_context::FONT_BDD_ITALICS, -1, font_size             );
@@ -769,9 +769,9 @@ void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* o
     lui_text_prepare_init(&context->prep_bdd, 512);
 
     for (s64 i = 0; i < offsets->size; ++i) {
-        u8 c = webgl_bddlabel_index_char(i);
+        u8 c = opengl_bddlabel_index_char(i);
         bool italicized;
-        auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
+        auto arr = opengl_bddlabel_index_utf8(i, nullptr, &italicized);
 
         u8 font = c & 128 ? Lui_context::FONT_BDD_SMALL :
             italicized ? Lui_context::FONT_BDD_ITALICS :
@@ -1113,13 +1113,13 @@ void lui_draw_entry_text(Lui_context* context, Text_entry entry, Rect text_bb, u
 }
 
 void platform_fmt_init() {
-    global_platform.gl_context.fmt_flags = 0;
+    global_platform.lui_context.fmt_flags = 0;
 }
 void platform_fmt_begin(u64 flags) {
-    global_platform.gl_context.fmt_flags |= flags;
+    global_platform.lui_context.fmt_flags |= flags;
 }
 void platform_fmt_end(u64 flags) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     if (context->fmt_boxes.size) {
         context->fmt_boxes[context->fmt_boxes.size-1].flags |= flags & Text_fmt::GROUP_SPACING;
     }
@@ -1127,10 +1127,10 @@ void platform_fmt_end(u64 flags) {
     context->fmt_flags &= ~flags;
 }
 void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     
     platform_fmt_begin(flags_add);
-    u64 flags = global_platform.gl_context.fmt_flags;
+    u64 flags = global_platform.lui_context.fmt_flags;
 
     u8 font;
     if (flags & Text_fmt::HEADER) {
@@ -1161,12 +1161,12 @@ void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
         if (last == i) continue;
 
         Text_box box;
-        lui_text_prepare_word(&global_platform.gl_context, &context->prep_ui, font, array_subarray(text, last, i), &box, letter_fac);
+        lui_text_prepare_word(&global_platform.lui_context, &context->prep_ui, font, array_subarray(text, last, i), &box, letter_fac);
         if (isdigit) box.flags |= Text_fmt::NOSPACE | Text_fmt::STICKY;
 
         box.flags |= flags & Text_fmt::GROUP_DRAWING;
         
-        array_push_back(&global_platform.gl_context.fmt_boxes, box);
+        array_push_back(&global_platform.lui_context.fmt_boxes, box);
         last = i + not isdigit;
     }
     
@@ -1176,20 +1176,20 @@ void platform_fmt_spacing(u64 flags) {
     Text_box box;
     box.font = Lui_context::FONT_LUI_NORMAL;
     box.flags = flags;
-    array_push_back(&global_platform.gl_context.fmt_boxes, box);
+    array_push_back(&global_platform.lui_context.fmt_boxes, box);
 }
 
 void platform_fmt_store(s64 slot) {
     assert(0 <= slot);
 
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     
     context->fmt_slots[slot].size = 0;
     array_append(&context->fmt_slots[slot], context->fmt_boxes);
     context->fmt_boxes.size = 0;
 }
 void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out=nullptr, s64* y_out=nullptr, bool only_measure=false, s64* xw_out=nullptr) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     u8 black[] = {0, 0, 0, 255};
     u8 gray[] = {120, 120, 120, 255};
     u8* fill = context->elem_flags[slot] & Lui_context::DRAW_DISABLED ? gray : black;
@@ -1203,7 +1203,7 @@ void platform_fmt_draw(s64 slot, s64 x, s64 y, s64 w, s64* x_out=nullptr, s64* y
     if (y_out) *y_out = yh;
 }
 void platform_fmt_store_copy(s64 slot_into, s64 slot_from) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     context->fmt_slots[slot_into].size = 0;
     array_append(&context->fmt_slots[slot_into], context->fmt_slots[slot_from]);
 }
@@ -1334,7 +1334,7 @@ void _platform_frame_init() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
-    auto context = &global_platform.gl_context;
+    auto context = &global_platform.lui_context;
     
     context->buf_uirect_pos.size = 0;
     context->buf_uirect_fill.size = 0;
@@ -1354,7 +1354,7 @@ void _platform_frame_init() {
 
 void _platform_init(Platform_state* platform) {
     assert(platform);
-    Lui_context* context = &global_platform.gl_context; // The macros expect a local named context
+    Lui_context* context = &global_platform.lui_context; // The macros expect a local named context
     
     _platform_init_gl(platform);
 
@@ -1543,7 +1543,7 @@ void lui_entry_clear(Lui_context* context, Text_entry* entry) {
 }
 
 void _platform_operations_able(bool set) {
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
         
     s64 elem_disable[] = {
         Lui_context::SLOT_BUTTON_DESC_OP,
@@ -1580,7 +1580,7 @@ void platform_operations_disable() {
 }
 void platform_operations_enable(u32 bdd) {
     if (bdd > 1) {
-        auto context = &global_platform.gl_context;
+        auto context = &global_platform.lui_context;
 
         auto set_entry_bdd = [context](u8 entry_id, u32 bdd) {
             Text_entry* entry = &context->entries[entry_id];
@@ -1600,16 +1600,16 @@ void platform_operations_enable(u32 bdd) {
 }
 
 void platform_ui_button_help () {
-    global_platform.gl_context.helptext_active ^= 1;
-    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, global_platform.gl_context.helptext_active
+    global_platform.lui_context.helptext_active ^= 1;
+    platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, global_platform.lui_context.helptext_active
         ? Lui_context::SLOT_LABEL_HELP_HIDE : Lui_context::SLOT_LABEL_HELP_SHOW);
 }
 bool platform_ui_help_active () {
-    return global_platform.gl_context.helptext_active;
+    return global_platform.lui_context.helptext_active;
 }
 
 Array_t<u8> platform_ui_value_get(u8 elem) {
-    auto context = &global_platform.gl_context;
+    auto context = &global_platform.lui_context;
     
     switch (elem) {
     case Ui_elem::OP_NODE0: return context->entries[Lui_context::ENTRY_FIRSTNODE].text;
@@ -1638,7 +1638,7 @@ Array_t<u8> platform_ui_value_get(u8 elem) {
 void platform_ui_value_free(Array_t<u8> data) {}
 
 void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col, s64 _cursor_char) {
-    auto context = &global_platform.gl_context;
+    auto context = &global_platform.lui_context;
     
     Text_entry* entry;
     switch (elem) {
@@ -1662,7 +1662,7 @@ void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col,
 }
 
 void platform_mouse_position(float* out_x, float* out_y) {
-    auto context = &global_platform.gl_context;
+    auto context = &global_platform.lui_context;
     auto c = &global_context;
 
     float world_x = c->origin_x + (context->pointer_x - c->canvas_x) / c->scale;
@@ -1678,7 +1678,7 @@ void _platform_frame_draw() {
     float sx =  2.f / global_context.screen_w;
     float sy = -2.f / global_context.screen_h;
 
-    auto context = &global_platform.gl_context; // The macros expect a local named context
+    auto context = &global_platform.lui_context; // The macros expect a local named context
 
     if (context->prep_ui.dirty) {
         context->prep_ui.dirty = false;
@@ -2227,7 +2227,7 @@ void lui_radio_press(s64 slot) {
 void _platform_render(Platform_state* platform) {
     assert(platform);
     
-    Lui_context* context = &global_platform.gl_context;
+    Lui_context* context = &global_platform.lui_context;
     auto font_inst = context->fonts[Lui_context::FONT_LUI_NORMAL];
 
     // Process input
@@ -2941,13 +2941,13 @@ void linux_handle_selection_response(Platform_state* platform, XSelectionEvent* 
         XDeleteProperty(platform->display, platform->window, platform->sel_target);
 
         if (ev->selection == platform->sel_primary) {
-            Key key1 = Key::create_mouse(Key::LEFT_DOWN, platform->gl_context.pointer_x, platform->gl_context.pointer_y);
-            Key key2 = Key::create_mouse(Key::LEFT_UP,   platform->gl_context.pointer_x, platform->gl_context.pointer_y);
-            array_append(&global_platform.gl_context.input_queue, {key1, key2});
+            Key key1 = Key::create_mouse(Key::LEFT_DOWN, platform->lui_context.pointer_x, platform->lui_context.pointer_y);
+            Key key2 = Key::create_mouse(Key::LEFT_UP,   platform->lui_context.pointer_x, platform->lui_context.pointer_y);
+            array_append(&global_platform.lui_context.input_queue, {key1, key2});
         }
         
         Key key = Key::create_special(Key::C_PASTE, 0, index);
-        array_push_back(&global_platform.gl_context.input_queue, key);
+        array_push_back(&global_platform.lui_context.input_queue, key);
     }
 }
 
@@ -3175,19 +3175,19 @@ void _platform_print_help(char* argv0, bool is_packed) {
 
 int main(int argc, char** argv) {
     bool print_help = false;
-    bool is_packed = _platform_fonts_load(&global_platform.gl_context);
+    bool is_packed = _platform_fonts_load(&global_platform.lui_context);
     
     if (argc > 2) {
         print_help = true;
     } else if (argc == 2) {
         Array_t<u8> arg = {(u8*)argv[1], (s64)strlen(argv[1])};
         if (array_equal_str(arg, "--font-license")) {
-            auto arr = global_platform.gl_context.font_file_data;
+            auto arr = global_platform.lui_context.font_file_data;
             fwrite(arr[arr.size-1].data, 1, arr[arr.size-1].size, stdout);
             puts("");
             exit(0);
         } else if (array_equal_str(arg, "--pack")) {
-            _platform_fonts_pack(&global_platform.gl_context);
+            _platform_fonts_pack(&global_platform.lui_context);
             printf("Packing successful.\n");
             exit(0);
         } else {
@@ -3334,10 +3334,6 @@ int main(int argc, char** argv) {
     global_platform.net_wm_state            = XInternAtom(display, "_NET_WM_STATE", true);
     global_platform.net_wm_state_fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", true);
     global_platform.type_atom               = type_atom;
-
-    // @Cleanup Remove
-    //XChangeProperty(global_platform.display, global_platform.window, global_platform.net_wm_state, global_platform.type_atom, 32,
-    //    PropModeReplace, (u8*)&global_platform.net_wm_state_fullscreen, 1);
     
     // Map the context to the window
     GLXWindow window_glx = glXCreateWindow(display, *config, window, nullptr);
@@ -3406,7 +3402,7 @@ int main(int argc, char** argv) {
             platform_redraw(0);
             break;
         case KeyPress: {
-            auto* iq = &global_platform.gl_context.input_queue;
+            auto* iq = &global_platform.lui_context.input_queue;
             linux_get_event_key(iq, event.xkey);
             if (iq->size and (*iq)[iq->size-1].type == Key::SPECIAL and (*iq)[iq->size-1].special == Key::C_PASTE) {
                 // Query the contents of the clipboard, we need to wait for them to arrive
@@ -3421,38 +3417,38 @@ int main(int argc, char** argv) {
             }
         } break;
         case ButtonPress:
-            global_platform.gl_context.pointer_x = event.xmotion.x;
-            global_platform.gl_context.pointer_y = event.xmotion.y;
+            global_platform.lui_context.pointer_x = event.xmotion.x;
+            global_platform.lui_context.pointer_y = event.xmotion.y;
             if (event.xbutton.button == Button1) {
                 Key key = Key::create_mouse(Key::LEFT_DOWN, event.xbutton.x, event.xbutton.y);
-                array_push_back(&global_platform.gl_context.input_queue, key);
+                array_push_back(&global_platform.lui_context.input_queue, key);
                 platform_redraw(0);
             } else if (event.xbutton.button == Button4) {
                 Key key = Key::create_mouse(Key::SCROLL_UP, event.xbutton.x, event.xbutton.y);
-                array_push_back(&global_platform.gl_context.input_queue, key);
+                array_push_back(&global_platform.lui_context.input_queue, key);
                 platform_redraw(0);
             } else if (event.xbutton.button == Button5) {
                 Key key = Key::create_mouse(Key::SCROLL_DOWN, event.xbutton.x, event.xbutton.y);
-                array_push_back(&global_platform.gl_context.input_queue, key);
+                array_push_back(&global_platform.lui_context.input_queue, key);
                 platform_redraw(0);
             } else if (event.xbutton.button == Button2) {
                 XConvertSelection(display, sel_primary, sel_utf8str, sel_target, window, event.xbutton.time);
             }
             break;
         case ButtonRelease:
-            global_platform.gl_context.pointer_x = event.xmotion.x;
-            global_platform.gl_context.pointer_y = event.xmotion.y;
+            global_platform.lui_context.pointer_x = event.xmotion.x;
+            global_platform.lui_context.pointer_y = event.xmotion.y;
             if (event.xbutton.button == Button1) {
                 Key key = Key::create_mouse(Key::LEFT_UP, event.xbutton.x, event.xbutton.y);
-                array_push_back(&global_platform.gl_context.input_queue, key);
+                array_push_back(&global_platform.lui_context.input_queue, key);
                 platform_redraw(0);
             }
             break;
         case MotionNotify: {
-            global_platform.gl_context.pointer_x = event.xmotion.x;
-            global_platform.gl_context.pointer_y = event.xmotion.y;
+            global_platform.lui_context.pointer_x = event.xmotion.x;
+            global_platform.lui_context.pointer_y = event.xmotion.y;
             Key key = Key::create_mouse(Key::MOTION, event.xmotion.x, event.xmotion.y);
-            array_push_back(&global_platform.gl_context.input_queue, key);
+            array_push_back(&global_platform.lui_context.input_queue, key);
             platform_redraw(0);
         } break;
             
@@ -3466,12 +3462,12 @@ int main(int argc, char** argv) {
 
         case FocusIn: {
             Key key = Key::create_general(Key::FOCUS_IN);
-            array_push_back(&global_platform.gl_context.input_queue, key);
+            array_push_back(&global_platform.lui_context.input_queue, key);
             platform_redraw(0);
         } break;
         case FocusOut: {
             Key key = Key::create_general(Key::FOCUS_OUT);
-            array_push_back(&global_platform.gl_context.input_queue, key);
+            array_push_back(&global_platform.lui_context.input_queue, key);
             platform_redraw(0);
         } break;
             
@@ -3482,7 +3478,7 @@ int main(int argc, char** argv) {
             break;
         case ClientMessage:
             if (event.xclient.message_type == wm_protocols and event.xclient.data.l[0] - wm_delete_window == 0) {
-                array_push_back(&global_platform.gl_context.input_queue, Key::create_special(Key::C_QUIT, 0));
+                array_push_back(&global_platform.lui_context.input_queue, Key::create_special(Key::C_QUIT, 0));
                 platform_redraw(0);
             }
             break;

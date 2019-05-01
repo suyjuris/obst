@@ -9,7 +9,7 @@
 //#define OBST_DBG_SHOW_FORCE_LAYOUT 1
 
 
-//@Cleanup: Rename webgl to opengl
+//@Cleanup: Rename opengl to opengl
 
 
 // Display an error somewhere, somehow. This is not for critical errors where we exit the program,
@@ -568,24 +568,24 @@ void context_pop(Bdd_store* store) {
 //  Finally, the bytes are then mapped to indices into the texture in a simple fashio, we map
 // [22,127) to [0,105), and then 128 | [22,127) to 105 + [0,105).
 
-constexpr s64 webgl_bddlabel_index_size = 210; // Total number of slots in the texture
+constexpr s64 opengl_bddlabel_index_size = 210; // Total number of slots in the texture
 
 // Return the index of bytes c according to the above mapping and the other way around.
-s64 webgl_bddlabel_char_index(u8 c) {
+s64 opengl_bddlabel_char_index(u8 c) {
     if (22 <= (c&127) and (c&127) < 127) {
         return (c&127) - 22 + (c>>7) * 105;
     } else {
         return -1;
     }
 }
-u8 webgl_bddlabel_index_char(s64 index) {
+u8 opengl_bddlabel_index_char(s64 index) {
     assert(0 <= index and index < 210);
     return (u8)(index < 105 ? index + 22 : index + 45);
 }
 
 // Convert an index into the texture into a unicode codepoint represented in UTF-8 as well as
 // information on how to draw it.
-Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bool* draw_italics_=nullptr) {
+Array_t<u8> opengl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bool* draw_italics_=nullptr) {
     assert(0 <= index and index < 210);
     static char c[2];
     c[0] = (char)(index < 105 ? index + 22 : index - 83);
@@ -621,8 +621,8 @@ Array_t<u8> webgl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bo
     return {(u8*)s, (s64)strlen(s)};
 }
 
-Array_t<u8> webgl_bddlabel_char_utf8(u8 c) {
-    return webgl_bddlabel_index_utf8(webgl_bddlabel_char_index(c));
+Array_t<u8> opengl_bddlabel_char_utf8(u8 c) {
+    return opengl_bddlabel_index_utf8(opengl_bddlabel_char_index(c));
 }
     
 // Like context_amend, but formats the name of a bdd.
@@ -634,7 +634,7 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
     bool italics_on = false;
     for (u8 c: arr) {
         bool italicized;
-        auto c_arr = webgl_bddlabel_index_utf8(webgl_bddlabel_char_index(c), nullptr, &italicized);
+        auto c_arr = opengl_bddlabel_index_utf8(opengl_bddlabel_char_index(c), nullptr, &italicized);
         if (not italics_on and italicized) context_amend(store, "<i>");
         if (italics_on and not italicized) context_amend(store, "</i>");
         italics_on = italicized;
@@ -1849,7 +1849,7 @@ void _context_amend_formula_helper(Bdd_store* store, Formula_store* fstore, s64 
     } else if (f.type == Formula::VAR) {
         context_amend_formula_var(store, fstore, f.var);
     } else if (f.type == Formula::NEG) {
-        auto cc = webgl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
+        auto cc = opengl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
         context_amend(store, cc);
         _context_amend_formula_helper(store, fstore, f.arg, _get_operator_precedence(f.type));
     } else {
@@ -1857,7 +1857,7 @@ void _context_amend_formula_helper(Bdd_store* store, Formula_store* fstore, s64 
         bool right_assoc = f.type == Formula::IMPL_R;
         if (paren) context_amend(store, "(");
         _context_amend_formula_helper(store, fstore, f.arg_l, f.type + 1-right_assoc);
-        auto cc = webgl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
+        auto cc = opengl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
         context_amend(store, cc);
         _context_amend_formula_helper(store, fstore, f.arg_r, f.type +   right_assoc);
         if (paren) context_amend(store, ")");
@@ -3478,8 +3478,8 @@ struct Bdd_attr {
     float name_alpha = 1.f;
 };
 
-// Keeps the necessary data to manage WebGL rendering
-struct Webgl_context {
+// Keeps the necessary data to manage Opengl rendering
+struct Opengl_context {
     // Indices for all the vertex attributes
     enum Attributes: GLuint {
         BDD_POS = 0, BDD_X, BDD_R, BDD_STROKE, BDD_FILL, BDD_BORDER, BDD_ATTR_COUNT,
@@ -3573,7 +3573,7 @@ struct Webgl_context {
 };
 
 // Load shader from string, print an error and abort if there is an error
-GLuint webgl_shader_load(GLenum type, Array_t<u8> source, char* name) {
+GLuint opengl_shader_load(GLenum type, Array_t<u8> source, char* name) {
    GLuint shader = glCreateShader(type);
 
    if (not shader) {
@@ -3602,7 +3602,7 @@ GLuint webgl_shader_load(GLenum type, Array_t<u8> source, char* name) {
 }
 
 // Link a shader program, print an error and abort if there is an error
-void webgl_program_link(GLuint program, char* program_name) {
+void opengl_program_link(GLuint program, char* program_name) {
     glLinkProgram(program);
     GLint linked;
     glGetProgramiv(program, GL_LINK_STATUS, &linked);
@@ -3619,7 +3619,7 @@ void webgl_program_link(GLuint program, char* program_name) {
 }
 
 // (Re-)initialise the text glyph texture.
-void webgl_text_prepare(Webgl_context* context) {
+void opengl_text_prepare(Opengl_context* context) {
     if (context->text_tex != 0) {
         glDeleteTextures(1, &context->text_tex);
     }
@@ -3628,7 +3628,7 @@ void webgl_text_prepare(Webgl_context* context) {
     glBindTexture(GL_TEXTURE_2D, context->text_tex);
 
     if (context->text_pos.size == 0) {
-        context->text_pos = array_create<Text_box>(webgl_bddlabel_index_size);
+        context->text_pos = array_create<Text_box>(opengl_bddlabel_index_size);
     }
 
     int font_size = (int)std::round(
@@ -3648,7 +3648,7 @@ void webgl_text_prepare(Webgl_context* context) {
 }
 
 // Initialised the OpenGL context
-void webgl_init(Webgl_context* context) {
+void opengl_init(Opengl_context* context) {
     // The shaders. Generally speaking, the vertex shader just maps into device coordinates while
     // passing on the relevant attributes, and the fragment shader then does all the calculations.
 
@@ -3871,7 +3871,7 @@ void webgl_init(Webgl_context* context) {
     // Yeah, sorry about the macros, but I do not think this code would be more readable without them.
 
 #define OBST_LOAD_SHADER(x, y) \
-    GLuint x##_id = webgl_shader_load(y, {(u8*)x, sizeof(x)}, (char*)#x); \
+    GLuint x##_id = opengl_shader_load(y, {(u8*)x, sizeof(x)}, (char*)#x); \
     glAttachShader(program, x##_id)
 
 #define OBST_PROGRAM_INIT(x) \
@@ -3882,7 +3882,7 @@ void webgl_init(Webgl_context* context) {
     OBST_LOAD_SHADER(shader_f_##x, GL_FRAGMENT_SHADER)
 
 #define OBST_PROGRAM_LINK(x) \
-    webgl_program_link(program, (char*)#x)
+    opengl_program_link(program, (char*)#x)
 
 #define OBST_ATTRIB(x, y) \
     glBindAttribLocation(program, context->x, #y);
@@ -3896,7 +3896,7 @@ void webgl_init(Webgl_context* context) {
     glGenBuffers(context->y##_ATTR_COUNT, context->buffers_##x.data)
     
     GLuint program;
-    context->uniforms = array_create<GLint>(Webgl_context::UNIFORMS_COUNT);
+    context->uniforms = array_create<GLint>(Opengl_context::UNIFORMS_COUNT);
     
     OBST_PROGRAM_INIT(bdd);
     OBST_ATTRIB(BDD_POS, pos);
@@ -3959,11 +3959,11 @@ void webgl_init(Webgl_context* context) {
 
 // These exist only once. Some of the lower functions do not assume that, but many UI functions do.
 // @Cleanup: Maybe refactor a few functions to not use these
-Webgl_context global_context;
+Opengl_context global_context;
 Bdd_store global_store;
 Array_t<Bdd_layout> global_layouts;
 
-void webgl_draw_rect(Webgl_context* context, float x1, float y1, float w, float h, u8* fill, float z=0.45f) {
+void opengl_draw_rect(Opengl_context* context, float x1, float y1, float w, float h, u8* fill, float z=0.45f) {
     float x2 = x1+w, y2 = y1+h;
     
     array_append(&context->buf_rect_pos, {
@@ -3975,7 +3975,7 @@ void webgl_draw_rect(Webgl_context* context, float x1, float y1, float w, float 
 }
 
 // Draw a single node
-void webgl_draw_bdd(Webgl_context* context, Bdd_attr a) {
+void opengl_draw_bdd(Opengl_context* context, Bdd_attr a) {
     float x0 = a.x - a.rx * 1.1f;
     float y0 = a.y - a.ry * 1.1f;
     float x1 = a.x + a.rx * 1.1f;
@@ -4002,11 +4002,11 @@ Array_t<u8> _get_bdd_name(Bdd_store* store, u32 name) {
     }
 }
 
-void _measure_str(Webgl_context* context, Array_t<u8> text, float size, float* w_, float* size_adj_, float* ascent_, bool* small) {
+void _measure_str(Opengl_context* context, Array_t<u8> text, float size, float* w_, float* size_adj_, float* ascent_, bool* small) {
     float fs = 1.f / context->scale * size / context->font_size_max;
     float w = 0.f;
     for (u8 c: text) {
-        s64 index = webgl_bddlabel_char_index(c);
+        s64 index = opengl_bddlabel_char_index(c);
         if (index == -1) continue;
         w += std::round(context->text_pos[index].advance) * fs;
     }
@@ -4032,10 +4032,10 @@ void _measure_str(Webgl_context* context, Array_t<u8> text, float size, float* w
     if (small) *small = only_small;
 }
 
-void webgl_draw_text(
-    Webgl_context* context,
+void opengl_draw_text(
+    Opengl_context* context,
     float x, float y,
-    Array_t<u8> text, // Note that only the characters mapped by webgl_bddlabel_char_index will be drawn
+    Array_t<u8> text, // Note that only the characters mapped by opengl_bddlabel_char_index will be drawn
     float size, // font size in world-coordinates
     float alpha,
     float align, // 1 is right-aligned, 0 centered, -1 left-aligned
@@ -4064,11 +4064,11 @@ void webgl_draw_text(
     if (not do_draw) return;
     
     for (u8 c: text) {
-        s64 index = webgl_bddlabel_char_index(c);
+        s64 index = opengl_bddlabel_char_index(c);
         if (index == -1) continue;
         Text_box box = context->text_pos[index];
         bool draw_light;
-        webgl_bddlabel_index_utf8(index, &draw_light);
+        opengl_bddlabel_index_utf8(index, &draw_light);
         
         array_append(&context->buf_text_pos, {
             x+box.x0*fs, y-box.y0*fs, x+box.x1*fs, y-box.y0*fs, x+box.x1*fs, y-box.y1*fs,
@@ -4085,8 +4085,8 @@ void webgl_draw_text(
     }
 }
 
-void webgl_draw_text_bdd(
-    Webgl_context* context,
+void opengl_draw_text_bdd(
+    Opengl_context* context,
     Bdd_store* store,
     Bdd_attr a,
     float fac,
@@ -4112,7 +4112,7 @@ void webgl_draw_text_bdd(
         if (small) {
             oneline = false;
         } else if (do_draw) {
-            webgl_draw_rect(context, a.font_x - w/2.f - pad, a.font_y - size_adj/2.f - pad, w + 2.f*pad, size_adj + 2.f*pad, fill);
+            opengl_draw_rect(context, a.font_x - w/2.f - pad, a.font_y - size_adj/2.f - pad, w + 2.f*pad, size_adj + 2.f*pad, fill);
         }
     }
 
@@ -4124,7 +4124,7 @@ void webgl_draw_text_bdd(
     
     float alpha = a.stroke[3]/255.f * a.name_alpha;
     if (oneline) {
-        webgl_draw_text(context, a.font_x, a.font_y, str, size, alpha, 0.f, do_draw, x1_out, y1_out);
+        opengl_draw_text(context, a.font_x, a.font_y, str, size, alpha, 0.f, do_draw, x1_out, y1_out);
         if (x2_out) *x2_out = 0.f;
         if (y2_out) *y2_out = 0.f;
     } else {
@@ -4143,7 +4143,7 @@ void webgl_draw_text_bdd(
                 c1 == ',' ? 0.05f :
                 _is_operator(c0) ? 0.01f : 0.0f;
                 
-            s64 index = webgl_bddlabel_char_index(str[i]);
+            s64 index = opengl_bddlabel_char_index(str[i]);
             if (index == -1) continue;
             wn += std::round(context->text_pos[index].advance) * fs;
 
@@ -4155,24 +4155,24 @@ void webgl_draw_text_bdd(
             }
         }
         float yoff = best < str.size ? size_adj * line_fac : 0.f;
-        webgl_draw_text(context, a.font_x,  a.font_y  + yoff, array_subarray(str, 0,    best    ), size, alpha, 0.f, do_draw, x1_out, y1_out);
-        webgl_draw_text(context, a.font_x2, a.font_y2 - yoff, array_subarray(str, best, str.size), size, alpha, 0.f, do_draw, x2_out, y2_out);
+        opengl_draw_text(context, a.font_x,  a.font_y  + yoff, array_subarray(str, 0,    best    ), size, alpha, 0.f, do_draw, x1_out, y1_out);
+        opengl_draw_text(context, a.font_x2, a.font_y2 - yoff, array_subarray(str, best, str.size), size, alpha, 0.f, do_draw, x2_out, y2_out);
         if (do_draw) {
-            webgl_draw_rect(context, a.font_x - (w-best_wn)/2.f - pad, a.font_y - size_adj/2.f - yoff - pad, w-best_wn + 2.f*pad, size_adj + 2.f*pad, fill);
-            webgl_draw_rect(context, a.font_x - best_wn/2.f - pad, a.font_y - size_adj/2.f + yoff - pad, best_wn + 2.f*pad, size_adj + 2.f*pad, fill);
+            opengl_draw_rect(context, a.font_x - (w-best_wn)/2.f - pad, a.font_y - size_adj/2.f - yoff - pad, w-best_wn + 2.f*pad, size_adj + 2.f*pad, fill);
+            opengl_draw_rect(context, a.font_x - best_wn/2.f - pad, a.font_y - size_adj/2.f + yoff - pad, best_wn + 2.f*pad, size_adj + 2.f*pad, fill);
         }
     }
 }
 
 // See the note on font rounding above.
-void webgl_bdd_text_round(Webgl_context* context, Bdd_store* store, Bdd_attr* a, float fac) {
+void opengl_bdd_text_round(Opengl_context* context, Bdd_store* store, Bdd_attr* a, float fac) {
     a->font_x  = a->x;
     a->font_y  = a->y;
     a->font_x2 = a->x;
     a->font_y2 = a->y;
     
     float x1, y1, x2, y2;
-    webgl_draw_text_bdd(context, store, *a, fac, false, &x1, &y1, &x2, &y2);
+    opengl_draw_text_bdd(context, store, *a, fac, false, &x1, &y1, &x2, &y2);
 
     auto frac = [](float f) { return std::round(f) - f; };
     
@@ -4325,8 +4325,8 @@ float spline_find_offset(Pos p0, Pos p1, Pos p2, float length, s64 n = 50) {
 
 // Draws a quadratic spline. Set dash_length to 0 if you do not want dashes. dash_length is in t and
 // describes the distance from the start of one dash to the start of the next.
-void webgl_draw_edge(
-    Webgl_context* context, Pos p0, Pos p1, Pos p2,
+void opengl_draw_edge(
+    Opengl_context* context, Pos p0, Pos p1, Pos p2,
     float size, float dash_length, float dash_offset, u8* stroke
 ) {
     // Note on spline rendering: This is the mathematically most involved part of the
@@ -4464,14 +4464,14 @@ void webgl_draw_edge(
 }
 
 // Simpler interface for debug functionality
-void webgl_draw_edge_simple(Webgl_context* context, Pos p0, Pos p2, float size, u32 stroke) {
+void opengl_draw_edge_simple(Opengl_context* context, Pos p0, Pos p2, float size, u32 stroke) {
     Pos p1 {(p0.x+p2.x)*0.5f, (p0.y+p2.y)*0.5f};
     u8 stroke_arr[4] = {(u8)(stroke >> 24 & 0xff), (u8)(stroke >> 16 & 0xff), (u8)(stroke >> 8 & 0xff), (u8)(stroke & 0xff)};
-    webgl_draw_edge(context, p0, p1, p2, size, 0.f, 0.f, stroke_arr);
+    opengl_draw_edge(context, p0, p1, p2, size, 0.f, 0.f, stroke_arr);
 }
 
 // Draws an arrow with the tip at p1, coming from the direction of p0.
-void webgl_draw_arrow(Webgl_context* context, Pos p0, Pos p1, float size, u8* fill) {
+void opengl_draw_arrow(Opengl_context* context, Pos p0, Pos p1, float size, u8* fill) {
     float ux = p1.x - p0.x;
     float uy = p1.y - p0.y;
     float f = (size + 0.5f/context->scale) / std::sqrt(ux*ux + uy*uy);
@@ -4503,8 +4503,8 @@ void webgl_draw_arrow(Webgl_context* context, Pos p0, Pos p1, float size, u8* fi
     }
 }
 
-// Resets the buffers, initialises WebGL state
-void webgl_frame_init(Webgl_context* context) {
+// Resets the buffers, initialises Opengl state
+void opengl_frame_init(Opengl_context* context) {
     glClear(GL_COLOR_BUFFER_BIT);
     glClear(GL_DEPTH_BUFFER_BIT);
     
@@ -4553,7 +4553,7 @@ void webgl_frame_init(Webgl_context* context) {
         // If there is nothing there, we have to idea what size to construct the font in. But we
         // also do not need one, so skipping here is fine.
         if (context->not_completely_empty) {
-            webgl_text_prepare(context);
+            opengl_text_prepare(context);
         }
         context->font_regenerate = 0;
     } else if (context->font_regenerate > 1) {
@@ -4562,7 +4562,7 @@ void webgl_frame_init(Webgl_context* context) {
 }
 
 // Draws the content of all the buffers onto the screen.
-void webgl_frame_draw(Webgl_context* context) {
+void opengl_frame_draw(Opengl_context* context) {
 
 #define OBST_DO_BUFFER(x, name, member, siz, type, norm)                      \
     glBindBuffer(GL_ARRAY_BUFFER, context->buffers_##x[context->name]); \
@@ -4741,7 +4741,7 @@ void layout_render(Array_t<Bdd_layout>* layouts, float* max_x, float* max_y, s64
 }
 
 // Interpolates and draws the frame at time using the data from layouts and store.
-void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_store store, float time) {
+void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd_store store, float time) {
     if (time < 0.f) time = 0.f;
     s64 frame = (s64)time;
     float t = time - (s64)frame;
@@ -4820,7 +4820,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
         a.ry = param.node_radius * param.squish_fac;
         a.name = bdd.name;
 
-        webgl_bdd_text_round(context, &store, &a, 1.f);
+        opengl_bdd_text_round(context, &store, &a, 1.f);
         
         if (bdd.flags & Bdd::CURRENT) {
             color_set(a.stroke, 0x7f0a13ff);
@@ -4873,8 +4873,8 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
     };
     // Draw the bdds with the given attributes
     auto bdd_attr_apply = [param, context, &store, &attr_cur](Bdd_attr a, u32 id) {
-        webgl_draw_bdd(context, a);
-        webgl_draw_text_bdd(context, &store, a, a.rx / param.node_radius);
+        opengl_draw_bdd(context, a);
+        opengl_draw_text_bdd(context, &store, a, a.rx / param.node_radius);
         attr_cur[id] = a;
     };
     // Gives a point on the edge of a bdd. Used to position the children during the creation
@@ -5195,7 +5195,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 p1 = spl[0];
                 p2 = spl[1];
             }
-            webgl_draw_edge(context, p0, p1, p2, param.edge_size, dash_length / length_j, length_cur / length_j, stroke);
+            opengl_draw_edge(context, p0, p1, p2, param.edge_size, dash_length / length_j, length_cur / length_j, stroke);
             length_cur += length_j;
             if (the_end_is_near) break;
         }
@@ -5236,7 +5236,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 Pos p1, p2;
                 edge_mix_points(&edge_data, edge0_data, edge1_data, t);
                 edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
+                opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             } else {
                 // We are not. This is the same as both destroying and creating an edge at the same
                 // time, so do both animations.
@@ -5247,7 +5247,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 stroke_col2[3] = (u8)(((u64)stroke_col2[3] * (u64)bdd10.stroke[3]) / 255);
                 array_append(&edge_data, edge0_data);
                 edge_draw_array(edge_data, bdd0, bdd10, dash_length, 1.f, stroke_col2, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col2);
+                opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col2);
 
                 float length;
                 edge_data.size = 0;
@@ -5255,7 +5255,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 Pos p = edge_data[edge_data.size-1];
                 Bdd_attr bdd11 = {p.x, p.y, param.node_radius, param.node_radius*param.squish_fac};
                 edge_draw_array(edge_data, bdd0, bdd11, dash_length, t, stroke_col, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
+                opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             }
         } else if (edge_map0[i] == -1 and edge_map1[i] != -1) {
             // The edge was created
@@ -5273,14 +5273,14 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
                 Pos p = edge_data[edge_data.size-1];
                 bdd1 = {p.x, p.y, param.node_radius, param.node_radius*param.squish_fac};
                 edge_draw_array(edge_data, bdd0, bdd1, dash_length, t, stroke_col, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
+                opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             } else {
                 // Somewhat hacky way to detect that the child is being created in the way where it
                 // pops out of the parent (you know, the natural way) instead of just appearing out
                 // of thin air; which happens when a child already has children at creation.
                 stroke_col[3] = (u8)(((u64)stroke_col[3] * (u64)bdd1.stroke[3]) / 255);
                 edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
-                webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
+                opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             }
         } else if (edge_map0[i] != -1 and edge_map1[i] == -1) {
             // Edge is destroyed. Fade it out.
@@ -5294,7 +5294,7 @@ void layout_frame_draw(Webgl_context* context, Array_t<Bdd_layout> layouts, Bdd_
 
             Pos p1, p2;
             edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
-            webgl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
+            opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
         } else {
             // Edge exists in neither frame, so do nothing
         }
@@ -5622,7 +5622,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
         auto name = array_subarray(global_store.name_data, global_store.names[global_store.bdd_data[bdd].name],
             global_store.names[global_store.bdd_data[bdd].name+1]);
         for (u8 c: name) {
-            auto cc = webgl_bddlabel_index_utf8(webgl_bddlabel_char_index(c));
+            auto cc = opengl_bddlabel_index_utf8(opengl_bddlabel_char_index(c));
             platform_fmt_text(Text_fmt::BOLD | Text_fmt::NOSPACE, cc);
         }
         if (bdd_bdd.flags & Bdd::TEMPORARY) {
@@ -5692,7 +5692,7 @@ void ui_mouse_move(float world_x, float world_y) {
 
 void ui_frame_draw() {
     float then = (float)platform_now(); //@Cleanup: Move times to double
-    webgl_frame_init(&global_context);
+    opengl_frame_init(&global_context);
     layout_frame_draw(&global_context, global_layouts, global_store, global_ui.frame_cur);
 
     // We need the font to draw text, so check that not_completely_empty flag
@@ -5712,19 +5712,19 @@ void ui_frame_draw() {
         float y = global_context.layout_max_y + 0.9f;
         float fs = 12.f / global_context.scale;
         snprintf((char*)buf, sizeof(buf), "%.0f", last * 1e4);
-        webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);
+        opengl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);
         y -= fs;
         snprintf((char*)buf, sizeof(buf), "%.0f", max * 1e4);
-        webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);
+        opengl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);
         y -= fs;
         snprintf((char*)buf, sizeof(buf), "%.0f", avg * 1e4);
-        webgl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);}
+        opengl_draw_text(&global_context, x, y, {buf, (s64)strlen((char*)buf)}, fs, 1.f, 1.f);}
 
         float x = -0.6f + 5.f / global_context.scale;
         float y = global_context.layout_max_y + 0.9f - 30.f / global_context.scale;
         float yfac = 1000.f / global_context.scale;
         for (s64 i = 0; i+1 < global_ui.time_diff_num; ++i) {
-            webgl_draw_edge_simple(
+            opengl_draw_edge_simple(
                 &global_context,
                 {x, y + global_ui.time_diff[i]*yfac},
                 {x, y + global_ui.time_diff[i+1]*yfac},
@@ -5734,7 +5734,7 @@ void ui_frame_draw() {
         }
     }
     
-    webgl_frame_draw(&global_context);
+    opengl_frame_draw(&global_context);
 
     // Pretend we moved the mouse to update the bddinfo hover text
     {float x, y;

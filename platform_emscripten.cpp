@@ -155,7 +155,7 @@ void platform_ui_cursor_set(u8 elem, s64, s64, s64, s64 cursor_char) {
 // Called whenever the canvas resizes. This causes the internal viewport to adopt the new
 // dimensions, regenerates the font to properly align the pixels, and redraws.
 int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
-    Webgl_context* context = (Webgl_context*)user_data;
+    Opengl_context* context = (Opengl_context*)user_data;
     emscripten_get_element_css_size("canvas", &context->width, &context->height);
     emscripten_set_canvas_element_size("canvas", (int)context->width, (int)context->height);
     global_context.screen_w = (s64)context->width;
@@ -258,9 +258,9 @@ bool _platform_text_prepare_helper(int texture_size, int size, float small_frac,
     Array_t<BB> bbs = {(BB*)global_emscripten.prep_buf.data, offsets->size};
     
     for (s64 i = 0; i < offsets->size; ++i) {
-        u8 c = webgl_bddlabel_index_char(i);
+        u8 c = opengl_bddlabel_index_char(i);
         bool italicized;
-        auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
+        auto arr = opengl_bddlabel_index_utf8(i, nullptr, &italicized);
         bool small = c & 128;
 
         int font_size = size;
@@ -274,9 +274,9 @@ bool _platform_text_prepare_helper(int texture_size, int size, float small_frac,
     int y = 1;
     int yh = 0;
     for (s64 i = 0; i < offsets->size; ++i) {
-        u8 c = webgl_bddlabel_index_char(i);
+        u8 c = opengl_bddlabel_index_char(i);
         bool italicized;
-        auto arr = webgl_bddlabel_index_utf8(i, nullptr, &italicized);
+        auto arr = opengl_bddlabel_index_utf8(i, nullptr, &italicized);
         bool small = c & 128;
 
         int font_size = size;
@@ -688,7 +688,7 @@ void platform_main_loop_active(bool is_active) {
     }
 }
 
-void _platform_init_context(Webgl_context* context) {
+void _platform_init_context(Opengl_context* context) {
     assert(context);
     
     EMSCRIPTEN_WEBGL_CONTEXT_HANDLE ctx;
@@ -701,14 +701,14 @@ void _platform_init_context(Webgl_context* context) {
     
     ctx = emscripten_webgl_create_context(0, &attrs);
     if (not ctx) {
-        ui_error_report("Error while creating WebGL context.");
+        ui_error_report("Error while creating Opengl context.");
         abort();
     }
     emscripten_webgl_make_context_current(ctx);
     emscripten_set_resize_callback(nullptr, context, false, _platform_resize_callback);
     _platform_resize_callback(0, 0, context); // Easy way to set the initial values correctly
 
-    webgl_init(context);
+    opengl_init(context);
 }
 
 // Entry point. Set up the callbacks and do initialisation.
