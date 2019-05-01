@@ -6056,6 +6056,8 @@ bool ui_key_press(Key key) {
         platform_ui_button_help();
     } else if (key.special == Key::F2) {
         global_ui.debug_info_enabled = not global_ui.debug_info_enabled;
+    } else if (key.special == Key::F3) {
+        platform_panel_toggle();
         
     } else {
         return false;

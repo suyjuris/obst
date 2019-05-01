@@ -157,6 +157,7 @@ void platform_set_cursor(u8 type);
 Array_t<u8> platform_clipboard_get(s64 index);
 void platform_clipboard_free(s64 index);
 void platform_clipboard_set(u8 type, Array_t<u8> data);
+void platform_panel_toggle();
 
 void platform_fmt_init();
 void platform_fmt_begin(u64 flags);

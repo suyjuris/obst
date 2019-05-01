@@ -170,8 +170,7 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
 }
 
 EM_JS(void, _platform_text_prepare_init, (int canvas_size, float font_size), {
-    //var canvas = document.createElement("canvas");
-    var canvas = document.getElementById("canvas2");
+    var canvas = document.createElement("canvas");
     Module.text_prepare_canvas = canvas;
     canvas.width = canvas_size;
     canvas.height = canvas_size;
@@ -527,6 +526,23 @@ void platform_ui_button_help() {
 bool platform_ui_help_active() {
     return global_ui.is_helptext_visible;
 }
+
+void platform_panel_toggle() {
+    EM_ASM(
+        var e = document.getElementById("cont-ui");
+        var c = document.getElementById("cont-canvas");
+        if (e.style.display == "none") {
+            e.style.display = "";
+            c.style.left = Module.canvas_width;
+        } else {
+            e.style.display = "none";
+            Module.canvas_width = c.style.left;
+            c.style.left = 0;
+        }
+    );
+    _platform_resize_callback(0, nullptr, &global_context);
+}
+
 
 // Simply dispatch to the respective ui_button_* procedures. Why? The extern "C" declaration is
 // emscripten-specific and does not belong in obst.cpp .

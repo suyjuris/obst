@@ -218,7 +218,8 @@ struct Lui_context {
         FONT_COUNT
     };
 
-constexpr static u8 font_magic[] = {(u8)15, (u8)183, (u8)0, (u8)188, (u8)140, (u8)140, (u8)156, (u8)250, (u8)81, (u8)112, (u8)36, (u8)51, (u8)118, (u8)200, (u8)159, (u8)15};
+    constexpr static u8 font_magic[] = {(u8)15, (u8)183, (u8)0, (u8)188, (u8)140, (u8)140, (u8)156,
+        (u8)250, (u8)81, (u8)112, (u8)36, (u8)51, (u8)118, (u8)200, (u8)159, (u8)15};
     Array_t<u8*> font_files;
     Array_t<Array_t<u8>> font_file_data;
     Array_t<stbtt_fontinfo> font_info;
@@ -238,7 +239,7 @@ constexpr static u8 font_magic[] = {(u8)15, (u8)183, (u8)0, (u8)188, (u8)140, (u
         SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_LABEL_HELP_SHOW, SLOT_LABEL_HELP_HIDE,
         SLOT_BUTTON_HELP, SLOT_BUTTON_PREV, SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_SCROLL_PANEL,
-        SLOT_HELPTEXT, SLOT_CANVAS, SLOT_PANEL,
+        SLOT_SCROLL_HELPTEXT, SLOT_HELPTEXT, SLOT_HELPTEXT_AREA, SLOT_CANVAS, SLOT_PANEL,
         SLOT_COUNT
     };
     
@@ -281,8 +282,9 @@ constexpr static u8 font_magic[] = {(u8)15, (u8)183, (u8)0, (u8)188, (u8)140, (u
     double cursor_next_blink = 0.f;
     bool cursor_blinked = false;
     Padding padding_entry;
-    Scrollbar scroll_panel;
+    Scrollbar scroll_panel, scroll_helptext;
     Array_t<Resizer> resizers;
+    bool panel_left_hidden = false;
 
     // Lengths used by multiple places
     //@Cleanup: Make this DPI aware
@@ -368,18 +370,24 @@ double platform_now() {
     return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
 }
 
-void _platform_handle_resize(s64 width, s64 height) {
-    global_context.screen_w = width;
-    global_context.screen_h = height;
-    
-    global_context.width = std::max(global_context.screen_w - global_platform.gl_context.panel_left_width, 400ll);
+void _platform_handle_resize(s64 width = -1, s64 height = -1) {
+    if (width  != -1) global_context.screen_w = width;
+    if (height != -1) global_context.screen_h = height;
+
+    s64 plw = global_platform.gl_context.panel_left_hidden ? 0 : global_platform.gl_context.panel_left_width;
+    global_context.width = std::max(global_context.screen_w - plw, 400ll);
     global_context.height = global_context.screen_h;
-    global_context.canvas_x = global_platform.gl_context.panel_left_width;
+    global_context.canvas_x = plw;
     global_context.canvas_y = 0;
 
     glViewport(0.0, 0.0, global_context.screen_w, global_context.screen_h);
     
     application_handle_resize();
+}
+
+void platform_panel_toggle() {
+    global_platform.gl_context.panel_left_hidden ^= 1;
+    _platform_handle_resize();
 }
 
 void _platform_init_font(s64 font_style, s64 index, float size) {
@@ -1415,7 +1423,13 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_text(Text_fmt::NEWLINE, ": Move to the first/last frame.");
     platform_fmt_text(0, u8"•");
     platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F1");
-    platform_fmt_text(Text_fmt::PARAGRAPH, ": Show/hide help.");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Show/hide help.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F2");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Show/hide debug information.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F3");
+    platform_fmt_text(Text_fmt::PARAGRAPH, ": Show/hide left panel.");
     platform_fmt_end(Text_fmt::ITEMIZED);
     platform_fmt_spacing(Text_fmt::NEWLINE);
     platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Font license");
@@ -1495,9 +1509,14 @@ void _platform_init(Platform_state* platform) {
     context->scroll_panel.anim.duration = 0.1;
     context->scroll_panel.slot = Lui_context::SLOT_SCROLL_PANEL;
     context->scroll_panel.slot_area = Lui_context::SLOT_PANEL;
+
+    context->scroll_helptext.anim.duration = 0.1;
+    context->scroll_helptext.slot = Lui_context::SLOT_SCROLL_HELPTEXT;
+    context->scroll_helptext.slot_area = Lui_context::SLOT_HELPTEXT_AREA;
     
-    context->elem_flags[Lui_context::SLOT_PANEL]  |= Lui_context::DRAW_AREA;
-    context->elem_flags[Lui_context::SLOT_CANVAS] |= Lui_context::DRAW_AREA;
+    context->elem_flags[Lui_context::SLOT_PANEL]         |= Lui_context::DRAW_AREA;
+    context->elem_flags[Lui_context::SLOT_CANVAS]        |= Lui_context::DRAW_AREA;
+    context->elem_flags[Lui_context::SLOT_HELPTEXT_AREA] |= Lui_context::DRAW_AREA;
 
     context->resizers = array_create<Resizer>(Lui_context::RESIZER_COUNT);
     context->resizers[Lui_context::RESIZER_CREATE].slot = Lui_context::SLOT_RESIZER_CREATE;
@@ -2224,12 +2243,19 @@ void _platform_render(Platform_state* platform) {
     };
 
     auto get_scroll = [context](s64 slot) {
-        assert(slot == Lui_context::SLOT_SCROLL_PANEL);
-        return &context->scroll_panel;
+        if (slot == Lui_context::SLOT_SCROLL_PANEL) {
+            return &context->scroll_panel;
+        } else if (slot == Lui_context::SLOT_SCROLL_HELPTEXT) {
+            return &context->scroll_helptext;
+        } else {
+            assert(false);
+        }
     };
     auto get_scroll_from_area = [context](s64 slot_area) -> Scrollbar* {
         if (context->scroll_panel.slot_area == slot_area) {
             return &context->scroll_panel;
+        } else if (context->scroll_helptext.slot_area == slot_area) {
+            return &context->scroll_helptext;
         }
         return nullptr;
     };
@@ -2473,6 +2499,9 @@ void _platform_render(Platform_state* platform) {
     bool need_redraw;
     scroll->offset = (s64)std::round(animation_get(&scroll->anim, &need_redraw));
     if (need_redraw) platform_redraw(0);
+    scroll = &context->scroll_helptext;
+    scroll->offset = (s64)std::round(animation_get(&scroll->anim, &need_redraw));
+    if (need_redraw) platform_redraw(0);
 
     // Update the resizers
     for (auto& resizer_: context->resizers) {
@@ -2543,9 +2572,12 @@ void _platform_render(Platform_state* platform) {
     _platform_frame_init();
     
     // Now draw the UI
-    
+
     u8 white[] = {255, 255, 255, 255};
     u8 black[] = {0, 0, 0, 255};
+
+  if (not context->panel_left_hidden) {
+    
     lui_draw_rect(context, 0, 0, context->panel_left_width, global_context.screen_h, Lui_context::LAYER_BACK, white);
     context->elem_bb[Lui_context::SLOT_PANEL] = Rect {0, 0, context->panel_left_width, global_context.screen_h};
 
@@ -2655,7 +2687,13 @@ void _platform_render(Platform_state* platform) {
 
     y += std::round(font_inst.newline * 0.5f);
     platform_fmt_draw(Text_fmt::SLOT_CONTEXT, x, y, w, nullptr, &y);
+    y += pad_panel.pad_y;
 
+    context->scroll_panel.total_height = y + context->scroll_panel.offset;
+    lui_draw_scrollbar(context, &context->scroll_panel);
+
+  }
+    
     if (context->bddinfo_active) {
         auto c = &global_context;
         Padding pad {8, 8};
@@ -2680,22 +2718,25 @@ void _platform_render(Platform_state* platform) {
         auto c = &global_context;
         Padding pad {8, 16, 10, 10};
         s64 w = std::min((s64)c->width - pad.mar_x*2, 750ll);
+        s64 w2 = w - 2*pad.pad_x - context->width_scrollbar;
 
         s64 h;
-        platform_fmt_draw(Lui_context::SLOT_HELPTEXT, 0, 0, w-2*pad.pad_x, nullptr, &h, true);
-        h = std::min((s64)c->height - pad.mar_y*2, h + pad.pad_y*2);
+        platform_fmt_draw(Lui_context::SLOT_HELPTEXT, 0, 0, w2, nullptr, &h, true);
+        h += 2 * pad.pad_y;
 
-        s64 x = ((s64)c->width  - w) / 2 + c->canvas_x;
-        s64 y = ((s64)c->height - h) / 2 + c->canvas_y;
-        lui_draw_button_right(context, Lui_context::SLOT_BUTTON_HELP_CLOSE, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, nullptr);
-        platform_fmt_draw(Lui_context::SLOT_HELPTEXT, x+pad.pad_x, y+pad.pad_y, w-2*pad.pad_x, nullptr, nullptr);
+        s64 x  =          ((s64)c->width  - w) / 2 + c->canvas_x;
+        s64 y0 = std::max(((s64)c->height - h) / 2 + c->canvas_y, 0ll);
+        s64 y = y0 - context->scroll_helptext.offset;
+        lui_draw_button_right(context, Lui_context::SLOT_BUTTON_HELP_CLOSE, x+pad.pad_x, y+pad.pad_y, w2, nullptr, nullptr);
+        platform_fmt_draw(Lui_context::SLOT_HELPTEXT, x+pad.pad_x, y+pad.pad_y, w2, nullptr, nullptr);
         lui_draw_rect(context, x, y, w, h, Lui_context::LAYER_BACK, white);
+
+        context->elem_bb[Lui_context::SLOT_HELPTEXT_AREA] = Rect {
+            x, y0, w, std::min(h, c->screen_h)
+        };
+        context->scroll_helptext.total_height = h;
+        lui_draw_scrollbar(context, &context->scroll_helptext);
     }
-    y += pad_panel.pad_y;
-
-    context->scroll_panel.total_height = y + context->scroll_panel.offset;
-
-    lui_draw_scrollbar(context, &context->scroll_panel);
     
     _platform_frame_draw();
     glXSwapBuffers(platform->display, platform->window_glx);
