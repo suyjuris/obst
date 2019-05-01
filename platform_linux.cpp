@@ -327,6 +327,7 @@ struct Platform_state {
     Window window;
     GLXWindow window_glx;
     Atom sel_primary, sel_clipboard, sel_target, sel_utf8str, sel_string, sel_incr;
+    Atom net_wm_state, net_wm_state_fullscreen, type_atom;
 
     u8 cursor_type = Cursor_type::NORMAL;
     Cursor cursor_text, cursor_resize;
@@ -2846,6 +2847,7 @@ void platform_clipboard_set(u8 type, Array_t<u8> data) {
 }
 void linux_handle_selection_request(Platform_state* platform, XSelectionRequestEvent* ev) {
     XSelectionEvent ev_out;
+    memset(&ev_out, 0, sizeof(ev_out));
     ev_out.type = SelectionNotify;
     ev_out.requestor = ev->requestor;
     ev_out.selection = ev->selection;
@@ -2905,6 +2907,26 @@ void linux_handle_selection_response(Platform_state* platform, XSelectionEvent* 
         
         Key key = Key::create_special(Key::C_PASTE, 0, index);
         array_push_back(&global_platform.gl_context.input_queue, key);
+    }
+}
+
+void linux_fullscreen(Platform_state* platform) {
+    // This tries to go to fullscreen via NET_WM_STATE, which might not work for some window managers
+
+    if (platform->net_wm_state != None and platform->net_wm_state_fullscreen != None) {
+        XEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = ClientMessage;
+        ev.xclient.window = platform->window;
+        ev.xclient.format = 32;
+        ev.xclient.message_type = platform->net_wm_state;
+        ev.xclient.data.l[0] = 2; // _NET_WM_STATE_TOGGLE
+        ev.xclient.data.l[1] = platform->net_wm_state_fullscreen;
+        ev.xclient.data.l[2] = 0;
+        ev.xclient.data.l[3] = 1;
+        ev.xclient.data.l[4] = 0;
+        XSendEvent(platform->display, DefaultRootWindow(platform->display), false,
+            SubstructureNotifyMask | SubstructureRedirectMask, &ev);
     }
 }
 
@@ -3266,6 +3288,15 @@ int main(int argc, char** argv) {
     global_platform.sel_string    = sel_string;
     global_platform.sel_target    = sel_target;
     global_platform.sel_incr      = sel_incr;
+
+    // And some atoms needed for fullscreen mode
+    global_platform.net_wm_state            = XInternAtom(display, "_NET_WM_STATE", true);
+    global_platform.net_wm_state_fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", true);
+    global_platform.type_atom               = type_atom;
+
+    // @Cleanup Remove
+    //XChangeProperty(global_platform.display, global_platform.window, global_platform.net_wm_state, global_platform.type_atom, 32,
+    //    PropModeReplace, (u8*)&global_platform.net_wm_state_fullscreen, 1);
     
     // Map the context to the window
     GLXWindow window_glx = glXCreateWindow(display, *config, window, nullptr);
@@ -3339,6 +3370,10 @@ int main(int argc, char** argv) {
             if (iq->size and (*iq)[iq->size-1].type == Key::SPECIAL and (*iq)[iq->size-1].special == Key::C_PASTE) {
                 // Query the contents of the clipboard, we need to wait for them to arrive
                 XConvertSelection(display, sel_clipboard, sel_utf8str, sel_target, window, event.xkey.time);
+                --iq->size;
+            } else if (iq->size and (*iq)[iq->size-1].type == Key::SPECIAL and (*iq)[iq->size-1].special == Key::F11) {
+                // Toggle fullscreen
+                linux_fullscreen(&global_platform);
                 --iq->size;
             } else {
                 platform_redraw(0);
