@@ -65,7 +65,7 @@ void platform_fmt_begin(u64 flags) {
         array_printf(&state->fmt_buf, "<b>");
     }
     if (flags & Text_fmt::SANS) {
-        array_printf(&state->fmt_buf, "<span style=\"font-family: Dejavu Sans, sans\">");
+        array_printf(&state->fmt_buf, "<span style=\"font-family: Dejavu Sans, sans-serif\">");
     }
     if (flags & Text_fmt::ITALICS) {
         array_printf(&state->fmt_buf, "<i>");
@@ -152,15 +152,27 @@ void platform_ui_cursor_set(u8 elem, s64, s64, s64, s64 cursor_char) {
     _platform_ui_cursor_set(Ui_elem::name[elem], cursor_char);
 }
 
+EM_JS(float, _platform_resize_callback_helper, (), {
+    return window.devicePixelRatio;
+})
+
 // Called whenever the canvas resizes. This causes the internal viewport to adopt the new
 // dimensions, regenerates the font to properly align the pixels, and redraws.
 int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     Opengl_context* context = (Opengl_context*)user_data;
-    emscripten_get_element_css_size("canvas", &context->width, &context->height);
-    emscripten_set_canvas_element_size("canvas", (int)context->width, (int)context->height);
+
+    double w, h;
+    emscripten_get_element_css_size("canvas", &w, &h);
+    float f = _platform_resize_callback_helper();
+
+    //@Cleanup Make these integer
+    context->width  = std::round(w * f);
+    context->height = std::round(h * f);
     global_context.screen_w = (s64)context->width;
     global_context.screen_h = (s64)context->height;
 
+    emscripten_set_canvas_element_size("canvas", global_context.screen_w, global_context.screen_h);
+    
     context->canvas_x = 0; // In the emscripten environment there is only the canvas to draw on
     context->canvas_y = 0;
     glViewport(0.0, 0.0, context->width, context->height);
@@ -172,7 +184,7 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
 EM_JS(void, _platform_text_prepare_init, (int canvas_size, float font_size), {
     var canvas = document.createElement("canvas");
     Module.text_prepare_canvas = canvas;
-    canvas.width = canvas_size;
+    canvas.width  = canvas_size;
     canvas.height = canvas_size;
     var ctx = canvas.getContext("2d");
 
@@ -189,7 +201,8 @@ EM_JS(void, _platform_text_prepare_measure, (char* c, bool italics, float size, 
     var ctx = canvas.getContext("2d");
     var is_filled = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
 
-    var w = size * 3;
+    var w = Math.ceil(size * 1.6);
+    var o = Math.floor(size * 0.3);
     ctx.clearRect(0, 0, w, w);
     
     ctx.fillStyle = "grey";
@@ -200,7 +213,7 @@ EM_JS(void, _platform_text_prepare_measure, (char* c, bool italics, float size, 
     }
     
     var s = UTF8ToString(c);
-    ctx.fillText(s, size+0.5, size+0.5);
+    ctx.fillText(s, o+0.5, o+0.5);
     
     var x0 = -1;
     var x1 = -1;
@@ -219,10 +232,10 @@ EM_JS(void, _platform_text_prepare_measure, (char* c, bool italics, float size, 
         if (flag && y0 != -1) { y1 = i+1; }
     }
 
-    if (out_x0) setValue(out_x0, x0 - size, 'i32');
-    if (out_y0) setValue(out_y0, y0 - size, 'i32');
-    if (out_x1) setValue(out_x1, x1 - size, 'i32');
-    if (out_y1) setValue(out_y1, y1 - size, 'i32');
+    if (out_x0) setValue(out_x0, x0 - o, 'i32');
+    if (out_y0) setValue(out_y0, y0 - o, 'i32');
+    if (out_x1) setValue(out_x1, x1 - o, 'i32');
+    if (out_y1) setValue(out_y1, y1 - o, 'i32');
     
     ctx.clearRect(0, 0, w, w);
 });
