@@ -1542,63 +1542,6 @@ void lui_entry_clear(Lui_context* context, Text_entry* entry) {
     entry->redo_data.size = 0;
 }
 
-void _platform_operations_able(bool set) {
-    Lui_context* context = &global_platform.lui_context;
-        
-    s64 elem_disable[] = {
-        Lui_context::SLOT_BUTTON_DESC_OP,
-        Lui_context::SLOT_BUTTON_DESC_REMOVEALL,
-        Lui_context::SLOT_BUTTON_DESC_CONTEXT, 
-        Lui_context::SLOT_LABEL_OPERATION,
-        Lui_context::SLOT_LABEL_UNION,
-        Lui_context::SLOT_LABEL_INTERSECTION,
-        Lui_context::SLOT_LABEL_COMPLEMENT,
-        Lui_context::SLOT_LABEL_FIRSTNODE,
-        Lui_context::SLOT_LABEL_SECONDNODE,
-        Lui_context::SLOT_BUTTON_OP,
-        Lui_context::SLOT_BUTTON_REMOVEALL,
-        Lui_context::SLOT_BUTTON_PREV,
-        Lui_context::SLOT_BUTTON_NEXT,
-        Lui_context::SLOT_ENTRY_FIRSTNODE,
-        Lui_context::SLOT_ENTRY_SECONDNODE,
-        Text_fmt::SLOT_CONTEXT,
-        Text_fmt::SLOT_CONTEXT_FRAME
-    };
-
-    for (s64 i: elem_disable) {
-        if (set) {
-            context->elem_flags[i] |= Lui_context::DRAW_DISABLED;
-            context->elem_flags[i] &= ~Lui_context::DRAW_FOCUSED;
-            if (i == context->elem_focused) context->elem_focused = 0;
-        } else {
-            context->elem_flags[i] &= ~Lui_context::DRAW_DISABLED;
-        }
-    }
-}
-void platform_operations_disable() {
-    _platform_operations_able(true);
-}
-void platform_operations_enable(u32 bdd) {
-    if (bdd > 1) {
-        auto context = &global_platform.lui_context;
-
-        auto set_entry_bdd = [context](u8 entry_id, u32 bdd) {
-            Text_entry* entry = &context->entries[entry_id];
-            lui_entry_clear(context, entry);
-            if (bdd > 1) {
-                array_printf(&entry->text, "%d", bdd);
-            } else {
-                array_printf(&entry->text, "%s", bdd ? "F" : "T");
-            }
-        };
-
-        set_entry_bdd(Lui_context::ENTRY_FIRSTNODE,  global_store.bdd_data[bdd].child0);
-        set_entry_bdd(Lui_context::ENTRY_SECONDNODE, global_store.bdd_data[bdd].child1);
-    }
-    
-    _platform_operations_able(false);
-}
-
 void platform_ui_button_help () {
     global_platform.lui_context.helptext_active ^= 1;
     platform_fmt_store_copy(Lui_context::SLOT_BUTTON_HELP, global_platform.lui_context.helptext_active
@@ -2215,12 +2158,85 @@ void lui_button_press(s64 slot) {
 }
 
 void lui_radio_press(s64 slot) {
+    auto context = &global_platform.lui_context;
+    
     if (slot == Lui_context::SLOT_LABEL_UNION) {
         platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_U);
+        context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
     } else if (slot == Lui_context::SLOT_LABEL_INTERSECTION) {
         platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_I);
+        context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
     } else if (slot == Lui_context::SLOT_LABEL_COMPLEMENT) {
         platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_C);
+        context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] |= Lui_context::DRAW_DISABLED;
+    }
+}
+
+void _platform_operations_able(bool set) {
+    Lui_context* context = &global_platform.lui_context;
+        
+    s64 elem_disable[] = {
+        Lui_context::SLOT_BUTTON_DESC_OP,
+        Lui_context::SLOT_BUTTON_DESC_REMOVEALL,
+        Lui_context::SLOT_BUTTON_DESC_CONTEXT, 
+        Lui_context::SLOT_LABEL_OPERATION,
+        Lui_context::SLOT_LABEL_UNION,
+        Lui_context::SLOT_LABEL_INTERSECTION,
+        Lui_context::SLOT_LABEL_COMPLEMENT,
+        Lui_context::SLOT_LABEL_FIRSTNODE,
+        Lui_context::SLOT_LABEL_SECONDNODE,
+        Lui_context::SLOT_BUTTON_OP,
+        Lui_context::SLOT_BUTTON_REMOVEALL,
+        Lui_context::SLOT_BUTTON_PREV,
+        Lui_context::SLOT_BUTTON_NEXT,
+        Lui_context::SLOT_ENTRY_FIRSTNODE,
+        Lui_context::SLOT_ENTRY_SECONDNODE,
+        Text_fmt::SLOT_CONTEXT,
+        Text_fmt::SLOT_CONTEXT_FRAME
+    };
+
+    for (s64 i: elem_disable) {
+        if (set) {
+            context->elem_flags[i] |= Lui_context::DRAW_DISABLED;
+            context->elem_flags[i] &= ~Lui_context::DRAW_FOCUSED;
+            if (i == context->elem_focused) context->elem_focused = 0;
+        } else {
+            context->elem_flags[i] &= ~Lui_context::DRAW_DISABLED;
+        }
+    }
+}
+void platform_operations_disable() {
+    _platform_operations_able(true);
+}
+void platform_operations_enable(u32 bdd) {
+    auto context = &global_platform.lui_context;
+    
+    if (bdd > 1) {
+        auto set_entry_bdd = [context](u8 entry_id, u32 bdd) {
+            Text_entry* entry = &context->entries[entry_id];
+            lui_entry_clear(context, entry);
+            if (bdd > 1) {
+                array_printf(&entry->text, "%d", bdd);
+            } else {
+                array_printf(&entry->text, "%s", bdd ? "F" : "T");
+            }
+        };
+
+        set_entry_bdd(Lui_context::ENTRY_FIRSTNODE,  global_store.bdd_data[bdd].child0);
+        set_entry_bdd(Lui_context::ENTRY_SECONDNODE, global_store.bdd_data[bdd].child1);
+    }
+    
+    _platform_operations_able(false);
+
+    if (context->elem_flags[Lui_context::SLOT_LABEL_UNION] & Lui_context::DRAW_PRESSED) {
+        lui_radio_press(Lui_context::SLOT_LABEL_UNION);
+    } else if (context->elem_flags[Lui_context::SLOT_LABEL_INTERSECTION] & Lui_context::DRAW_PRESSED) {
+        lui_radio_press(Lui_context::SLOT_LABEL_INTERSECTION);
+    } else if (context->elem_flags[Lui_context::SLOT_LABEL_COMPLEMENT] & Lui_context::DRAW_PRESSED) {
+        lui_radio_press(Lui_context::SLOT_LABEL_COMPLEMENT);
     }
 }
 
@@ -2331,6 +2347,7 @@ void _platform_render(Platform_state* platform) {
                             context->elem_flags[slot_j] &= ~Lui_context::DRAW_PRESSED;
                         for (s64 slot_j = slot+1; context->elem_flags[slot_j] & Lui_context::DRAW_RADIO; ++slot_j)
                             context->elem_flags[slot_j] &= ~Lui_context::DRAW_PRESSED;
+                        lui_radio_press(slot);
                     } else if (context->elem_flags[slot] & Lui_context::DRAW_ENTRY) {
                         context->cursor_next_blink = platform_now() + Lui_context::CURSOR_BLINK_DELAY;
                         context->cursor_blinked = false;
@@ -2351,8 +2368,6 @@ void _platform_render(Platform_state* platform) {
                     }
                     if (pressed and (context->elem_flags[slot] & Lui_context::DRAW_BUTTON)) {
                         lui_button_press(slot);
-                    } else if (pressed and (context->elem_flags[slot] & Lui_context::DRAW_RADIO)) {
-                        lui_radio_press(slot);
                     }
                 } else if (action == Key::MOTION) {
                     if (context->drag_el == slot and (context->elem_flags[slot] & Lui_context::DRAW_BUTTON)) {

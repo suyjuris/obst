@@ -9,9 +9,6 @@
 //#define OBST_DBG_SHOW_FORCE_LAYOUT 1
 
 
-//@Cleanup: Rename opengl to opengl
-
-
 // Display an error somewhere, somehow. This is not for critical errors where we exit the program,
 // just to tell the user that they did something we do not like. ui_error_report is a printf-like
 // function.
@@ -194,6 +191,9 @@ struct Bdd_store {
     Array_dyn<u8> name_data; // utf-8 encoded names
     s64 name_next; // The final names for nodes are given in sequential order
     s64 name_next_temp; // Final names for temporary nodes
+
+    // If the hashtable overflows, we need to graciously abort the procedure
+    bool error_flag;
 };
 
 // Initialises the store. Can be used for re-initialisation.
@@ -234,6 +234,8 @@ void bdd_store_init(Bdd_store* store) {
     // Initial names for T and F as well as dummy element
     array_append(&store->names, {0ll, 0ll, 1ll, 2ll});
     array_append(&store->name_data, {(u8*)"FT", 2});
+
+    store->error_flag = false;
 }
 
 u64 bdd_hash(Bdd bdd) {
@@ -259,8 +261,12 @@ u32 bdd_insert(Bdd_store* store, Bdd bdd) {
     u64 hash = bdd_hash(bdd);
 
     if (store->bdd_lookup_count*4 >= store->bdd_lookup.size*3) {
-        ui_error_report("Error: size of hash table exceeded\n"); //@Cleanup This should not use this function
-        abort();
+        // If the hash table is full, the whole operation needs to abort. 
+        if (not store->error_flag) {
+            ui_error_report("Error: size of BDD hash table exceeded, too many nodes");
+            store->error_flag = true;
+        }
+        return bdd.id;
     }
     
     u64 slot = hash % store->bdd_lookup.size;
@@ -340,9 +346,16 @@ void bdd_name_amend_name(Bdd_store* store, u32 bdd) {
 // will consume this data.
 void bdd_name_amend_setop(Bdd_store* store, u32 a, u32 b, char op) {
     assert(store->names.size > 0);
-    bdd_name_amend_name(store, a);
-    array_push_back(&store->name_data, (u8)op);
-    bdd_name_amend_name(store, b);
+    if (op == '~') {
+        array_push_back(&store->name_data, (u8)op);
+        bdd_name_amend_name(store, a);
+    } else if (op == '&' or op == '|') {
+        bdd_name_amend_name(store, a);
+        array_push_back(&store->name_data, (u8)op);
+        bdd_name_amend_name(store, b);
+    } else {
+        assert(false);
+    }
 }
 
 // Assign the next bdd name. This will consume the data given by the bdd_name_amend function.
@@ -649,7 +662,6 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
 // nothing was done, an empty entry is pushed.)
 //  If the bdd had a name, it will be preserved.
 u32 bdd_finalize(Bdd_store* store, Bdd bdd) {
-    // @Cleanup: Give temporary nodes names
     assert(bdd.flags & Bdd::TEMPORARY);
     bdd.flags &= ~Bdd::TEMPORARY;
     
@@ -757,7 +769,6 @@ void take_snapshot(Bdd_store* store) {
 // for recursive calls, no need to use it.
 u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_parent = -1, u32 b_parent = -1) {
     // Duplicated code below in bdd_intersection_stepwise. Take care. Also see the note there.
-    //@Cleanup: Update the others
     
     Bdd a_bdd = store->bdd_data[a];
     Bdd b_bdd = store->bdd_data[b];
@@ -963,10 +974,12 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 
 
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
+        // Create a new node for the union
         bdd_temp = {0, 0, std::max(a_bdd.level, b_bdd.level), Bdd::TEMPORARY};
-        bdd_temp.id = bdd_create(store, bdd_temp);
-        array_push_back(&store->snapshot_parents, bdd_temp.id);
-
+        bdd_name_amend_setop(store, a, b, '&');
+        bdd_create_inplace(store, &bdd_temp);
+        array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
+        
         context_append(store, "Calculating intersection of ");
     } else {
         bdd_temp = store->bdd_data[bdd];
@@ -1090,7 +1103,9 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 
             child11_parent = b << 1 | 1;
         }        
 
+        bdd_name_amend_setop(store, child00_par, child01_par, '&');
         bdd_temp.child0 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
+        bdd_name_amend_setop(store, child10_par, child11_par, '&');
         bdd_temp.child1 = bdd_create(store, {0, 0, child_level, Bdd::TEMPORARY});
         store->bdd_data[bdd_temp.id] = bdd_temp;
 
@@ -1132,18 +1147,15 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
         bdd_temp = {0, 0, a_bdd.level, Bdd::TEMPORARY};
-        bdd_temp.id = bdd_create(store, bdd_temp);
+        bdd_name_amend_setop(store, a, 0, '~');
+        bdd_create_inplace(store, &bdd_temp);
         context_append(store, "Calculating complement of ");
         context_amend_bdd(store, a);
-        context_amend(store, " as node ");
-        context_amend_bdd(store, bdd_temp.id);
         array_push_back(&store->snapshot_parents, bdd_temp.id);
     } else {
         bdd_temp = store->bdd_data[bdd];
         context_append(store, "Doing complement of ");
         context_amend_bdd(store, a);
-        context_amend(store, " for node ");
-        context_amend_bdd(store, bdd_temp.id);
     }
 
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
@@ -1180,7 +1192,9 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
         context_pop(store);
         bdd_final = bdd_finalize(store, bdd_temp);
     } else {
+        bdd_name_amend_setop(store, a_bdd.child0, 0, '~');
         bdd_temp.child0 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
+        bdd_name_amend_setop(store, a_bdd.child1, 0, '~');
         bdd_temp.child1 = bdd_create(store, {0, 0, (u8)(bdd_temp.level-1), Bdd::TEMPORARY});
         store->bdd_data[bdd_temp.id] = bdd_temp;
 
@@ -4978,7 +4992,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
     };
     // Same as above, but split at a specific y
     auto spline_split_y = [&spline_split_t](Pos out[3], Pos p0, Pos p1, Pos p2, float y) {
-        float t = (y - p0.y) / (p2.y - p0.y); // @Cleanup Could solve equation here
+        float t = (y - p0.y) / (p2.y - p0.y); // TODO Could solve equation here
         spline_split_t(out, p0, p1, p2, t);
     };
 
@@ -5758,8 +5772,37 @@ void ui_set_frame(s64 frame) {
     platform_main_loop_active(true);
 }
 
+// Called when the 'Remove all' button is pressed. Also used to initialise the UI.
+void ui_button_removeall(bool do_not_clear_error = false) {
+    global_ui.novice_create_helper = 2; // Deactivate the "Create and Add doubleclick assistant"
+
+    bdd_store_init(&global_store);
+    global_layouts.size = 0;
+
+    global_context.not_completely_empty = false;
+
+    global_ui.frame_section.size = 0;
+    array_push_back(&global_ui.frame_section, 0ll);
+    animation_set(&global_ui.anim_frame, 0.f);
+
+    platform_operations_disable();
+
+    ui_frame_draw();
+    platform_fmt_store_simple(0, "", Text_fmt::SLOT_CONTEXT);
+    platform_fmt_store_simple(Text_fmt::NOSPACE, "0/0", Text_fmt::SLOT_CONTEXT_FRAME);
+
+    if (not do_not_clear_error) {
+        platform_fmt_store_simple(0, "", Text_fmt::SLOT_ERRORINFO);
+    }
+}
+
 // After updating the store, this re-renders the layouts and shows the results in the UI.
 void ui_commit_store() {
+    if (global_store.error_flag) {
+        ui_button_removeall(true);
+        return;
+    }
+    
     layout_render(&global_layouts, &global_context.layout_max_x, &global_context.layout_max_y,
         &global_context.layout_max_points, global_store);
     global_context.font_regenerate = 1;
@@ -5948,27 +5991,6 @@ void ui_button_create() {
     if (not result and global_ui.novice_create_helper == 1) {
         global_ui.novice_create_helper = 0;
     }
-}
-
-// Called when the 'Remove all' button is pressed. Also used to initialise the UI.
-void ui_button_removeall() {
-    global_ui.novice_create_helper = 2; // Deactivate the "Create and Add doubleclick assistant"
-
-    bdd_store_init(&global_store);
-    global_layouts.size = 0;
-
-    global_context.not_completely_empty = false;
-
-    global_ui.frame_section.size = 0;
-    array_push_back(&global_ui.frame_section, 0ll);
-    animation_set(&global_ui.anim_frame, 0.f);
-
-    platform_operations_disable();
-
-    ui_frame_draw();
-    platform_fmt_store_simple(0, "", Text_fmt::SLOT_CONTEXT);
-    platform_fmt_store_simple(Text_fmt::NOSPACE, "0/0", Text_fmt::SLOT_CONTEXT_FRAME);
-    platform_fmt_store_simple(0, "", Text_fmt::SLOT_ERRORINFO);
 }
 
 // This is called whenever the canvas/window resizes. The new dimensions are already applied in
