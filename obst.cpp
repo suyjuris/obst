@@ -4756,9 +4756,9 @@ void layout_render(Array_t<Bdd_layout>* layouts, float* max_x, float* max_y, s64
 
 // Interpolates and draws the frame at time using the data from layouts and store.
 void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd_store store, float time) {
-    if (time < 0.f) time = 0.f;
+    if (time <= 0.f) time = 0.f;
     s64 frame = (s64)time;
-    float t = time - (s64)frame;
+    float t = time - (float)frame;
     
     // Check whether we are trying to render a sensible frame
     if (layouts.size == 0) {
