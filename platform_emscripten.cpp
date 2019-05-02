@@ -619,6 +619,7 @@ extern "C" void OBST_EM_EXPORT(_platform_ui_button_move) (float diff) {
 // Enable the buttons that perform set operations. bdd is used to populate fields with valid
 // input, so that the user can simply click on the "Calculate X" button and see something sensible.
 void platform_operations_enable(u32 bdd) {
+    //@Cleanup: New names!
     if (bdd > 1) {
         EM_ASM({
             document.getElementById("op_node0").value = $0 > 1 ? $0 : "T";

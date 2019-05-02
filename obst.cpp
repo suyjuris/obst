@@ -2398,7 +2398,7 @@ s64 formula_simplify(Formula_store* store, s64 f_id) {
     }    
 }
 
-u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1) {
+u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1, bool skip_first = false) {
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
         context_append(store, "Creating BDD from formula ");
@@ -2424,7 +2424,9 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
     }
 
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
-    take_snapshot(store);
+    if (not skip_first) {
+        take_snapshot(store);
+    }
 
     s64 f_id_simple = formula_simplify(fstore, f_id);
     if (f_id_simple != f_id) {
@@ -2461,7 +2463,7 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
             take_snapshot(store);
             context_pop(store);
 
-            bdd_final = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.id);
+            bdd_final = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.id, true);
             context_pop(store);
             --store->snapshot_cur_node.size;
         } else if (bdd_temp.level == 1) {
@@ -5832,6 +5834,7 @@ void ui_button_op() {
     
     assert(op_str.size == 1);
 
+    //@Cleanup This needs to interact with the new names!
     auto parse_bdd = [](s32* arg, Array_t<u8> arg_str, char const* desc) {
         if (arg_str.size == 1 and arg_str[0] == 'F') {
             *arg = 0;
