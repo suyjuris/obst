@@ -3514,7 +3514,7 @@ struct Opengl_context {
         UNIFORMS_COUNT
     };
     
-    double width, height; // Dimensions of the canvas in pixels
+    s64 width, height; // Dimensions of the canvas in pixels
     float origin_x, origin_y; // Position of the bottom-left corner of the screen in world-coordinates
     float scale; // Ratio of world-coordinates and pixels (world * scale = pixels)
     float layout_max_x, layout_max_y; // Position of the top-right corner of the screen in world-coordinates
@@ -4558,10 +4558,11 @@ void opengl_frame_init(Opengl_context* context) {
     context->origin_x = -1.f;
     context->origin_y = -1.f;
     context->scale    = std::min(
-        context->width  / (context->layout_max_x + 2.f),
-        context->height / (context->layout_max_y + 2.f)
+        (float)context->width  / (context->layout_max_x + 2.f),
+        (float)context->height / (context->layout_max_y + 2.f)
     );
-    context->origin_y -= context->height / context->scale - (context->layout_max_y + 2.f);
+    context->origin_y -=  (float)context->height / context->scale - (context->layout_max_y + 2.f);
+    context->origin_x -= ((float)context->width  / context->scale - (context->layout_max_x + 2.f)) * 0.5f;
 
     if (context->font_regenerate == 1) {
         // If there is nothing there, we have to idea what size to construct the font in. But we

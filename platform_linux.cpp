@@ -2739,8 +2739,8 @@ void _platform_render(Platform_state* platform) {
         platform_fmt_draw(Lui_context::SLOT_HELPTEXT, 0, 0, w2, nullptr, &h, true);
         h += 2 * pad.pad_y;
 
-        s64 x  =          ((s64)c->width  - w) / 2 + c->canvas_x;
-        s64 y0 = std::max(((s64)c->height - h) / 2 + c->canvas_y, 0ll);
+        s64 x  =          (c->width  - w) / 2 + c->canvas_x;
+        s64 y0 = std::max((c->height - h) / 2 + c->canvas_y, 0ll);
         s64 y = y0 - context->scroll_helptext.offset;
         lui_draw_button_right(context, Lui_context::SLOT_BUTTON_HELP_CLOSE, x+pad.pad_x, y+pad.pad_y, w2, nullptr, nullptr);
         platform_fmt_draw(Lui_context::SLOT_HELPTEXT, x+pad.pad_x, y+pad.pad_y, w2, nullptr, nullptr);
