@@ -40,7 +40,8 @@ struct Emscripten_state {
     u64 fmt_flags;
 
     Array_t<u8> prep_buf;
-    s64 prep_texture_size = 512;
+    Array_t<u8> prep_buf2;
+    s64 prep_texture_size = 256;
 };
 Emscripten_state global_emscripten;
 
@@ -65,7 +66,7 @@ void platform_fmt_begin(u64 flags) {
         array_printf(&state->fmt_buf, "<b>");
     }
     if (flags & Text_fmt::SANS) {
-        array_printf(&state->fmt_buf, "<span style=\"font-family: Dejavu Sans, sans\">");
+        array_printf(&state->fmt_buf, "<span style=\"font-family: Dejavu Sans, sans-serif\">");
     }
     if (flags & Text_fmt::ITALICS) {
         array_printf(&state->fmt_buf, "<i>");
@@ -152,15 +153,27 @@ void platform_ui_cursor_set(u8 elem, s64, s64, s64, s64 cursor_char) {
     _platform_ui_cursor_set(Ui_elem::name[elem], cursor_char);
 }
 
+EM_JS(float, _platform_resize_callback_helper, (), {
+    return window.devicePixelRatio;
+})
+
 // Called whenever the canvas resizes. This causes the internal viewport to adopt the new
 // dimensions, regenerates the font to properly align the pixels, and redraws.
 int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     Opengl_context* context = (Opengl_context*)user_data;
-    emscripten_get_element_css_size("canvas", &context->width, &context->height);
-    emscripten_set_canvas_element_size("canvas", (int)context->width, (int)context->height);
+
+    double w, h;
+    emscripten_get_element_css_size("canvas", &w, &h);
+    float f = _platform_resize_callback_helper();
+
+    //@Cleanup Make these integer
+    context->width  = std::floor(w * f);
+    context->height = std::floor(h * f);
     global_context.screen_w = (s64)context->width;
     global_context.screen_h = (s64)context->height;
 
+    emscripten_set_canvas_element_size("canvas", global_context.screen_w, global_context.screen_h);
+    
     context->canvas_x = 0; // In the emscripten environment there is only the canvas to draw on
     context->canvas_y = 0;
     glViewport(0.0, 0.0, context->width, context->height);
@@ -170,9 +183,22 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
 }
 
 EM_JS(void, _platform_text_prepare_init, (int canvas_size, float font_size), {
-    var canvas = document.createElement("canvas");
-    Module.text_prepare_canvas = canvas;
-    canvas.width = canvas_size;
+    var canvas;
+    if (Module.text_prepare_canvas == undefined) {
+        canvas = document.createElement("canvas");
+        Module.text_prepare_canvas = canvas;
+    } else {
+        canvas = Module.text_prepare_canvas;
+    }
+
+    // Debug code to show the text texture
+    //document.getElementById('cont-overlay').appendChild(canvas);
+    //document.getElementById('cont-overlay').style.display = "";
+    //document.getElementById('helptext').style.display = "none";
+    //canvas.style.width  = canvas_size / window.devicePixelRatio + "px";
+    //canvas.style.height = canvas_size / window.devicePixelRatio + "px";
+    
+    canvas.width  = canvas_size;
     canvas.height = canvas_size;
     var ctx = canvas.getContext("2d");
 
@@ -184,47 +210,12 @@ EM_JS(void, _platform_text_prepare_init, (int canvas_size, float font_size), {
     ctx.clearRect(0, 0, canvas_size, canvas_size);
 });
 
-EM_JS(void, _platform_text_prepare_measure, (char* c, bool italics, float size, int* out_x0, int* out_y0, int* out_x1, int* out_y1), {
+EM_JS(void, _platform_text_prepare_getdata, (char* out_data), {
     var canvas = Module.text_prepare_canvas;
     var ctx = canvas.getContext("2d");
-    var is_filled = /** @type {function(number):boolean} */ function(x) { return x > 0 && x < 255; };
 
-    var w = size * 3;
-    ctx.clearRect(0, 0, w, w);
-    
-    ctx.fillStyle = "grey";
-    if (italics) {
-        ctx.font = "italic " + size + "px Dejavu Serif, serif";
-    } else {
-        ctx.font = size + "px Dejavu Sans, sans-serif";
-    }
-    
-    var s = UTF8ToString(c);
-    ctx.fillText(s, size+0.5, size+0.5);
-    
-    var x0 = -1;
-    var x1 = -1;
-    var y0 = -1;
-    var y1 = -1;
-    
-    var i;
-    for (i = 0; i < w; i++) {
-        var flag = ctx.getImageData(i, 0, 1, w).data.some(is_filled);
-        if (flag && x0 == -1) { x0 = i; }
-        if (flag && x0 != -1) { x1 = i+1; }
-    }
-    for (i = 0; i < w; i++) {
-        var flag = ctx.getImageData(0, i, w, 1).data.some(is_filled);
-        if (flag && y0 == -1) { y0 = i; }
-        if (flag && y0 != -1) { y1 = i+1; }
-    }
-
-    if (out_x0) setValue(out_x0, x0 - size, 'i32');
-    if (out_y0) setValue(out_y0, y0 - size, 'i32');
-    if (out_x1) setValue(out_x1, x1 - size, 'i32');
-    if (out_y1) setValue(out_y1, y1 - size, 'i32');
-    
-    ctx.clearRect(0, 0, w, w);
+    var data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    Module.HEAPU8.set(data.data, out_data);
 });
 
 
@@ -240,39 +231,102 @@ EM_JS(int, _platform_text_prepare_draw, (char* c, bool italics, float size, int 
     }
     
     var s = UTF8ToString(c);
-    var advance = ctx.measureText(s).width;
     ctx.fillText(s, x+0.5, y+0.5);
-    setValue(out_advance, advance, 'i32');
+    if (out_advance != 0) {
+        var advance = ctx.measureText(s).width;
+        setValue(out_advance, advance, 'i32');
+    }
 });
 
 bool _platform_text_prepare_helper(int texture_size, int size, float small_frac, Array_t<Text_box>* offsets, float* linoff_out, float* ascent_out) {
     _platform_text_prepare_init(texture_size, size);
 
-    int linoff, ascent;
-    _platform_text_prepare_measure("E", false, size, nullptr, &linoff, nullptr, &ascent);
-    if (linoff_out) *linoff_out = (float)linoff;
-    if (ascent_out) *ascent_out = (float)ascent;
-
-    struct BB { int x0, y0, x1, y1; };
+    struct BB { s64 x0 = 0, y0 = 0, x1 = 0, y1 = 0; };
     array_resize(&global_emscripten.prep_buf, offsets->size * sizeof(BB));
     Array_t<BB> bbs = {(BB*)global_emscripten.prep_buf.data, offsets->size};
+    for (auto& i: bbs) {
+        i.x0 =  texture_size;
+        i.x1 = -texture_size;
+        i.y0 =  texture_size;
+        i.y1 = -texture_size;
+    }
+
+    array_resize(&global_emscripten.prep_buf2, 4 * texture_size * texture_size);
+    auto buf = global_emscripten.prep_buf2;
     
-    for (s64 i = 0; i < offsets->size; ++i) {
-        u8 c = opengl_bddlabel_index_char(i);
-        bool italicized;
-        auto arr = opengl_bddlabel_index_utf8(i, nullptr, &italicized);
-        bool small = c & 128;
+    {s64 x = 0, y = 0;
+    s64 last_commit = 0;
+    for (s64 i = 0; i <= offsets->size; ++i) {
+        int off = (int)((float)size * 0.3f);
+        int w = size+2*off;
 
-        int font_size = size;
-        if (small) font_size *= small_frac;
+        if (x + w > texture_size) {
+            x = 0;
+            y += w;
+        }
+        
+        if (i == offsets->size or y + w > texture_size) {
+            // Commit
+            assert(last_commit < i);
+            _platform_text_prepare_getdata((char*)buf.data);
 
-        _platform_text_prepare_measure((char*)arr.data, italicized and not small, font_size,
-            &bbs[i].x0, &bbs[i].y0, &bbs[i].x1, &bbs[i].y1);
+            for (s64 j = 0; 4*j < buf.size; ++j) {
+                s64 j_x = j % texture_size;
+                s64 j_y = j / texture_size;
+                s64 j_i = last_commit + j_x / w + j_y / w * (texture_size / w);
+                s64 j_xx = j_x % w;
+                s64 j_yy = j_y % w;
+
+                if (buf[4*j+3] == 0) continue;
+                if (j_i >= i and x == 0) break;
+                if (j_i >= i) continue;
+                bbs[j_i].x0 = std::min(j_xx - off,     bbs[j_i].x0);
+                bbs[j_i].x1 = std::max(j_xx - off + 1, bbs[j_i].x1);
+                bbs[j_i].y0 = std::min(j_yy - off,     bbs[j_i].y0);
+                bbs[j_i].y1 = std::max(j_yy - off + 1, bbs[j_i].y1);
+                
+            }
+
+            EM_ASM(
+                var canvas = Module.text_prepare_canvas;
+                var ctx = canvas.getContext("2d");
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            );
+            
+            last_commit = i;
+            i -= i < offsets->size;
+            x = 0;
+            y = 0;
+        } else {
+            u8 c = opengl_bddlabel_index_char(i);
+            bool italicized;
+            auto arr = opengl_bddlabel_index_utf8(i, nullptr, &italicized);
+            bool small = c & 128;
+
+            int font_size = size;
+            if (small) font_size *= small_frac;
+        
+            _platform_text_prepare_draw(
+                (char*)arr.data, italicized and not small, font_size, x+off, y+off, 0
+            );
+
+            x += w;
+        }
+    }}
+    
+    for (auto& i: bbs) {
+        if (i.x0 == texture_size) i = {};
     }
     
-    int x = 1;
-    int y = 1;
-    int yh = 0;
+    s64 ascent;
+    {s64 index = opengl_bddlabel_char_index('E');
+    if (linoff_out) *linoff_out = (float)bbs[index].y0;
+    if (ascent_out) *ascent_out = (float)bbs[index].y1;
+    ascent = bbs[index].y1;}
+    
+    {s64 x = 1;
+    s64 y = 1;
+    s64 yh = 0;
     for (s64 i = 0; i < offsets->size; ++i) {
         u8 c = opengl_bddlabel_index_char(i);
         bool italicized;
@@ -293,7 +347,7 @@ bool _platform_text_prepare_helper(int texture_size, int size, float small_frac,
         
         int advance;
         _platform_text_prepare_draw((char*)arr.data, italicized and not small, font_size, x-bbs[i].x0, y-bbs[i].y0, &advance);
-        int ascent_i = small ? (int)std::round((float)ascent * small_frac) : ascent;
+        s64 ascent_i = small ? (s64)std::round((float)ascent * small_frac) : ascent;
 
         Text_box box;
         box.x0 = (float) bbs[i].x0;
@@ -310,7 +364,7 @@ bool _platform_text_prepare_helper(int texture_size, int size, float small_frac,
         
         yh = std::max(yh, bbs[i].y1 - bbs[i].y0);
         x += bbs[i].x1 - bbs[i].x0 + 1;
-    }
+    }}
 
     EM_ASM_({
         var gl = document.getElementById("canvas").getContext("webgl");
@@ -565,6 +619,7 @@ extern "C" void OBST_EM_EXPORT(_platform_ui_button_move) (float diff) {
 // Enable the buttons that perform set operations. bdd is used to populate fields with valid
 // input, so that the user can simply click on the "Calculate X" button and see something sensible.
 void platform_operations_enable(u32 bdd) {
+    //@Cleanup: New names!
     if (bdd > 1) {
         EM_ASM({
             document.getElementById("op_node0").value = $0 > 1 ? $0 : "T";

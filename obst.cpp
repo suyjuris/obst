@@ -2398,7 +2398,7 @@ s64 formula_simplify(Formula_store* store, s64 f_id) {
     }    
 }
 
-u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1) {
+u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1, bool skip_first = false) {
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
         context_append(store, "Creating BDD from formula ");
@@ -2424,7 +2424,9 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
     }
 
     array_push_back(&store->snapshot_cur_node, bdd_temp.id);
-    take_snapshot(store);
+    if (not skip_first) {
+        take_snapshot(store);
+    }
 
     s64 f_id_simple = formula_simplify(fstore, f_id);
     if (f_id_simple != f_id) {
@@ -2461,7 +2463,7 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
             take_snapshot(store);
             context_pop(store);
 
-            bdd_final = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.id);
+            bdd_final = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.id, true);
             context_pop(store);
             --store->snapshot_cur_node.size;
         } else if (bdd_temp.level == 1) {
@@ -3514,7 +3516,7 @@ struct Opengl_context {
         UNIFORMS_COUNT
     };
     
-    double width, height; // Dimensions of the canvas in pixels
+    s64 width, height; // Dimensions of the canvas in pixels
     float origin_x, origin_y; // Position of the bottom-left corner of the screen in world-coordinates
     float scale; // Ratio of world-coordinates and pixels (world * scale = pixels)
     float layout_max_x, layout_max_y; // Position of the top-right corner of the screen in world-coordinates
@@ -4558,10 +4560,11 @@ void opengl_frame_init(Opengl_context* context) {
     context->origin_x = -1.f;
     context->origin_y = -1.f;
     context->scale    = std::min(
-        context->width  / (context->layout_max_x + 2.f),
-        context->height / (context->layout_max_y + 2.f)
+        (float)context->width  / (context->layout_max_x + 2.f),
+        (float)context->height / (context->layout_max_y + 2.f)
     );
-    context->origin_y -= context->height / context->scale - (context->layout_max_y + 2.f);
+    context->origin_y -=  (float)context->height / context->scale - (context->layout_max_y + 2.f);
+    context->origin_x -= ((float)context->width  / context->scale - (context->layout_max_x + 2.f)) * 0.5f;
 
     if (context->font_regenerate == 1) {
         // If there is nothing there, we have to idea what size to construct the font in. But we
@@ -4756,9 +4759,9 @@ void layout_render(Array_t<Bdd_layout>* layouts, float* max_x, float* max_y, s64
 
 // Interpolates and draws the frame at time using the data from layouts and store.
 void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd_store store, float time) {
-    if (time < 0.f) time = 0.f;
+    if (time <= 0.f) time = 0.f;
     s64 frame = (s64)time;
-    float t = time - (s64)frame;
+    float t = time - (float)frame;
     
     // Check whether we are trying to render a sensible frame
     if (layouts.size == 0) {
@@ -5831,6 +5834,7 @@ void ui_button_op() {
     
     assert(op_str.size == 1);
 
+    //@Cleanup This needs to interact with the new names!
     auto parse_bdd = [](s32* arg, Array_t<u8> arg_str, char const* desc) {
         if (arg_str.size == 1 and arg_str[0] == 'F') {
             *arg = 0;
