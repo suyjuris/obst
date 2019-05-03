@@ -33,8 +33,6 @@ EM_JS(void, _platform_ui_error_clear, (), {
 });
 void platform_ui_error_clear () { _platform_ui_error_clear(); }
 
-// @Cleanup: Replace abort() calls by something a little bit more useful.
-
 struct Emscripten_state {
     Array_dyn<u8> fmt_buf;
     u64 fmt_flags;
@@ -55,11 +53,16 @@ void platform_fmt_begin(u64 flags) {
     auto* state = &global_emscripten;
     
     state->fmt_flags |= flags;
-
-    if (flags & Text_fmt::PARAGRAPH) {
-        array_printf(&state->fmt_buf, "<p>");
-    } else if (flags & Text_fmt::PARAGRAPH_CLOSE) {
-        array_printf(&state->fmt_buf, "<p class=\"close\">");
+    
+    if (flags & (Text_fmt::PARAGRAPH | Text_fmt::PARAGRAPH_CLOSE)) {
+        array_printf(&state->fmt_buf, "<p");
+        if (flags & Text_fmt::PARAGRAPH_CLOSE) {
+            array_printf(&state->fmt_buf, " class=\"close\"");
+        }
+        if (state->fmt_flags & Text_fmt::INDENTED) {
+            array_printf(&state->fmt_buf, " style=\"margin-left: 20px; text-indent: -20px\"");
+        }
+        array_printf(&state->fmt_buf, ">");
     }
 
     if (flags & Text_fmt::BOLD) {
@@ -79,9 +82,7 @@ void platform_fmt_begin(u64 flags) {
 void platform_fmt_end(u64 flags) {
     auto* state = &global_emscripten;
         
-    if (flags & Text_fmt::PARAGRAPH) {
-        array_printf(&state->fmt_buf, "</p>");
-    } else if (flags & Text_fmt::PARAGRAPH_CLOSE) {
+    if (flags & (Text_fmt::PARAGRAPH | Text_fmt::PARAGRAPH_CLOSE)) {
         array_printf(&state->fmt_buf, "</p>");
     } else if (flags & Text_fmt::NEWLINE) {
         array_printf(&state->fmt_buf, "<br>");
@@ -166,11 +167,10 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     emscripten_get_element_css_size("canvas", &w, &h);
     float f = _platform_resize_callback_helper();
 
-    //@Cleanup Make these integer
-    context->width  = std::floor(w * f);
-    context->height = std::floor(h * f);
-    global_context.screen_w = (s64)context->width;
-    global_context.screen_h = (s64)context->height;
+    context->width  = (s64)std::floor(w * f);
+    context->height = (s64)std::floor(h * f);
+    global_context.screen_w = context->width;
+    global_context.screen_h = context->height;
 
     emscripten_set_canvas_element_size("canvas", global_context.screen_w, global_context.screen_h);
     
@@ -451,7 +451,6 @@ void platform_ui_bddinfo_show(float x, float y, float pad) {
     bool bottom = true;
 
     // Try to draw the box inside the canvas
-    // @Cleanup bddinfo width
     if (px + pd + 300.f >= global_context.width) {
         px = global_context.width - px;
         right = true;
@@ -616,15 +615,24 @@ extern "C" void OBST_EM_EXPORT(_platform_ui_button_move) (float diff) {
     ui_button_move(diff);
 }
 
+void _platform_set_entry_bdd(char* el, u32 bdd) {
+    u32 name = global_store.bdd_data[bdd].name;
+    auto arr = array_subarray(global_store.name_data, global_store.names[name], global_store.names[name+1]);
+    char* buf = (char*)alloca(arr.size+1);
+    memcpy(buf, arr.data, arr.size);
+    buf[arr.size] = 0;
+    
+    EM_ASM({
+        document.getElementById(UTF8ToString($0)).value = UTF8ToString($1);
+    }, el, buf);
+}
+
 // Enable the buttons that perform set operations. bdd is used to populate fields with valid
 // input, so that the user can simply click on the "Calculate X" button and see something sensible.
 void platform_operations_enable(u32 bdd) {
-    //@Cleanup: New names!
     if (bdd > 1) {
-        EM_ASM({
-            document.getElementById("op_node0").value = $0 > 1 ? $0 : "T";
-            document.getElementById("op_node1").value = $1 > 1 ? $1 : "T";
-        }, global_store.bdd_data[bdd].child0, global_store.bdd_data[bdd].child1);
+        _platform_set_entry_bdd("op_node0", global_store.bdd_data[bdd].child0);
+        _platform_set_entry_bdd("op_node1", global_store.bdd_data[bdd].child1);
     }
 
     EM_ASM(

@@ -900,7 +900,7 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
             context_amend_bdd(store, a);
             context_amend(store, " and ");
             context_amend_bdd(store, b);
-            context_amend(store, ") at same level, take children of both");
+            context_amend(store, ") at same level, take children of both simultaneously");
             array_append(&store->snapshot_marked, {a, b});
         }
 
@@ -2398,7 +2398,7 @@ s64 formula_simplify(Formula_store* store, s64 f_id) {
     }    
 }
 
-u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1, bool skip_first = false) {
+u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1, bool skip_first = false) {
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
         context_append(store, "Creating BDD from formula ");
@@ -2463,7 +2463,7 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
             take_snapshot(store);
             context_pop(store);
 
-            bdd_final = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.id, true);
+            bdd_final = bdd_from_formula_stepwise(store, fstore, f0_id, bdd_temp.id, true);
             context_pop(store);
             --store->snapshot_cur_node.size;
         } else if (bdd_temp.level == 1) {
@@ -2503,13 +2503,13 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
             take_snapshot(store);
             context_pop(store);
 
-            bdd_temp.child0 = _bdd_from_formula_stepwise_helper(store, fstore, f0_id, bdd_temp.child0);
+            bdd_temp.child0 = bdd_from_formula_stepwise(store, fstore, f0_id, bdd_temp.child0);
             store->bdd_data[bdd_temp.id] = bdd_temp;
             take_snapshot(store);
             context_pop(store);
             --store->snapshot_cur_node.size;
         
-            bdd_temp.child1 = _bdd_from_formula_stepwise_helper(store, fstore, f1_id, bdd_temp.child1);
+            bdd_temp.child1 = bdd_from_formula_stepwise(store, fstore, f1_id, bdd_temp.child1);
             store->bdd_data[bdd_temp.id] = bdd_temp;
             take_snapshot(store);
             context_pop(store);
@@ -2530,11 +2530,6 @@ u32 _bdd_from_formula_stepwise_helper(Bdd_store* store, Formula_store* fstore, s
         context_pop(store);
     }
     return bdd_final;
-}
-
-u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id) {
-    // @Cleanup: Inline this call
-    return _bdd_from_formula_stepwise_helper(store, fstore, f_id);
 }
 
 // Now we get into the layout part.
@@ -3974,7 +3969,6 @@ void opengl_init(Opengl_context* context) {
 }
 
 // These exist only once. Some of the lower functions do not assume that, but many UI functions do.
-// @Cleanup: Maybe refactor a few functions to not use these
 Opengl_context global_context;
 Bdd_store global_store;
 Array_t<Bdd_layout> global_layouts;
@@ -5708,7 +5702,7 @@ void ui_mouse_move(float world_x, float world_y) {
 }
 
 void ui_frame_draw() {
-    float then = (float)platform_now(); //@Cleanup: Move times to double
+    float then = (float)platform_now(); // TODO: Move times to double
     opengl_frame_init(&global_context);
     layout_frame_draw(&global_context, global_layouts, global_store, global_ui.frame_cur);
 
@@ -5834,23 +5828,16 @@ void ui_button_op() {
     
     assert(op_str.size == 1);
 
-    //@Cleanup This needs to interact with the new names!
     auto parse_bdd = [](s32* arg, Array_t<u8> arg_str, char const* desc) {
-        if (arg_str.size == 1 and arg_str[0] == 'F') {
-            *arg = 0;
-        } else if (arg_str.size == 1 and arg_str[0] == 'T') {
-            *arg = 1;
-        } else if (u8 code = jup_stoi(arg_str, arg, 10)) {
-            ui_error_report("Error while parsing '%s', which has to be a number: %s", desc, jup_err_messages[code]);
-            return true;
-        } else if (*arg < 0) {
-            ui_error_report("Error: '%s' must be nonnegative.", desc);
-            return true;
-        } else if (*arg >= global_store.bdd_data.size or global_store.bdd_data[*arg].flags & Bdd::TEMPORARY) {
-            ui_error_report("Error: '%s' is not a valid node.", desc);
-            return true;
+        for (Bdd i: global_store.bdd_data) {
+            auto name = array_subarray(global_store.name_data, global_store.names[i.name], global_store.names[i.name+1]);
+            if (array_equal(arg_str, name)) {
+                *arg = i.id;
+                return false;
+            }
         }
-        return false;
+        ui_error_report("Cannot parse '%s', unknown node '%s'", desc, arg_str.data);
+        return true;
     };
 
     if (op_str[0] == 'u') {

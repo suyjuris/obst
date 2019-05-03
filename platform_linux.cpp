@@ -2212,18 +2212,16 @@ void platform_operations_disable() {
     _platform_operations_able(true);
 }
 void platform_operations_enable(u32 bdd) {
-    //@Cleanup: New names!
     auto context = &global_platform.lui_context;
     
     if (bdd > 1) {
         auto set_entry_bdd = [context](u8 entry_id, u32 bdd) {
             Text_entry* entry = &context->entries[entry_id];
             lui_entry_clear(context, entry);
-            if (bdd > 1) {
-                array_printf(&entry->text, "%d", bdd);
-            } else {
-                array_printf(&entry->text, "%s", bdd ? "F" : "T");
-            }
+
+            u32 name = global_store.bdd_data[bdd].name;
+            auto arr = array_subarray(global_store.name_data, global_store.names[name], global_store.names[name+1]);
+            array_append(&entry->text, arr);
         };
 
         set_entry_bdd(Lui_context::ENTRY_FIRSTNODE,  global_store.bdd_data[bdd].child0);
