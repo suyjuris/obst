@@ -4,7 +4,7 @@ Binary Decision Diagrams (BDDs, see also [Wikipedia](https://en.wikipedia.org/wi
 
 obst is an application that shows how the algorithms for constructing and operating on BDDs work on a step-by-step basis. You can try it out [here](https://nicze.de/philipp/bdds). It is intended to be useful for both exploring the inner workings of BDDs interactively, as well as demonstrating the intermediate steps of a BDD computation in a classroom environment.
 
-It has both a web interface as well as a native one, the latter of which currently runs only on Linux. While the functionality is almost identical, the native version is more performant and the animations look better.
+It has both a web interface as well as a native one, the latter of which currently runs only on Linux. While the functionality is almost identical, the native version is more performant and everything feels better.
 
 As the web interface of obst is built on WebAssembly, it requires a reasonably modern browser to run. I have tested it on both Firefox 61 and Chrome 68. If you want to be able to run the website offline, either grab one of the releases from the GitHub repository, or just download `index.html`, `obst.js`, and `obst.wasm` from the live version.
 
@@ -19,6 +19,7 @@ I hope the application is pretty self-explanatory, but a few details are not doc
 * *Home, End*: Move to the first/last frame.
 * *F1*: Show/hide the help.
 * *F2*: Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside obst and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Finally, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
+* *F3*: Show/Hide the left panel.
 
 When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid. 
 
@@ -30,7 +31,7 @@ The parser for boolean formulae accepts a list of statements separated by either
 
 Variable order is the string 'auto' or a comma-separated list of variable names. (Actually, a list of identifiers and operators, the latter of which are ignored.)
 
-## Building and running the web-interface
+## Building and running the web interface
 
 Take care to set up your Emscripten environment beforehand, e.g. by executing `source /path/to/emscripten/emsdk_env.sh`.
 
@@ -56,15 +57,15 @@ A simple
 
     ./build.sh gcc debug
 
-suffices for a debug build. This will compile and link `platform_linux.cpp`, enabling C++14. You can do that by hand, if you prefer. In terms of dependencies, you need OpenGL 3.2, X11 and Xrandr, which should be present on any Linux desktop set up in the last decade.
+suffices for a debug build. This will compile and link `platform_linux.cpp`. You can do that by hand, if you prefer. In terms of dependencies, you need OpenGL 3.2, X11 and Xrandr (link `-lGL -lX11 -lXrandr`), which should be present on any Linux desktop set up in the last decade. C++14 support has to be enabled.
 
     ./build.sh gcc release
 
-creates the release build. There is one additional consideration for shipping: I prefer distributing just a single executable. Hence, you can run
+This creates the release build. There is one additional consideration for shipping: I prefer distributing just a single executable. Hence, you can run
 
     ./obst --pack
 
-to pack the necessary ressources (the fonts) into the binary. This will create an `obst_packed` executable. It still needs the dynamic libraries present at runtime, but I am reasonably confident that these are preinstalled on any somewhat modern system.
+to pack the necessary ressources (the fonts and their license) into the binary. This will create an `obst_packed` executable. It still needs the dynamic libraries present at runtime, but I am reasonably confident that these are preinstalled on any somewhat modern system.
 
 ## The source code
 

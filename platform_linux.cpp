@@ -3182,7 +3182,7 @@ void _platform_print_help(char* argv0, bool is_packed) {
 
     puts("This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018. Running the program without any arguments starts the GUI, which is the main part of this application.\n");
     if (is_packed) {
-        puts("You are running the packed version of obst, which meas that the font data is included in the binary. To view the license under which the fonts are distributed, run obst with the --font-license option.");
+        puts("You are running the packed version of obst, which means that the font data is included in the binary. To view the license under which the fonts are distributed, run obst with the --font-license option.");
     } else {
         puts("You are running the unpacked version of the binary, which means that it will load fonts from the 'fonts/' subdirectory of the CWD. You can run this programm with the '--pack' option, which will create a 'obst_packed' binary in the CWD that contains the font data.");
     }
