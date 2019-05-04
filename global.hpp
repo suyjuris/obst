@@ -272,3 +272,6 @@ bool bitset_get(Array_t<u64> bitset, u64 bit) {
     u64 offset = bit % 64;
     return bitset[index] >> offset & 1;
 }
+
+#define JUP_STOX_IMPLEMENTATION
+#include "stox.hpp"

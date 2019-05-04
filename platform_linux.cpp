@@ -154,6 +154,7 @@ struct Text_preparation {
     bool dirty = false; // Whether we need to re-send the texture to the GPU
     Array_dyn<Text_box> cache; // Holds a copy of everything we have already rendered
     Array_t<Text_box_lookup> cache_lookup; // Hash table for the cache
+    Array_dyn<u8> word_data; // Each text box stores the text it is generated from. The bytes are stored in here.
 };
 
 // Keeps the necessary data to manage OpenGL and other data for the uil layer
@@ -213,13 +214,18 @@ struct Lui_context {
         float scale, ascent, height, newline, space;
     };
     enum Font_instance_id: u8 {
+        // The order has to match font_base_size!
         FONT_LUI_NORMAL, FONT_LUI_ITALIC, FONT_LUI_BOLD, FONT_LUI_HEADER, FONT_LUI_SMALL,
         FONT_LUI_SANS, FONT_LUI_BUTTON, FONT_BDD_NORMAL, FONT_BDD_ITALICS, FONT_BDD_SMALL,
-        FONT_COUNT
+        FONT_COUNT, FONT_LUI_COUNT = FONT_BDD_NORMAL
     };
 
     constexpr static u8 font_magic[] = {(u8)15, (u8)183, (u8)0, (u8)188, (u8)140, (u8)140, (u8)156,
         (u8)250, (u8)81, (u8)112, (u8)36, (u8)51, (u8)118, (u8)200, (u8)159, (u8)15};
+    constexpr static float font_base_size[] = {
+        20.f, 20.f, 20.f, 26.f, 15.f, 20.f, 16.7f, 20.f, 20.f, 20.f
+    }; // Same order as Font_instance_id
+    
     Array_t<u8*> font_files;
     Array_t<Array_t<u8>> font_file_data;
     Array_t<stbtt_fontinfo> font_info;
@@ -281,17 +287,17 @@ struct Lui_context {
     s64 elem_tabindex = 0;
     double cursor_next_blink = 0.f;
     bool cursor_blinked = false;
-    Padding padding_entry;
     Scrollbar scroll_panel, scroll_helptext;
     Array_t<Resizer> resizers;
     bool panel_left_hidden = false;
 
-    // Lengths used by multiple places
-    //@Cleanup: Make this DPI aware
-    s64 panel_left_width = 475;
-    s64 width_scrollbar = 6;
-    s64 width_resizer = 8;
-    s64 width_button_max = 40;
+    // DPI-dependent constants
+    float dpi_scale = 1.25f; // This is NOT the dpi, but rather a factor that tells you by how much everything needs to be scaled, and which (entirely coincidentally, I assure you) is precisely 1 on my monitor.
+    s64 width_panel_left;
+    s64 width_scrollbar;
+    s64 width_resizer;
+    s64 width_button_max;
+    Padding pad_entry;
 
     // Input state
     s64 pointer_x, pointer_y;
@@ -308,9 +314,17 @@ struct Lui_context {
 
     // State for helptext
     bool helptext_active = false;
+
+    s64 scale(s64 val) {
+        return (s64)std::ceil(dpi_scale * (float)val);
+    }
+    Padding pad(s64 pad_x = 0, s64 pad_y = 0, s64 mar_x = 0, s64 mar_y = 0) {
+        return {scale(pad_x), scale(pad_y), scale(mar_x), scale(mar_y)};
+    }
 };
 
 constexpr u8 Lui_context::font_magic[];
+constexpr float Lui_context::font_base_size[];
 
 namespace Platform_clipboard {
 enum Types: u8 {
@@ -374,15 +388,7 @@ void _platform_handle_resize(s64 width = -1, s64 height = -1) {
     if (width  != -1) global_context.screen_w = width;
     if (height != -1) global_context.screen_h = height;
 
-    s64 plw = global_platform.lui_context.panel_left_hidden ? 0 : global_platform.lui_context.panel_left_width;
-    global_context.width = std::max(global_context.screen_w - plw, 400ll);
-    global_context.height = global_context.screen_h;
-    global_context.canvas_x = plw;
-    global_context.canvas_y = 0;
-
     glViewport(0.0, 0.0, global_context.screen_w, global_context.screen_h);
-    
-    application_handle_resize();
 }
 
 void platform_panel_toggle() {
@@ -390,10 +396,12 @@ void platform_panel_toggle() {
     _platform_handle_resize();
 }
 
-void _platform_init_font(s64 font_style, s64 index, float size) {
-    Lui_context* context = &global_platform.lui_context;
-
+void _platform_init_font(Lui_context* context, s64 font_style, s64 index, float size = -1.f) {
     if (index == -1) index = context->fonts[font_style].info_index;
+
+    if (size == -1.f) {
+        size = context->scale(Lui_context::font_base_size[font_style]);
+    }
     
     Lui_context::Font_instance inst;
     inst.info_index = index;
@@ -604,7 +612,9 @@ void lui_text_prepare_init(Text_preparation* prep, s64 texture_size) {
     memset(prep->cache_lookup.data, -1, prep->cache_lookup.size * sizeof(Text_box_lookup));
 }
 
-void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font, Array_t<u8> word, Text_box* box, float letter_fac=1.f) {
+void lui_text_prepare_regen(Lui_context* context, Text_preparation* prep);
+
+void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font, Array_t<u8> word, Text_box* box, float letter_fac=1.f, bool use_cache = true) {
     assert(box);
 
     union {
@@ -614,22 +624,26 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
     letter_fac_ = letter_fac;
     
     // Lookup in hash table
-    u64 hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ ((u64)letter_fac_u << 32);
-    for (u8 c: word) {
-        hash = hash * 1099511628211ull ^ c;
-    }
-    s64 slot_i = hash % prep->cache_lookup.size;
-    while (true) {
-        auto slot = prep->cache_lookup[slot_i];
-        if (slot.index == -1) break;
-        if (slot.hash == hash) {
-            *box = prep->cache[slot.index];
-            return;
+    s64 slot_i = -1;
+    u64 hash;
+    if (use_cache) {
+        hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ ((u64)letter_fac_u << 32);
+        for (u8 c: word) {
+            hash = hash * 1099511628211ull ^ c;
         }
-        slot_i = (slot_i + 1) % prep->cache_lookup.size;
+        slot_i = hash % prep->cache_lookup.size;
+        while (true) {
+            auto slot = prep->cache_lookup[slot_i];
+            if (slot.index == -1) break;
+            if (slot.hash == hash) {
+                *box = prep->cache[slot.index];
+                return;
+            }
+            slot_i = (slot_i + 1) % prep->cache_lookup.size;
+        }
+        // Note that slot_i now points at the next empty slot
     }
-    // Note that slot_i now points at the next empty slot
-
+    
     Array_dyn<int> glyphs = prep->glyph_buf;
     defer { prep->glyph_buf = glyphs; };
     glyphs.size = 0;
@@ -694,8 +708,11 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
             stbtt_MakeGlyphBitmapSubpixel(fontinfo, buf.data, w, h, w, f, f, shift, 0.f, glyphs[k]);
 
             if ((x0 + w) + (y0 + h) * size > prep->image.size) {
-                fprintf(stderr, "Error: glyph texture capacity exceeded\n");
-                exit(202);
+                // Glyph texture capacity exceeded. Double the texture size and regenerate everything.
+                prep->size *= 2;
+                lui_text_prepare_regen(context, prep);
+                lui_text_prepare_word(context, prep, font, word, box, letter_fac);
+                return;
             }
             
             for (s64 row = 0; row < h; ++row) {
@@ -724,6 +741,12 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
             box->y1 = (float)(y_incr_new - y + y_orig+1);
             box->advance = (float)(x - x_orig - x_init_off) + adv*f;
             box->font = font;
+            box->letter_fac = letter_fac;
+            box->flags = 0;
+            
+            box->word_offset = prep->word_data.size;
+            box->word_size = word.size;
+            array_append(&prep->word_data, word);
             
             if (x0 + w < size) {
                 x = x_orig + x_init_off;
@@ -751,24 +774,62 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
     prep->y_incr = y_incr;
     prep->dirty = true;
 
-    // Insert element into hashtable
-    if (prep->cache.size*4 > prep->cache_lookup.size*3) {
-        fprintf(stderr, "Error: Text_box cache size limit exceeded.\n");
-        exit(201);
+    if (use_cache) {
+        // Insert element into hashtable
+        if (prep->cache.size*4 > prep->cache_lookup.size*3) {
+            fprintf(stderr, "Error: Text_box cache size limit exceeded.\n");
+            exit(201);
+        }
+        prep->cache_lookup[slot_i] = {hash, prep->cache.size};
+        array_push_back(&prep->cache, *box);
     }
-    prep->cache_lookup[slot_i] = {hash, prep->cache.size};
-    array_push_back(&prep->cache, *box);
+}
+
+// Re-generate all rasterized text in a single Text_preparation. Take care to update any other
+// 'Text_box'es lying around!
+void lui_text_prepare_regen(Lui_context* context, Text_preparation* prep) {
+    if (prep->image.size != prep->size * prep->size) {
+        array_resize(&prep->image, prep->size * prep->size);
+    }
+    memset(prep->image.data, 0, prep->image.size);
+    prep->x = 0;
+    prep->y = 0;
+    prep->y_incr = 0;
+
+    auto regen = [context, prep](Text_box* i, bool use_cache = true) {
+        auto word = array_subarray(prep->word_data, i->word_offset, i->word_offset + i->word_size);
+        u32 flags = i->flags;
+        lui_text_prepare_word(context, prep, i->font, word, i, i->letter_fac, use_cache);
+        i->flags = flags;
+    };
+    
+    for (Text_box& i: prep->cache) regen(&i, false);
+
+    if (prep == &context->prep_ui) {
+        for (auto arr: context->fmt_slots) {
+            for (Text_box& i: arr) regen(&i);
+        }
+        for (Text_box& i: context->fmt_boxes) regen(&i);
+    } else if (prep == &context->prep_bdd) {
+        for (Text_box& i: global_context.text_pos) regen(&i);
+    }
 }
 
 void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* offsets, float* linoff, float* ascent) {
     Lui_context* context = &global_platform.lui_context;
     
-    _platform_init_font(Lui_context::FONT_BDD_NORMAL,  -1, font_size             );
-    _platform_init_font(Lui_context::FONT_BDD_ITALICS, -1, font_size             );
-    _platform_init_font(Lui_context::FONT_BDD_SMALL,   -1, font_size * small_frac);
+    _platform_init_font(context, Lui_context::FONT_BDD_NORMAL,  -1, font_size             );
+    _platform_init_font(context, Lui_context::FONT_BDD_ITALICS, -1, font_size             );
+    _platform_init_font(context, Lui_context::FONT_BDD_SMALL,   -1, font_size * small_frac);
     lui_text_prepare_init(&context->prep_bdd, 512);
 
-    for (s64 i = 0; i < offsets->size; ++i) {
+    // If we cause the texture to resize, all boxes in global_context.text_pos (which offsets
+    // usually points to) will be changed. So, just to make sure that there is no old data in there,
+    // we reset its size.
+    s64 offsets_size = offsets->size;
+    offsets->size = 0;
+    
+    for (s64 i = 0; i < offsets_size; ++i) {
         u8 c = opengl_bddlabel_index_char(i);
         bool italicized;
         auto arr = opengl_bddlabel_index_utf8(i, nullptr, &italicized);
@@ -780,6 +841,7 @@ void platform_text_prepare(int font_size, float small_frac, Array_t<Text_box>* o
         Text_box box;
         lui_text_prepare_word(context, &context->prep_bdd, font, arr, &box);
 
+        offsets->size = i+1;
         (*offsets)[i] = box;
     }
     
@@ -1224,8 +1286,8 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
     context->elem_flags[slot] |= Lui_context::DRAW_BUTTON;
     u64 flags = context->elem_flags[slot];
 
-    Padding pad {12, 4, 3, 3};
-    if (flags & Lui_context::DRAW_COMPACT) pad.pad_x = 9;
+    Padding pad = context->pad(12, 4, 3, 3);
+    if (flags & Lui_context::DRAW_COMPACT) pad.pad_x = context->scale(9);
     
     Rect bb;
     bb.w = 2*pad.mar_x + 2*pad.pad_x + text_w;
@@ -1250,8 +1312,7 @@ void lui_draw_button_right(Lui_context* context, s64 slot, s64 x, s64 y, s64 w, 
 void lui_draw_entry(Lui_context* context, Text_entry* entry, s64 x, s64 y, s64 w, s64 rows, s64* x_out, s64* y_out, s64* ha_out, Resizer* resizer=nullptr, bool only_measure=false) {
     u8 font = Lui_context::FONT_LUI_BUTTON;
     auto font_inst = context->fonts[font];
-    Padding pad = {7, 5, 3, 3};
-    context->padding_entry = pad;
+    Padding pad = context->pad_entry;
 
     s64 h = resizer ? resizer->size : rows * (s64)std::round(font_inst.newline);
     
@@ -1289,8 +1350,8 @@ void lui_draw_radio(Lui_context* context, s64 x, s64 y, s64 slot, s64* x_out, s6
     context->elem_flags[slot] |= Lui_context::DRAW_RADIO;
     u64 flags = context->elem_flags[slot];
 
-    s64 size = 21;
-    Padding pad {3, 3, 5, 5};
+    s64 size = context->scale(21);
+    Padding pad = context->pad(3, 3, 5, 5);
     Rect bb {x, y + (s64)std::round(font_inst.ascent) - size + pad.mar_y, size, size};
     lui_draw_buttonlike(context, bb, pad, flags, nullptr);
 
@@ -1374,16 +1435,16 @@ void _platform_init(Platform_state* platform) {
 
     // Note that the indices at the second to last parameter refer to the indices of the font files
     // in Lui_context::font_files
-    _platform_init_font(Lui_context::FONT_LUI_NORMAL, 0, 20);
-    _platform_init_font(Lui_context::FONT_LUI_ITALIC, 1, 20);
-    _platform_init_font(Lui_context::FONT_LUI_BOLD, 2, 20);
-    _platform_init_font(Lui_context::FONT_LUI_HEADER, 2, 26);
-    _platform_init_font(Lui_context::FONT_LUI_SMALL, 0, 15);
-    _platform_init_font(Lui_context::FONT_LUI_SANS, 3, 20);
-    _platform_init_font(Lui_context::FONT_LUI_BUTTON, 3, 16.7);
-    _platform_init_font(Lui_context::FONT_BDD_NORMAL, 3, 20);
-    _platform_init_font(Lui_context::FONT_BDD_ITALICS, 1, 20);
-    _platform_init_font(Lui_context::FONT_BDD_SMALL, 3, 20);
+    _platform_init_font(context, Lui_context::FONT_LUI_NORMAL,  0);
+    _platform_init_font(context, Lui_context::FONT_LUI_ITALIC,  1);
+    _platform_init_font(context, Lui_context::FONT_LUI_BOLD,    2);
+    _platform_init_font(context, Lui_context::FONT_LUI_HEADER,  2);
+    _platform_init_font(context, Lui_context::FONT_LUI_SMALL,   0);
+    _platform_init_font(context, Lui_context::FONT_LUI_SANS,    3);
+    _platform_init_font(context, Lui_context::FONT_LUI_BUTTON,  3);
+    _platform_init_font(context, Lui_context::FONT_BDD_NORMAL,  3); // The last three sizes do not matter, BDDs are scaled
+    _platform_init_font(context, Lui_context::FONT_BDD_ITALICS, 1);
+    _platform_init_font(context, Lui_context::FONT_BDD_SMALL,   3);
 
     // Initialise font preparation
     lui_text_prepare_init(&context->prep_ui, 1024);
@@ -1421,6 +1482,9 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_text(0, u8"•");
     platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "Home, End");
     platform_fmt_text(Text_fmt::NEWLINE, ": Move to the first/last frame.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, u8"Ctrl-+, Ctrl--, Ctrl-0");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Zoom in/out, or reset zoom.");
     platform_fmt_text(0, u8"•");
     platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F1");
     platform_fmt_text(Text_fmt::NEWLINE, ": Show/hide help.");
@@ -2099,7 +2163,7 @@ bool _lui_process_key_entry(Lui_context* context, Text_entry* entry, Key key) {
 
         if (consumed) {
             Rect bb = context->elem_bb[entry->slot];
-            Padding pad = context->padding_entry;
+            Padding pad = context->pad_entry;
             auto font_inst = context->fonts[Lui_context::FONT_LUI_BUTTON];
                 
             s64 tx = x - bb.x - pad.mar_x - pad.pad_x + entry->offset_x;
@@ -2237,6 +2301,14 @@ void platform_operations_enable(u32 bdd) {
     } else if (context->elem_flags[Lui_context::SLOT_LABEL_COMPLEMENT] & Lui_context::DRAW_PRESSED) {
         lui_radio_press(Lui_context::SLOT_LABEL_COMPLEMENT);
     }
+}
+
+void _platform_zoom(Lui_context* context, float fac, bool absolute = false) {
+    context->dpi_scale = absolute ? fac : context->dpi_scale * fac;
+    for (s64 i = 0; i < Lui_context::FONT_LUI_COUNT; ++i) {
+        _platform_init_font(context, i, -1);
+    }
+    lui_text_prepare_regen(context, &context->prep_ui);
 }
 
 void _platform_render(Platform_state* platform) {
@@ -2425,6 +2497,12 @@ void _platform_render(Platform_state* platform) {
 
             if (key.special == Key::C_QUIT) {
                 exit(0);
+            } else if (key.special == Key::C_ZOOM_IN) {
+                _platform_zoom(context, 1.1f);
+            } else if (key.special == Key::C_ZOOM_OUT) {
+                _platform_zoom(context, 1.f / 1.1f);
+            } else if (key.special == Key::C_ZOOM_ZERO) {
+                _platform_zoom(context, 1.f, true);
             } else if (key.special == Key::TAB or key.special == Key::SHIFT_TAB) {
                 if (context->elem_focused != 0 or context->elem_tabindex == 0) {
                     context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
@@ -2576,6 +2654,24 @@ void _platform_render(Platform_state* platform) {
     set_disabled(Lui_context::SLOT_ENTRY_NUMBERS,  !create_type_numbers);
     set_disabled(Lui_context::SLOT_ENTRY_BITORDER, !create_type_numbers);
     set_disabled(Lui_context::SLOT_ENTRY_VARORDER,  create_type_numbers);
+
+    // Scale the constants according to dpi
+    context->width_panel_left = context->scale(475);
+    context->width_scrollbar  = context->scale(  6);
+    context->width_resizer    = context->scale(  8);
+    context->width_button_max = context->scale( 40);
+    
+    context->pad_entry    = context->pad(7, 5, 3, 3);
+
+    // Determine the position of the canvas
+    {auto set = [](s64* var, s64 val, bool* change) { *change |= *var != val; *var = val; };
+    s64 plw = global_platform.lui_context.panel_left_hidden ? 0 : global_platform.lui_context.width_panel_left;
+    bool flag = false;
+    set(&global_context.width, std::max(global_context.screen_w - plw, 400ll), &flag);
+    set(&global_context.height, global_context.screen_h, &flag);
+    set(&global_context.canvas_x, plw, &flag);
+    set(&global_context.canvas_y, 0, &flag);
+    if (flag) { application_handle_resize(); }}
     
     // Draw the application
     application_render();
@@ -2592,17 +2688,20 @@ void _platform_render(Platform_state* platform) {
 
   if (not context->panel_left_hidden) {
     
-    lui_draw_rect(context, 0, 0, context->panel_left_width, global_context.screen_h, Lui_context::LAYER_BACK, white);
-    context->elem_bb[Lui_context::SLOT_PANEL] = Rect {0, 0, context->panel_left_width, global_context.screen_h};
+    lui_draw_rect(context, 0, 0, context->width_panel_left, global_context.screen_h, Lui_context::LAYER_BACK, white);
+    context->elem_bb[Lui_context::SLOT_PANEL] = Rect {0, 0, context->width_panel_left, global_context.screen_h};
 
-    Padding pad_panel {10, 10};
+    Padding pad_panel = context->pad(10, 10);
     s64 x = pad_panel.pad_x;
     s64 y = pad_panel.pad_y - context->scroll_panel.offset;
-    s64 w = context->panel_left_width - pad_panel.pad_x*2 - context->width_scrollbar;
+    s64 w = context->width_panel_left - pad_panel.pad_x*2 - context->width_scrollbar;
+
+    s64 skip = context->scale(10);
     
     auto hsep = [context, x, w, &y, font_inst]() {
         u8 gray[] = {153, 153, 153, 255};
-        lui_draw_rect(context, x + 12, y, w - 24, 1, Lui_context::LAYER_MIDDLE, gray);
+        s64 l = context->scale(12);
+        lui_draw_rect(context, x + l, y, w - 2*l, 1, Lui_context::LAYER_MIDDLE, gray);
         y += (s64)std::round(font_inst.newline*1.5f - font_inst.height + 1);
     };
 
@@ -2627,7 +2726,7 @@ void _platform_render(Platform_state* platform) {
     platform_fmt_draw(Lui_context::SLOT_LABEL_BASE, x, y, -1, &x, &y);
     y -= ha_line;
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_BASE], x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
-    y += ha_line; x += 10;
+    y += ha_line; x += skip;
     s64 entry      = create_type_numbers ? Lui_context::ENTRY_BITORDER : Lui_context::ENTRY_VARORDER;
     s64 slot_label = create_type_numbers ? Lui_context::SLOT_LABEL_BITORDER : Lui_context::SLOT_LABEL_VARORDER;
     platform_fmt_draw(slot_label, x, y, -1, &x, &y);
@@ -2657,7 +2756,7 @@ void _platform_render(Platform_state* platform) {
     platform_fmt_draw(Lui_context::SLOT_LABEL_FIRSTNODE, x, y, -1, &x, &y);
     y -= ha_line;
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_FIRSTNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, &x, nullptr, nullptr);
-    y += ha_line; x += 10;
+    y += ha_line; x += skip;
     platform_fmt_draw(Lui_context::SLOT_LABEL_SECONDNODE, x, y, -1, &x, &y);
     y -= ha_line;
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_SECONDNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, &y, nullptr);
@@ -2710,7 +2809,7 @@ void _platform_render(Platform_state* platform) {
     
     if (context->bddinfo_active) {
         auto c = &global_context;
-        Padding pad {8, 8};
+        Padding pad = context->pad(8, 8);
         s64 w = 345, iw, ih;
         platform_fmt_draw(Text_fmt::SLOT_BDDINFO, 0, 0, w-2*pad.pad_x, nullptr, &ih, true, &iw);
         s64 x = context->bddinfo_x + context->bddinfo_pad;
@@ -2730,8 +2829,8 @@ void _platform_render(Platform_state* platform) {
 
     if (context->helptext_active) {
         auto c = &global_context;
-        Padding pad {8, 16, 10, 10};
-        s64 w = std::min((s64)c->width - pad.mar_x*2, 750ll);
+        Padding pad = context->pad(8, 16, 10, 10);
+        s64 w = std::min((s64)c->width - pad.mar_x*2, context->scale(750));
         s64 w2 = w - 2*pad.pad_x - context->width_scrollbar;
 
         s64 h;
@@ -2806,6 +2905,9 @@ void linux_get_event_key(Array_dyn<Key>* keys, XKeyEvent e) {
     case XK_q:            special = Key::C_QUIT;      mod = ControlMask; break;
     case XK_s:            special = Key::C_SAVE;      mod = ControlMask; break;
     case XK_z:            special = Key::C_UNDO;      mod = ControlMask; break;
+    case XK_plus:         special = Key::C_ZOOM_IN;   mod = ControlMask; break;
+    case XK_minus:        special = Key::C_ZOOM_OUT;  mod = ControlMask; break;
+    case XK_0:            special = Key::C_ZOOM_ZERO; mod = ControlMask; break;
     case XK_Z:            special = Key::C_REDO;      mod = ControlMask | ShiftMask; break;
     }
 
@@ -3171,7 +3273,7 @@ void _platform_fonts_pack(Lui_context* context) {
 }
 
 void _platform_print_help(char* argv0, bool is_packed) {
-    printf("Usage:\n  %s\n", argv0);
+    printf("Usage:\n  %s [--dpi <dpi>]\n", argv0);
     if (is_packed) {
         printf("  %s --font-license\n", argv0);
     } else {
@@ -3181,18 +3283,32 @@ void _platform_print_help(char* argv0, bool is_packed) {
 
     puts("This is obst, a visualisation of algorithms related to Binary Decision Diagrams, written by Philipp Czerner in 2018. Running the program without any arguments starts the GUI, which is the main part of this application.\n");
     if (is_packed) {
-        puts("You are running the packed version of obst, which means that the font data is included in the binary. To view the license under which the fonts are distributed, run obst with the --font-license option.");
+        puts("  --font-license  You are running the packed version of obst, which means that the font data is included in the binary. To view the license under which the fonts are distributed, run obst with the --font-license option.");
     } else {
-        puts("You are running the unpacked version of the binary, which means that it will load fonts from the 'fonts/' subdirectory of the CWD. You can run this programm with the '--pack' option, which will create a 'obst_packed' binary in the CWD that contains the font data.");
+        puts("  --pack  You are running the unpacked version of the binary, which means that it will load fonts from the 'fonts/' subdirectory of the CWD. You can run this programm with the '--pack' option, which will create a 'obst_packed' binary in the CWD that contains the font data.");
     }
+    puts("  --dpi <dpi>  Adjusts the size of the UI. The default is 120.");
+    puts("  --help  Prints this help.");
 }
 
 int main(int argc, char** argv) {
     bool print_help = false;
     bool is_packed = _platform_fonts_load(&global_platform.lui_context);
+    bool dpi_set_by_user = false;
     
-    if (argc > 2) {
-        print_help = true;
+    if (argc == 3) {
+        Array_t<u8> arg   = {(u8*)argv[1], (s64)strlen(argv[1])};
+        Array_t<u8> param = {(u8*)argv[2], (s64)strlen(argv[2])};
+        if (array_equal_str(arg, "--dpi")) {
+            float dpi;
+            if (auto code = jup_stox(param, &dpi)) {
+                fprintf(stderr, "Error: while parsing argument to --dpi, which should be a number\n");
+                fprintf(stderr, "Error: %s\n", jup_err_messages[code]);
+                exit(3);
+            }
+            global_platform.lui_context.dpi_scale = dpi / 120.f;
+            dpi_set_by_user = true;
+        }
     } else if (argc == 2) {
         Array_t<u8> arg = {(u8*)argv[1], (s64)strlen(argv[1])};
         if (array_equal_str(arg, "--font-license")) {
@@ -3207,6 +3323,8 @@ int main(int argc, char** argv) {
         } else {
             print_help = true;
         }
+    } else if (argc != 1) {
+        print_help = true;
     }
 
     if (print_help) {
@@ -3309,6 +3427,25 @@ int main(int argc, char** argv) {
         XRRScreenConfiguration* config = XRRGetScreenInfo(display, window);
         global_platform.rate = XRRConfigCurrentRate(config);
         XRRFreeScreenConfigInfo(config);
+
+        if (not dpi_set_by_user) {
+            // Take the DPI of the monitor with the highest one
+            XRRScreenResources* screen_res = XRRGetScreenResourcesCurrent(display, DefaultRootWindow(display));
+            float dpi_scale = 0.95f;
+            for (s64 i = 0; i < screen_res->noutput; ++i) {
+                XRROutputInfo* output = XRRGetOutputInfo(display, screen_res, screen_res->outputs[i]);
+            
+                // Skip disconnected monitors
+                if (output->connection == 1 /* Disconnected */ or output->connection == 2 /* UnknownConnection */) continue;
+            
+                XRRCrtcInfo* crtc = XRRGetCrtcInfo(display, screen_res, output->crtc);
+                
+                float f = (float)crtc->width / (float)output->mm_width / 4.857685f; // The constant is the value this application was developed at, so it gets a scale of 1
+                dpi_scale = std::max(dpi_scale, f);
+            }
+            
+            global_platform.lui_context.dpi_scale = dpi_scale;
+        }
     } else {
         fprintf(stderr, "Warning: Xrandr extension not present on X server, assuming refresh rate of 60 Hz.\n");
         global_platform.rate = 60;

@@ -12,6 +12,7 @@ struct Key {
         INVALID, ESCAPE, ARROW_L, ARROW_R, ARROW_D, ARROW_U,
         HOME, END, PAGE_U, PAGE_D, TAB, SHIFT_TAB, DELETE, BACKSPACE, RETURN,
         C_COPY, C_PASTE, C_CUT, C_SELECTALL, C_UNDO, C_REDO, C_QUIT, C_SAVE,
+        C_ZOOM_IN, C_ZOOM_OUT, C_ZOOM_ZERO,
         F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
         SPECIAL_COUNT
     };
@@ -133,6 +134,8 @@ struct Text_box {
     float advance = 0.f;
     u8 font;
     u32 flags = 0; // Same as the spacing flags in Text_fmt::Flags
+    float letter_fac = 1.f;
+    s64 word_offset = 0, word_size = 0; // Bytes of the word, in Text_preperation::word_data
     
     static_assert(Text_fmt::GROUP_SPACING >> 32 == 0, "32-bit not sufficient or Text_box flags");
 };

@@ -47,14 +47,6 @@ enum errorcode : u8 {
 
 }
 
-char const* jup_err_messages[] = {
-    /* 0 */ nullptr,
-    /* 1 */ "String is empty",
-    /* 2 */ "Invalid character",
-    /* 3 */ "Out of range (too low)",
-    /* 4 */ "Out of range (too high)",
-};
-
 // Parse an integer in str into val using base base. Is pretty defensive about what kind of strings
 // it accepts.
 u8 jup_stoi(Array_t<u8> str, s32* val, s64 base) {
