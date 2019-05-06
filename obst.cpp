@@ -1775,6 +1775,8 @@ u8 _get_operator_type(Array_t<u8> op) {
     if (array_equal_str(op, "<=")) return Formula::IMPL_L;
     if (array_equal_str(op, "<->")) return Formula::IMPL_RL;
     if (array_equal_str(op, "<=>")) return Formula::IMPL_RL;
+    if (array_equal_str(op, "||")) return Formula::OR;
+    if (array_equal_str(op, "&&")) return Formula::AND;
 
     if (array_equal_str(op, u8"∪")) return Formula::OR;
     if (array_equal_str(op, u8"∩")) return Formula::AND;
