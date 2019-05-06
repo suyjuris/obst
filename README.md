@@ -87,9 +87,9 @@ The program is strucured into the following layers:
 
 6. Platform. This provides an API for the UI to interact with the underlying platform and calls into the UI for initialisation and updates.
 
-  1. Linux. Here the window is in the tender and loving hands of X, while we render using OpenGL. Fonts are loaded from disk and rasterised using `stb_truetype`. This layer contains an implementation of a GUI.
+    6.1. Linux. Here the window is in the tender and loving hands of X, while we render using OpenGL. Fonts are loaded from disk and rasterised using `stb_truetype`. This layer contains an implementation of a GUI.
 
-  2. Emscripten. The browser is responsible for everything, so most things emit the appropiate HTML code instead of doing any actual work. `index.html` defines the GUI structure, WebGL is used for rendering.
+    6.2. Emscripten. The browser is responsible for everything, so most things emit the appropiate HTML code instead of doing any actual work. `index.html` defines the GUI structure, WebGL is used for rendering.
 
 Some random implementation details:
 
