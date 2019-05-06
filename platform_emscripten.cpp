@@ -215,7 +215,7 @@ EM_JS(void, _platform_text_prepare_getdata, (char* out_data), {
     var ctx = canvas.getContext("2d");
 
     var data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    Module.HEAPU8.set(data.data, out_data);
+    HEAPU8.set(data.data, out_data);
 });
 
 
