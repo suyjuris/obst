@@ -591,7 +591,7 @@ u8 opengl_bddlabel_index_char(s64 index) {
 // Convert an index into the texture into a unicode codepoint represented in UTF-8 as well as
 // information on how to draw it.
 Array_t<u8> opengl_bddlabel_index_utf8(s64 index, bool* draw_light_ = nullptr, bool* draw_italics_=nullptr) {
-    assert(0 <= index and index < 210);
+    assert(0 <= index and index < opengl_bddlabel_index_size);
     static char c[2];
     c[0] = (char)(index < 105 ? index + 22 : index - 83);
     char const* s;

@@ -292,7 +292,8 @@ struct Lui_context {
     bool panel_left_hidden = false;
 
     // DPI-dependent constants
-    float dpi_scale = 1.25f; // This is NOT the dpi, but rather a factor that tells you by how much everything needs to be scaled, and which (entirely coincidentally, I assure you) is precisely 1 on my monitor.
+    float dpi_scale = 1.f; // This is NOT the dpi, but rather a factor that tells you by how much everything needs to be scaled, and which (entirely coincidentally, I assure you) is precisely 1 on my monitor.
+    float dpi_scale_initial; // What the scale should be reset to, in case of ZOOM_ZERO
     s64 width_panel_left;
     s64 width_scrollbar;
     s64 width_resizer;
@@ -625,7 +626,7 @@ void lui_text_prepare_word(Lui_context* context, Text_preparation* prep, u8 font
     
     // Lookup in hash table
     s64 slot_i = -1;
-    u64 hash;
+    u64 hash = 0;
     if (use_cache) {
         hash = 14695981039346656037ull ^ font ^ (word.size << 8) ^ ((u64)letter_fac_u << 32);
         for (u8 c: word) {
@@ -2502,7 +2503,7 @@ void _platform_render(Platform_state* platform) {
             } else if (key.special == Key::C_ZOOM_OUT) {
                 _platform_zoom(context, 1.f / 1.1f);
             } else if (key.special == Key::C_ZOOM_ZERO) {
-                _platform_zoom(context, 1.f, true);
+                _platform_zoom(context, context->dpi_scale_initial, true);
             } else if (key.special == Key::TAB or key.special == Key::SHIFT_TAB) {
                 if (context->elem_focused != 0 or context->elem_tabindex == 0) {
                     context->elem_flags[context->elem_focused] &= ~Lui_context::DRAW_FOCUSED;
@@ -3429,27 +3430,18 @@ int main(int argc, char** argv) {
         XRRFreeScreenConfigInfo(config);
 
         if (not dpi_set_by_user) {
-            // Take the DPI of the monitor with the highest one
-            XRRScreenResources* screen_res = XRRGetScreenResourcesCurrent(display, DefaultRootWindow(display));
-            float dpi_scale = 0.95f;
-            for (s64 i = 0; i < screen_res->noutput; ++i) {
-                XRROutputInfo* output = XRRGetOutputInfo(display, screen_res, screen_res->outputs[i]);
+            // Note that we do not want to get to clever here, the actual physical dimensions of
+            // the monitor may differ from what the user expects everything to be scaled to
+
+            float dpi_scale = (float)DisplayWidth(display, screen) * 25.4f / (float)DisplayWidthMM(display, screen) / 120.f;
             
-                // Skip disconnected monitors
-                if (output->connection == 1 /* Disconnected */ or output->connection == 2 /* UnknownConnection */) continue;
-            
-                XRRCrtcInfo* crtc = XRRGetCrtcInfo(display, screen_res, output->crtc);
-                
-                float f = (float)crtc->width / (float)output->mm_width / 4.857685f; // The constant is the value this application was developed at, so it gets a scale of 1
-                dpi_scale = std::max(dpi_scale, f);
-            }
-            
-            global_platform.lui_context.dpi_scale = dpi_scale;
+            global_platform.lui_context.dpi_scale = std::max(dpi_scale, 1.f);
         }
     } else {
         fprintf(stderr, "Warning: Xrandr extension not present on X server, assuming refresh rate of 60 Hz.\n");
         global_platform.rate = 60;
     }
+    global_platform.lui_context.dpi_scale_initial = global_platform.lui_context.dpi_scale;
 
     // Initialise window properties
     linux_set_wm_prop(display, window, "WM_NAME", "obst - Binary Decision Diagrams");
