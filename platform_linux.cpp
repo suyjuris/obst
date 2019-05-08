@@ -884,6 +884,7 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
             }
         }
         if (x > orig_x and word_end > orig_x + w) {
+            word_end -= x - orig_x; 
             x = orig_x;
             y = std::round(y + font_inst.newline);
             if (box.flags & (Text_fmt::INDENTED | Text_fmt::ITEMIZED)) {
@@ -892,7 +893,7 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
         } else if (x == orig_x and (box.flags & Text_fmt::ITEMIZED)) {
             x += std::round(font_inst.space * 3 - box.advance);
         }
-        max_x = std::max(x + box.x1, max_x);
+        max_x = std::max(word_end, max_x);
 
         u8* box_fill = box.flags & Text_fmt::RED ? red : fill;
 
@@ -933,7 +934,7 @@ void lui_text_draw(Lui_context* context, Array_t<Text_box> boxes, s64 x_, s64 y_
     
     if (x_out)  *x_out  = (s64)std::round(x);
     if (y_out)  *y_out  = (s64)std::round(y);
-    if (xw_out) *xw_out = (s64)std::ceil(max_x);
+    if (xw_out) *xw_out = (s64)std::ceil(max_x - orig_x);
 }
 
 void lui_draw_buttonlike(Lui_context* context, Rect bb, Padding pad, u8 flags, Rect* text_bb, bool only_measure=false) {
@@ -1215,20 +1216,31 @@ void platform_fmt_text(u64 flags_add, Array_t<u8> text) {
     float letter_fac = flags & Text_fmt::COMPACT ? 0.95f : 1.f;
     
     s64 last = 0;
-    for (s64 i = 0; i <= text.size; ++i) {
+    s64 i = 0;
+
+    // Due to various circumstances, it can happen that a text begins with whitespace. It is easier
+    // to fix this here than to prevent it from occurring.
+    for (; i < text.size and text[i] == ' '; ++i, ++last) {
+        auto fb = &global_platform.lui_context.fmt_boxes;
+        if (fb->size) {
+            (*fb)[fb->size-1].flags &= ~Text_fmt::NOSPACE;
+        }
+    }
+    
+    for (; i <= text.size; ++i) {
         // Digits are liable to change, so we render them individually
         bool isdigit = (last < text.size and ('0' <= text[last] and text[last] <= '9'))
                     or (i    < text.size and ('0' <= text[i]    and text[i]    <= '9'));
         if (i < text.size and text[i] != ' ' and text[i] != '\n' and not isdigit) continue;
         
         if (last == i) continue;
-
+        
         Text_box box;
         lui_text_prepare_word(&global_platform.lui_context, &context->prep_ui, font, array_subarray(text, last, i), &box, letter_fac);
         if (isdigit) box.flags |= Text_fmt::NOSPACE | Text_fmt::STICKY;
 
         box.flags |= flags & Text_fmt::GROUP_DRAWING;
-        
+
         array_push_back(&global_platform.lui_context.fmt_boxes, box);
         last = i + not isdigit;
     }
@@ -2811,7 +2823,7 @@ void _platform_render(Platform_state* platform) {
     if (context->bddinfo_active) {
         auto c = &global_context;
         Padding pad = context->pad(8, 8);
-        s64 w = 345, iw, ih;
+        s64 w = context->scale(345), iw, ih;
         platform_fmt_draw(Text_fmt::SLOT_BDDINFO, 0, 0, w-2*pad.pad_x, nullptr, &ih, true, &iw);
         s64 x = context->bddinfo_x + context->bddinfo_pad;
         s64 y = context->bddinfo_y;
@@ -2823,7 +2835,7 @@ void _platform_render(Platform_state* platform) {
             y -= ih + pad.pad_y*2;
         }
         x += c->canvas_x; y += c->canvas_y;
-        
+
         platform_fmt_draw(Text_fmt::SLOT_BDDINFO, x+pad.pad_x, y+pad.pad_y, iw, nullptr, nullptr);
         lui_draw_rect(context, x, y, iw + pad.pad_x*2, ih + pad.pad_y*2, Lui_context::LAYER_MIDDLE, white);
     }

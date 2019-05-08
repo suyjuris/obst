@@ -148,6 +148,7 @@ struct Bdd {
     u8 flags = 0;
     u32 id = 0; // 0 is F, the false-node, and 1 is T, the true-node
     u32 name = 0; // Index into Bdd_store::names
+    u32 creation = 0; // Index into Bdd_store::creations
 };
 
 struct Snapshot {
@@ -178,12 +179,16 @@ struct Bdd_store {
     Array_dyn<Bdd> snapshot_data_bdd; // Nodes contained in the snapshot
     Array_dyn<u8> snapshot_data_context; // Context strings in the snapshot
 
-    // Date for generating the names of the Bdds
+    // Data for generating the names of the Bdds
     Array_dyn<s64> names; // Offsets into name_data, with a dummy element at the end. First name has length 0
     Array_dyn<u8> name_data; // utf-8 encoded names
     s64 name_next; // The final names for nodes are given in sequential order
     s64 name_next_temp; // Final names for temporary nodes
 
+    // Data describing how a node was created
+    Array_dyn<s64> creations; // Offsets into creation_data, with a dummy element at the end. First name has length 0
+    Array_dyn<u8> creation_data; // utf-8 encoded creation data
+    
     // If the hashtable overflows, we need to graciously abort the procedure
     bool error_flag;
 };
@@ -215,10 +220,12 @@ void bdd_store_init(Bdd_store* store) {
     store->name_data.size = 0;
     store->name_next = 0;
     store->name_next_temp = 0;
+    store->creations.size = 0;
+    store->creation_data.size = 0;
 
     // The F and T nodes.
-    array_push_back(&store->bdd_data, {0, 0, 0, 0, 0, 1});
-    array_push_back(&store->bdd_data, {1, 1, 0, 0, 1, 2});
+    array_push_back(&store->bdd_data, {0, 0, 0, 0, 0, 1, 0});
+    array_push_back(&store->bdd_data, {1, 1, 0, 0, 1, 2, 0});
 
     // Dummy element
     array_push_back(&store->snapshots, {0, 0});
@@ -226,6 +233,10 @@ void bdd_store_init(Bdd_store* store) {
     // Initial names for T and F as well as dummy element
     array_append(&store->names, {0ll, 0ll, 1ll, 2ll});
     array_append(&store->name_data, {(u8*)"FT", 2});
+
+    // 0 is the empty creation
+    array_append(&store->creations, {0ll, 0ll});
+    
 
     store->error_flag = false;
 }
@@ -241,7 +252,7 @@ u64 bdd_hash(Bdd bdd) {
     val = (val ^ (val >> 30)) * 0xbf58476d1ce4e5b9ull;
     val = (val ^ (val >> 27)) * 0x94d049bb133111ebull;
     val = val ^ (val >> 31);
-    val ^= bdd.level | bdd.flags << 8;
+    val ^= bdd.level | (bdd.flags & ~Bdd::COSMETIC) << 8;
     val = (val ^ (val >> 30)) * 0xbf58476d1ce4e5b9ull;
     val = (val ^ (val >> 27)) * 0x94d049bb133111ebull;
     val = val ^ (val >> 31);
@@ -405,30 +416,6 @@ s64 _partition_along_bit(Array_t<u64>* numbers, u8 level) {
     }
 
     return l;
-}
-
-// Create a new bdd representing numbers. This does not actually take any snapshots or do any
-// visualisation work, it is just a straightforward implementation of the algorithm. (This function
-// is used as a subroutine by the actual stepwise algorithm.)
-u32 bdd_from_list(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> levels) {
-    assert(store);
-    assert(levels.size < 256);
-    
-    if (numbers.size == 0) {
-        return 0;
-    } else if (levels.size == 0) {
-        return 1;
-    }
-    
-    u8 level = levels[0];
-
-    s64 index = _partition_along_bit(&numbers, level);
-
-    auto levels_sub = array_subarray(levels, 1, levels.size);
-    u32 child0 = bdd_from_list(store, array_subarray(numbers, 0, index), levels_sub);
-    u32 child1 = bdd_from_list(store, array_subarray(numbers, index, numbers.size), levels_sub);
-
-    return bdd_create(store, {child0, child1, (u8)levels.size});
 }
 
 // This pushed a new messages onto the context stack. printf-like function.
@@ -649,6 +636,62 @@ void context_amend_bdd(Bdd_store* store, u32 id) {
     if (id <= 1) context_amend(store, "</s>");
 }
 
+void bdd_creation_amend_number_base(Bdd_store* store, u64 number, s64 base) {
+    s64 digit_count = 0;
+    for (u64 ii = number; ii or digit_count == 0; ii /= base) ++digit_count;
+
+    array_resize(&store->creation_data, store->creation_data.size + digit_count);
+    auto buf = array_subarray(store->creation_data,
+        store->creation_data.size - digit_count, store->creation_data.size);
+
+    s64 j = buf.size;
+    for (s64 j_it = 0; j_it < digit_count; ++j_it) {
+        s64 digit = number % base;
+        number /= base;
+        buf[--j] = (u8)(digit < 10 ? '0' + digit : 'a' + digit - 10);
+    }
+}
+void bdd_creation_amend_list_base(Bdd_store* store, Array_t<u64> list, s64 base) {
+    bool first = true;
+    
+    array_printf(&store->creation_data, "[");
+    for (u64 i: list) {
+        if (not first) array_printf(&store->creation_data, ", ");
+        first = false;
+        bdd_creation_amend_number_base(store, i, base);
+    }
+    array_printf(&store->creation_data, "]");
+}
+void bdd_creation_amend_list_base(Bdd_store* store, Array_t<u8> list, s64 base) {
+    bool first = true;
+
+    array_printf(&store->creation_data, "[");
+    for (u64 i: list) {
+        if (not first) array_printf(&store->creation_data, ", ");
+        first = false;
+        bdd_creation_amend_number_base(store, i, base);
+    }
+    array_printf(&store->creation_data, "]");
+}
+
+void bdd_creation_amend_bdd(Bdd_store* store, u32 id) {
+    u32 name = store->bdd_data[id].name;
+    auto arr = array_subarray(store->name_data, store->names[name], store->names[name+1]);
+
+    if (id <= 1) array_printf(&store->creation_data, "<s>");
+    bool italics_on = false;
+    for (u8 c: arr) {
+        bool italicized;
+        auto c_arr = opengl_bddlabel_index_utf8(opengl_bddlabel_char_index(c), nullptr, &italicized);
+        if (not italics_on and italicized) array_printf(&store->creation_data, "<i>");
+        if (italics_on and not italicized) array_printf(&store->creation_data, "</i>");
+        italics_on = italicized;
+        array_append(&store->creation_data, c_arr);
+    }
+    if (italics_on) array_printf(&store->creation_data, "</i>");
+    if (id <= 1) array_printf(&store->creation_data, "</s>");
+}
+
 // Take a temporary bdd and finalise it, i.e. do deduplication and removal of unnecessary
 // nodes. This will push a description of the operation performed onto the context stack. (If
 // nothing was done, an empty entry is pushed.)
@@ -771,9 +814,18 @@ u32 bdd_union_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 a_paren
         // Create a new node for the union
         bdd_temp = {0, 0, std::max(a_bdd.level, b_bdd.level), Bdd::TEMPORARY};
         bdd_name_amend_setop(store, a, b, '|');
+
+        bdd_temp.creation = store->creations.size-1;
+        array_printf(&store->creation_data, "The node was created as union of ");
+        bdd_creation_amend_bdd(store, a);
+        array_printf(&store->creation_data, " and ");
+        bdd_creation_amend_bdd(store, b);
+        array_printf(&store->creation_data, ".");
+        array_push_back(&store->creations, store->creation_data.size);
+        
         bdd_create_inplace(store, &bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
-        
+
         context_append(store, "Calculating union of ");
     } else {
         // In a recursive call, we get passed a node into which we construct the result
@@ -968,6 +1020,15 @@ u32 bdd_intersection_stepwise(Bdd_store* store, u32 a, u32 b, u32 bdd = -1, u32 
     if (bdd == (u32)-1) {
         // Create a new node for the union
         bdd_temp = {0, 0, std::max(a_bdd.level, b_bdd.level), Bdd::TEMPORARY};
+
+        bdd_temp.creation = store->creations.size-1;
+        array_printf(&store->creation_data, "The node was created as intersection of ");
+        bdd_creation_amend_bdd(store, a);
+        array_printf(&store->creation_data, " and ");
+        bdd_creation_amend_bdd(store, b);
+        array_printf(&store->creation_data, ".");
+        array_push_back(&store->creations, store->creation_data.size);
+
         bdd_name_amend_setop(store, a, b, '&');
         bdd_create_inplace(store, &bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
@@ -1139,6 +1200,13 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
         bdd_temp = {0, 0, a_bdd.level, Bdd::TEMPORARY};
+        
+        bdd_temp.creation = store->creations.size-1;
+        array_printf(&store->creation_data, "The node was created as complement of ");
+        bdd_creation_amend_bdd(store, a);
+        array_printf(&store->creation_data, ".");
+        array_push_back(&store->creations, store->creation_data.size);
+
         bdd_name_amend_setop(store, a, 0, '~');
         bdd_create_inplace(store, &bdd_temp);
         context_append(store, "Calculating complement of ");
@@ -1223,6 +1291,31 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
     return bdd_final;
 }
 
+u32 _bdd_from_number_connect(Bdd_store* store, u32 i, u64 number, Array_t<u8> levels) {
+    bool flag = number >> levels[0] & 1;
+    
+    u32 child;
+    if (levels.size > 1) {
+        bdd_name_amend_number_base(store, number, 10, true);
+        child = bdd_create(store, {0, 0, (u8)(levels.size-1), Bdd::TEMPORARY});
+        store->bdd_data[i].child0 = flag ? 0 : child;
+        store->bdd_data[i].child1 = flag ? child : 0;
+        child = _bdd_from_number_connect(store, child, number, array_subarray(levels, 1, levels.size));
+        child = bdd_finalize(store, store->bdd_data[child]);
+    } else {
+        child = 1;
+        context_append(store, "");
+    }
+
+    assert(store->bdd_data[i].flags & Bdd::TEMPORARY);
+    store->bdd_data[i].child0 = flag ? 0 : child;
+    store->bdd_data[i].child1 = flag ? child : 0;
+    
+    take_snapshot(store);
+    context_pop(store);
+    return i;
+}
+
 // See note on stepwise functions above.
 u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> levels, s64 base, u32 bdd = -1, s64 levels_total = -1) {
     assert(levels.size < 32);
@@ -1236,8 +1329,17 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         context_amend_list(store, levels, "%hhd");
 
         bdd_name_amend_list_base(store, numbers, base);
-        
+
         bdd_temp = {0, 0, (u8)levels.size, Bdd::TEMPORARY};
+
+        bdd_temp.creation = store->creations.size-1;
+        array_printf(&store->creation_data, "The node was created from the list ");
+        bdd_creation_amend_list_base(store, numbers, base);
+        array_printf(&store->creation_data, " using bit order ");
+        bdd_creation_amend_list_base(store, levels, 10);
+        array_printf(&store->creation_data, ".");
+        array_push_back(&store->creations, store->creation_data.size);
+        
         bdd_create_inplace(store, &bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id);
 
@@ -1268,16 +1370,10 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         context_append(store, "Only item %lld (", numbers[0]);
         context_amend_number_base(store, numbers[0], 2, -1, levels);
         context_amend(store, ") remains, connect directly");
-        u32 child = bdd_from_list(store, numbers, array_subarray(levels, 1, levels.size));
-        if ((numbers[0] >> levels[0] & 1) == 0) {
-            bdd_temp.child0 = child;
-            bdd_temp.child1 = 0;
-        } else {
-            bdd_temp.child0 = 0;
-            bdd_temp.child1 = child;
-        }
-        bdd_final = bdd_finalize(store, bdd_temp);
+        
+        _bdd_from_number_connect(store, bdd_temp.id, numbers[0], levels);
         context_pop(store);
+        bdd_final = bdd_finalize(store, store->bdd_data[bdd_temp.id]);
     } else if (levels.size == 1) {
         // Handle the last level specially, as I do not want to create temporary nodes on the last
         // level.
@@ -1693,6 +1789,8 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
                 beg = store->str_i;
                 end = store->str_i+1;
                 state = 2;
+            } else if (c == '#') {
+                state = 5;
             } else if (c == 0) {
                 return {};
             } else if (_is_operator_flush(c)) {
@@ -1738,6 +1836,13 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
                 break;
             } else {
                 // nothing
+            }
+        } else if (state == 5) {
+            if (c == '\n') {
+                beg = store->str_i+1;
+                state = 0;
+            } else if (c == 0) {
+                return {};
             }
         } else {
             assert(false);
@@ -1876,6 +1981,46 @@ void context_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s6
     context_amend(store, "<s>");
     _context_amend_formula_helper(store, fstore, f_id, parent_prec);
     context_amend(store, "</s>");
+}
+
+// @Copypaste context_amend_formula_*
+void bdd_creation_amend_formula_var(Bdd_store* store, Formula_store* fstore, s64 var) {
+    auto name = array_subarray(fstore->var_names, fstore->vars[var], fstore->vars[var+1]);
+    for (u8 c: name) {
+        if (var > 1 and _get_digit(c) != -1) {
+            u8 cc[] = {0xe2, 0x82, (u8)(0x80 + _get_digit(c))};
+            array_append(&store->creation_data, {cc, 3});
+        } else {
+            array_append(&store->creation_data, {&c, 1});
+        }
+    }
+}
+void _bdd_creation_amend_formula_helper(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
+    Formula f = fstore->formulae[f_id];
+    if (f.type == Formula::NONE) {
+        assert(false);
+    } else if (f.type == Formula::VAR) {
+        bdd_creation_amend_formula_var(store, fstore, f.var);
+    } else if (f.type == Formula::NEG) {
+        auto cc = opengl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
+        array_append(&store->creation_data, cc);
+        _bdd_creation_amend_formula_helper(store, fstore, f.arg, _get_operator_precedence(f.type));
+    } else {
+        bool paren = _get_operator_precedence(f.type) <= parent_prec;
+        bool right_assoc = f.type == Formula::IMPL_R;
+        if (paren) array_printf(&store->creation_data, "(");
+        _bdd_creation_amend_formula_helper(store, fstore, f.arg_l, f.type + 1-right_assoc);
+        auto cc = opengl_bddlabel_char_utf8(Formula::type_names_bdd[f.type]);
+        array_append(&store->creation_data, cc);
+        _bdd_creation_amend_formula_helper(store, fstore, f.arg_r, f.type +   right_assoc);
+        if (paren) array_printf(&store->creation_data, ")");
+    }
+}
+
+void bdd_creation_amend_formula(Bdd_store* store, Formula_store* fstore, s64 f_id, s64 parent_prec = 0) {
+    array_printf(&store->creation_data, "<s>");
+    _bdd_creation_amend_formula_helper(store, fstore, f_id, parent_prec);
+    array_printf(&store->creation_data, "</s>");
 }
 
 // Like bdd_name_amend_*
@@ -2395,7 +2540,7 @@ s64 formula_simplify(Formula_store* store, s64 f_id) {
 u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id, u32 bdd = -1, bool skip_first = false) {
     Bdd bdd_temp;
     if (bdd == (u32)-1) {
-        context_append(store, "Creating BDD from formula ");
+        {context_append(store, "Creating BDD from formula ");
         context_amend_formula(store, fstore, f_id);
         context_amend(store, " using variable order <s>");
         bool first = true;
@@ -2404,11 +2549,24 @@ u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id,
             first = false;
             context_amend_formula_var(store, fstore, i);
         }
-        context_amend(store, "</s>");
+        context_amend(store, "</s>");}
 
         bdd_name_amend_formula(store, fstore, f_id);
-        
         bdd_temp = {0, 0, (u8)fstore->order_var.size, Bdd::TEMPORARY};
+
+        {bdd_temp.creation = store->creations.size-1;
+        array_printf(&store->creation_data, "The node was created from formula ");
+        bdd_creation_amend_formula(store, fstore, f_id);
+        array_printf(&store->creation_data, " using variable order <s>");
+        bool first = true;
+        for (s64 i: fstore->order_var) {
+            if (not first) array_printf(&store->creation_data, ", ");
+            first = false;
+            bdd_creation_amend_formula_var(store, fstore, i);
+        }
+        array_printf(&store->creation_data, "</s>.");
+        array_push_back(&store->creations, store->creation_data.size);}
+
         bdd_create_inplace(store, &bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id);
     } else {
@@ -4817,7 +4975,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
 
     // This returns the base attributes of a bdd from the given layout and Bdd for a specific
     // animation frame.
-    auto bdd_attr_get = [param, context, &store, &color_set](Bdd_layout layout, Bdd bdd, Array_t<u32> id_map) {
+    auto bdd_attr_get = [param, context, &store, &color_set, &color_inter](Bdd_layout layout, Bdd bdd, Array_t<u32> id_map) {
         Bdd_attr a;
         a.x = layout.bdd_pos[id_map[bdd.id]].x;
         a.y = layout.bdd_pos[id_map[bdd.id]].y;
@@ -4826,24 +4984,25 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         a.name = bdd.name;
 
         opengl_bdd_text_round(context, &store, &a, 1.f);
-        
+
+        float fill_fac = 0.1f;
+        u8 fill[] = {255, 255, 255, 255};
         if (bdd.flags & Bdd::CURRENT) {
             color_set(a.stroke, 0x7f0a13ff);
-            color_set(a.fill,   0xf8f2f3ff);
             a.border *= 1.2f;
         } else if (bdd.flags & Bdd::MARKED) { 
             color_set(a.stroke, 0x217516ff);
-            color_set(a.fill,   0xf3f8f3ff);
         } else if (bdd.flags & (Bdd::MARKED_E0 | Bdd::MARKED_E1)) { 
             color_set(a.stroke, 0x884babff);
-            color_set(a.fill,   0xf9f6fbff);
         } else if (bdd.flags & Bdd::TEMPORARY) {
             color_set(a.stroke, 0x104354ff);
-            color_set(a.fill,   0xf3f5f6ff);
+            a.border *= 0.9f;
         } else {
             color_set(a.stroke, 0x000000ff);
-            color_set(a.fill,   0xffffffff);
+            fill_fac = 0.f;
         }
+        color_inter(fill, a.stroke, fill_fac);
+        memcpy(a.fill, fill, 4);
         if (bdd.flags & Bdd::MARKED_E0) {
             a.mark_child0 = 1.f;
         }
@@ -5664,6 +5823,41 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
 
     }
     platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+
+    if (bdd_bdd.creation != 0) {
+        auto store = &global_store;
+        auto arr = array_subarray(store->creation_data, store->creations[bdd_bdd.creation], store->creations[bdd_bdd.creation+1]);
+
+        platform_fmt_begin(Text_fmt::PARAGRAPH_CLOSE);
+        s64 last = 0;
+        for (s64 i = 0; i <= arr.size; ++i) {
+            bool flush = false;
+            if (i < arr.size and strncmp((char*)&arr[i], "<b>", 3) == 0)  flush = true;
+            if (i < arr.size and strncmp((char*)&arr[i], "<s>", 3) == 0)  flush = true;
+            if (i < arr.size and strncmp((char*)&arr[i], "<i>", 3) == 0)  flush = true;
+            if (i < arr.size and strncmp((char*)&arr[i], "</b>", 4) == 0) flush = true;
+            if (i < arr.size and strncmp((char*)&arr[i], "</s>", 4) == 0) flush = true;
+            if (i < arr.size and strncmp((char*)&arr[i], "</i>", 4) == 0) flush = true;
+            if (i == arr.size) flush = true;
+
+            if (not flush) continue;
+
+            u64 nospace = last < i and arr[i-1] == ' ' ? 0 : (u64)Text_fmt::NOSPACE;
+            platform_fmt_text(nospace, array_subarray(arr, last, i));
+            
+            if (i < arr.size and strncmp((char*)&arr[i], "<b>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::BOLD); }
+            if (i < arr.size and strncmp((char*)&arr[i], "<s>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::SANS); }
+            if (i < arr.size and strncmp((char*)&arr[i], "<i>", 3) == 0)  { i += 2; platform_fmt_begin(Text_fmt::ITALICS); }
+            if (i < arr.size and strncmp((char*)&arr[i], "</b>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::BOLD); }
+            if (i < arr.size and strncmp((char*)&arr[i], "</s>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::SANS); }
+            if (i < arr.size and strncmp((char*)&arr[i], "</i>", 4) == 0) { i += 3; platform_fmt_end(Text_fmt::ITALICS); }
+
+            last = i+1;
+        }
+        
+        platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
+    }
+    
     platform_fmt_store(Text_fmt::SLOT_BDDINFO);
 
     float pad = global_context.draw_param.node_radius * 1.35;
