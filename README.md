@@ -20,14 +20,18 @@ I hope the application is pretty self-explanatory, but a few details are not doc
 * *F1*: Show/hide the help.
 * *F2*: Show performance information. Draws last, max and average frame times for the last 128 frames, in 0.1ms. Note that if no animation is running, no frames will be drawn, including the debug information. Also note that the performance numbers are just measuring the delay inside obst and do not account for the browser overhead, so your actual framerate will be much lower than suggested. Finally, performance measurements on websites are precise to about 1ms, unless you disable the timing attack mitigation of your browser.
 * *F3*: Show/Hide the left panel.
+* *F11*: Toggle fullscreen.
+* *Ctrl-+*, *Ctrl--*, *Ctrl-0*, Zoom in/out, or reset zoom.
+
+The last three are implemented by me only in the native version, for the web interface this functionality is provided by the browser. They should be on the same keys, unless you rebound them.
 
 When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid. 
 
-For entering nodes, just write down the index of the node. `T` and `F` also work, respectively denoting the True and False node.
+For entering nodes, just write down the name of the node. 
 
 The 'Bit order' field determines the mapping between levels and bits. If you leave it at 'auto', the number of levels is chosen as the largest index of the highest bit of each number, and the order is such that higher levels correspond to more significant bits.
 
-The parser for boolean formulae accepts a list of statements separated by either newlines or semicolons. Each statement is either of the form `x = <expr>` or `<expr>`, with `<expr>` being a boolean expression using negation `~` and the following binary operators: `&`, `|`, `->`, `<-`, `^`, `<->`. I accept a few variants of these operators, notably their usual unicode symbols ¬, ∧, ∨, ←, →, ⊕, ↔. (If you want the full list, see `_get_operator_type` in `obst.cpp`.) The operators are listed in order of precedence, `<-` is right-associative. You can use the constants `0` and `1` as well as arbitrary identifiers. `x = <expr>` assigns `x` to be the subformula `<expr>`. Unassigned identifiers are treated as variables. The statement '<expr>' adds the expression to the formula the bdd stores.
+The parser for boolean formulae accepts a list of statements separated by either newlines or semicolons. Each statement is either of the form `x = <expr>` or `<expr>`, with `<expr>` being a boolean expression using negation `~` and the following binary operators: `&`, `|`, `->`, `<-`, `^`, `<->`. I accept a few variants of these operators, notably their usual unicode symbols ¬, ∧, ∨, ←, →, ⊕, ↔. (If you want the full list, see `_get_operator_type` in `obst.cpp`.) The operators are listed in order of precedence, `<-` is right-associative. You can use the constants `0` and `1` as well as arbitrary identifiers. `x = <expr>` assigns `x` to be the subformula `<expr>`. Unassigned identifiers are treated as variables. The statement '<expr>' adds the expression to the formula the bdd stores. Lines beginning with `#` are ignored.
 
 Variable order is the string 'auto' or a comma-separated list of variable names. (Actually, a list of identifiers and operators, the latter of which are ignored.)
 

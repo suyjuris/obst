@@ -1839,7 +1839,6 @@ Array_t<u8> formula_token_pop(Formula_store* store) {
             }
         } else if (state == 5) {
             if (c == '\n') {
-                beg = store->str_i+1;
                 state = 0;
             } else if (c == 0) {
                 return {};
@@ -3731,7 +3730,11 @@ struct Opengl_context {
     Array_t<GLuint> buffers_rect;
     Array_t<GLuint> buffers_ui;
 
-    Array_t<u8> buf_render; // Memory used during rendering
+    // Memory used during rendering
+    Array_t<u8> buf_render;
+    Array_dyn<Pos> buf_edge_data;
+    Array_dyn<Pos> buf_edge_data1;
+    
     Array_dyn<Bdd_attr> buf_attr_cur; // Current attributes used for the bdds. Mostly stored as convenience, the data is also stored in the vertex attribute buffers in some form.
 };
 
@@ -4935,9 +4938,13 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
     Array_t<u32> id_map1   = array_create_from<u32>(&buf_render_p,   store.bdd_data.size);
     Array_t<u32> edge_map0 = array_create_from<u32>(&buf_render_p, 2*store.bdd_data.size);
     Array_t<u32> edge_map1 = array_create_from<u32>(&buf_render_p, 2*store.bdd_data.size);
-    Array_dyn<Pos> edge_data = Array_dyn<Pos> {array_create_from<Pos>(&buf_render_p, 2*context->layout_max_points)};
     assert(buf_render_p <= (u8*)context->buf_render.end());
 
+    Array_dyn<Pos> edge_data  = context->buf_edge_data;
+    Array_dyn<Pos> edge_data1 = context->buf_edge_data1;
+    defer { context->buf_edge_data  = edge_data;  };
+    defer { context->buf_edge_data1 = edge_data1; };
+    
     array_resize(&context->buf_attr_cur, store.bdd_data.size);
     Array_t<Bdd_attr> attr_cur = context->buf_attr_cur;
 
@@ -5146,6 +5153,18 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         spline_split_t(out, p0, p1, p2, t);
     };
 
+    auto edge_get_x = [](Array_t<Pos> edge, float y, float* x) {
+        for (s64 i = 0; i+2 < edge.size; ++i) {
+            if (edge[i].y >= y and y >= edge[i+2].y) {
+                float t = (y - edge[i].y) / (edge[i+2].y - edge[i].y); // TODO Could solve equation here
+                *x = edge[i].x * (1.f-t)*(1.f-t) + edge[i+1].x * 2.f*(1.f-t)*t + edge[i+2].x * t*t;
+                return true;
+            }
+        }
+        
+        return false;
+    };
+    
     // Interpolate the splines in edge0_data and edge1_data
     auto edge_mix_points = [param, &spline_split_y](
         Array_dyn<Pos>* out, Array_t<Pos> edge0_data, Array_t<Pos> edge1_data, float t
@@ -5153,6 +5172,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         // The basic idea is simple: We want to go through the points in direction of y and
         // interpolate the ones on the same height. If, at some height, only one spline has a point,
         // then we split the other to introduce one there as well.
+        
         array_push_back(out, _pos_mix(edge0_data[0], edge1_data[0], t));
 
         float y00 = edge0_data[0].y;
@@ -5402,23 +5422,85 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
                 edge_draw_array(edge_data, bdd0, bdd1, dash_length, 1.f, stroke_col, &p1, &p2);
                 opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             } else {
-                // We are not. This is the same as both destroying and creating an edge at the same
-                // time, so do both animations.
-                
+                // Different nodes. This is a complicated animation, because we want to move the
+                // edge from the first child to the second, while avoiding any bdds in between.
                 Bdd_attr bdd10 = attr_cur[bdds0[edge0.to].id];
-                Pos p1, p2;
-                u8 stroke_col2[] = {stroke_col[0], stroke_col[1], stroke_col[2], stroke_col[3]};
-                stroke_col2[3] = (u8)(((u64)stroke_col2[3] * (u64)bdd10.stroke[3]) / 255);
-                array_append(&edge_data, edge0_data);
-                edge_draw_array(edge_data, bdd0, bdd10, dash_length, 1.f, stroke_col2, &p1, &p2);
-                opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col2);
+                Bdd_attr bdd11 = attr_cur[bdds1[edge1.to].id];
+                bdd_attr_inter(&bdd10, bdd11, t);
 
-                float length;
-                edge_data.size = 0;
-                array_append(&edge_data, edge1_data);
-                Pos p = edge_data[edge_data.size-1];
-                Bdd_attr bdd11 = {p.x, p.y, param.node_radius, param.node_radius*param.squish_fac};
-                edge_draw_array(edge_data, bdd0, bdd11, dash_length, t, stroke_col, &p1, &p2);
+                // @Speed This could be precomputed for each frame
+                float ymax = -1.f;
+                float ymax_x;
+                s64 size0 = layouts[frame]  .bdd_pos.size;
+                s64 size1 = layouts[frame+1].bdd_pos.size;
+                Pos a0 = edge0_data[edge0_data.size-1];
+                Pos a1 = edge1_data[edge1_data.size-1];
+
+                for (s64 i = 1; i < store.bdd_data.size; ++i) {
+                    float x_min, x_max, y;
+                    if (id_map0[i] != -1 and id_map1[i] != -1) {
+                        Pos_id p0 = layouts[frame]  .bdd_pos[id_map0[i]];
+                        Pos_id p1 = layouts[frame+1].bdd_pos[id_map1[i]];
+                        y = (p0.y + p1.y) / 2.f; // I expect the two y values to be the same in all relevant cases due to the way the animations are generated.
+                        x_min = std::min(p0.x, p1.x);
+                        x_max = std::max(p0.x, p1.x);
+                    } else if (id_map1[i] != -1) {
+                        Pos_id p1 = layouts[frame+1].bdd_pos[id_map1[i]];
+                        y = p1.y;
+                        x_min = p1.x;
+                        x_max = p1.x;
+                    } else {
+                        // Note that we do not care about vanishind nodes here. Does that make
+                        // sense? Time will tell, I guess.
+                        continue;
+                    }
+
+                    if (y < ymax) continue;
+                    
+                    float x0, x1;
+                    bool flag0 = edge_get_x(edge0_data, y, &x0);
+                    bool flag1 = edge_get_x(edge1_data, y, &x1);
+
+                    if (not flag0 and not flag1) continue;
+                    
+                    if (not flag0 or not flag1) {
+                        float at = (y - a0.y) / (a1.y - a0.y);
+                        float ax = a0.x + (a1.x - a0.x) * at;
+
+                        if (not flag0) x0 = ax;
+                        if (not flag1) x1 = ax;
+                    }
+
+                    if (x1 < x0) std::swap(x0, x1);
+                    
+                    float x;
+                    if (x_min < x0 and x1 < x_max) {
+                        ymax_x = (x0 + x1) / 2.f;
+                    } else if (x0 < x_min and x_max < x1) {
+                        ymax_x = (x_min + x_max) / 2.f;
+                    } else if (x0 < x_max and x_max < x1) {
+                        ymax_x = x0;
+                    } else if (x0 < x_min and x_min < x1) {
+                        ymax_x = x1;
+                    } else {
+                        continue;
+                    }
+
+                    ymax = y;
+                }
+                ymax += 0.2f;
+                
+                if (ymax > std::max(a0.y, a1.y)) {
+                    float ymax_y = ymax + (ymax - (a0.y + a1.y) / 2.f);
+
+                    Pos b {ymax_x, ymax_y};
+                    Pos c = _pos_mix(_pos_mix(a0, b, t), _pos_mix(b, a1, t), t);
+                    bdd10.x = c.x; bdd10.y = c.y;
+                }
+                
+                Pos p1, p2;
+                edge_mix_points(&edge_data, edge0_data, edge1_data, t);
+                edge_draw_array(edge_data, bdd0, bdd10, dash_length, 1.f, stroke_col, &p1, &p2);
                 opengl_draw_arrow(context, p1, p2, param.arrow_size, stroke_col);
             }
         } else if (edge_map0[i] == -1 and edge_map1[i] != -1) {

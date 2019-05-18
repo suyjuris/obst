@@ -1506,7 +1506,10 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_text(Text_fmt::NEWLINE, ": Show/hide debug information.");
     platform_fmt_text(0, u8"•");
     platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F3");
-    platform_fmt_text(Text_fmt::PARAGRAPH, ": Show/hide left panel.");
+    platform_fmt_text(Text_fmt::NEWLINE, ": Show/hide left panel.");
+    platform_fmt_text(0, u8"•");
+    platform_fmt_text(Text_fmt::ITALICS | Text_fmt::NOSPACE, "F11");
+    platform_fmt_text(Text_fmt::PARAGRAPH, ": Toggle fullscreen.");
     platform_fmt_end(Text_fmt::ITEMIZED);
     platform_fmt_spacing(Text_fmt::NEWLINE);
     platform_fmt_text(Text_fmt::PARAGRAPH | Text_fmt::HEADER, "Font license");
