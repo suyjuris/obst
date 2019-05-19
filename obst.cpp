@@ -4992,7 +4992,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
 
         opengl_bdd_text_round(context, &store, &a, 1.f);
 
-        float fill_fac = 0.1f;
+        float fill_fac = 0.13f;
         u8 fill[] = {255, 255, 255, 255};
         if (bdd.flags & Bdd::CURRENT) {
             color_set(a.stroke, 0x7f0a13ff);

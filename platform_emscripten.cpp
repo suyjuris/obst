@@ -154,7 +154,7 @@ void platform_ui_cursor_set(u8 elem, s64, s64, s64, s64 cursor_char) {
     _platform_ui_cursor_set(Ui_elem::name[elem], cursor_char);
 }
 
-EM_JS(float, _platform_resize_callback_helper, (), {
+EM_JS(float, _platform_get_device_pixel_ratio, (), {
     return window.devicePixelRatio;
 })
 
@@ -165,7 +165,7 @@ int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
 
     double w, h;
     emscripten_get_element_css_size("canvas", &w, &h);
-    float f = _platform_resize_callback_helper();
+    float f = _platform_get_device_pixel_ratio();
 
     context->width  = (s64)std::floor(w * f);
     context->height = (s64)std::floor(h * f);
@@ -443,20 +443,21 @@ EM_JS(void, _platform_ui_bddinfo_show_js, (float x, float y, int right, int bott
 
 // Display the text at the specified position. This is the platform-level call for ui_bddinfo_show.
 void platform_ui_bddinfo_show(float x, float y, float pad) {
-    float px = (x - global_context.origin_x) * global_context.scale;
-    float py = (y - global_context.origin_y) * global_context.scale;
+    float f = _platform_get_device_pixel_ratio();
+    float px = (x - global_context.origin_x) * global_context.scale / f;
+    float py = (y - global_context.origin_y) * global_context.scale / f;
     float pd = pad * global_context.scale;
     
     bool right = false;
     bool bottom = true;
 
     // Try to draw the box inside the canvas
-    if (px + pd + 300.f >= global_context.width) {
-        px = global_context.width - px;
+    if (px + pd + 300.f >= global_context.width / f) {
+        px = global_context.width / f - px;
         right = true;
     }
-    if (py + 200.f >= global_context.height) {
-        py = global_context.height - py;
+    if (py + 200.f >= global_context.height / f) {
+        py = global_context.height / f - py;
         bottom = false;
     }
 
@@ -479,8 +480,9 @@ double platform_now() {
 }
 
 EM_BOOL _platform_ui_mouse_move(int, EmscriptenMouseEvent const* event, void*) {
-    float x = (float)event->canvasX / global_context.scale + global_context.origin_x;
-    float y = (global_context.height-1 - (float)event->canvasY) / global_context.scale + global_context.origin_y;
+    float f = _platform_get_device_pixel_ratio();
+    float x = (float)event->canvasX * f / global_context.scale + global_context.origin_x;
+    float y = (global_context.height-1 - (float)event->canvasY * f) / global_context.scale + global_context.origin_y;
     ui_mouse_move(x, y);
     return false;
 }
