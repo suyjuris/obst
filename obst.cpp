@@ -5430,7 +5430,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
 
                 // @Speed This could be precomputed for each frame
                 float ymax = -1.f;
-                float ymax_x;
+                float ymax_x = 0.f; // init to keep compiler happy
                 s64 size0 = layouts[frame]  .bdd_pos.size;
                 s64 size1 = layouts[frame+1].bdd_pos.size;
                 Pos a0 = edge0_data[edge0_data.size-1];
@@ -5457,7 +5457,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
 
                     if (y < ymax) continue;
                     
-                    float x0, x1;
+                    float x0 = 0.f, x1 = 0.f; // init to keep compiler happy
                     bool flag0 = edge_get_x(edge0_data, y, &x0);
                     bool flag1 = edge_get_x(edge1_data, y, &x1);
 

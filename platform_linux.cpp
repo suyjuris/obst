@@ -2672,7 +2672,7 @@ void _platform_render(Platform_state* platform) {
     set_disabled(Lui_context::SLOT_ENTRY_VARORDER,  create_type_numbers);
 
     // Scale the constants according to dpi
-    context->width_panel_left = context->scale(475);
+    context->width_panel_left = context->scale(500);
     context->width_scrollbar  = context->scale(  6);
     context->width_resizer    = context->scale(  8);
     context->width_button_max = context->scale( 40);

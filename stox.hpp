@@ -225,7 +225,7 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
         }
     }
     if (overflow) {
-        // Skip the rest of the factional part, loose the precision
+        // Skip the rest of the factional part, lose the precision
         while (i < str.size and '0' <= str[i] and str[i] <= '9') ++i;
         overflow = false;
     }

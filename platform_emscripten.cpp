@@ -456,7 +456,7 @@ void platform_ui_bddinfo_show(float x, float y, float pad) {
         px = global_context.width / f - px;
         right = true;
     }
-    if (py + 200.f >= global_context.height / f) {
+    if (py + 300.f >= global_context.height / f) {
         py = global_context.height / f - py;
         bottom = false;
     }
