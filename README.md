@@ -23,7 +23,7 @@ I hope the application is pretty self-explanatory, but a few details are not doc
 * *F11*: Toggle fullscreen.
 * *Ctrl-+*, *Ctrl--*, *Ctrl-0*, Zoom in/out, or reset zoom.
 
-The last three are implemented by me only in the native version, for the web interface this functionality is provided by the browser. They should be on the same keys, unless you rebound them.
+The last two are implemented by me only in the native version, for the web interface this functionality is provided by the browser. They should be on the same keys, unless you rebound them.
 
 When entering lists of numbers, I claim to accept 'comma-separated lists of numbers'. However, it is actually 'lists of alphanumerical characters separated by non-alphanumerical characters'. The digits are 0-9, a-z (case insensitive). Depending on your base, only some of these are valid. 
 

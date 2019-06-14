@@ -2,7 +2,17 @@
 // Written by Philipp Czerner, 2018. Public Domain.
 // See LICENSE.md for license information.
 
-#pragma once
+// Code for stand-alone test. Compile and run test using
+//     g++ -x c++ -std=c++14 -DJUP_STOX_TEST stox.hpp -o stox
+//     ./stox
+//
+#ifdef JUP_STOX_TEST
+#define JUP_STOX_IMPLEMENTATION
+#include "global.hpp"
+#endif /* JUP_STOX_TEST */
+
+#ifndef JUP_STOX_HEADER
+#define JUP_STOX_HEADER
 
 /**
  * General number parsing routines. The string str is parsed (specifics depend on the value of
@@ -83,7 +93,10 @@ extern const int jup_err_messages_size;
 extern int jup_errno;
 
 
+#endif /* JUP_STOX_HEADER */
+
 #ifdef JUP_STOX_IMPLEMENTATION
+#undef JUP_STOX_IMPLEMENTATION
 
 char const* jup_err_messages[] = {
     /* 0 */ nullptr,
@@ -167,6 +180,7 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
     if (i == str.size) return 5;
 
     u64 m = 0;
+    int exp = 0;
     bool overflow = false;
     bool do_exp = false;
     bool do_frac = false;
@@ -176,9 +190,9 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
         if ('0' <= c and c <= '9') {
             val = c - '0';
         } else if (base == 16 and 'a' <= c and c <= 'z') {
-            val = c - 'a';
+            val = c - 'a' + 10;
         } else if (base == 16 and 'A' <= c and c <= 'Z') {
-            val = c - 'A';
+            val = c - 'A' + 10;
         } else if (base == 10 and (c == 'e' or c == 'E')) {
             do_exp = true; ++i; break;
         } else if (c == '.') {
@@ -188,13 +202,28 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
         }
         if (val >= base) { return 2; }
 
-        if (__builtin_mul_overflow(m, base, &m)) {
-            overflow = true; break;
-        } else if (__builtin_add_overflow(m, val, &m)) {
-            overflow = true; break;
+        if (not overflow) {
+            u64 tmp;
+            if (__builtin_mul_overflow(m, base, &tmp)) {
+                overflow = true;
+            } else if (__builtin_add_overflow(tmp, val, &tmp)) {
+                overflow = true;
+            } else {
+                m = tmp;
+            }
+        }
+        
+        if (overflow) {
+            // If we are doing integers, this does not fit
+            if (flags & jup_sto::_ONLY_INTEGER) return sign ? 3 : 4;
+
+            // For floats, ignore the other digits
+            if (__builtin_add_overflow(exp, 1, &exp)) {
+                return sign ? 3 : 4;
+            }
         }
     }
-    if (overflow) return sign ? 3 : 4;
+    overflow = false;
 
     u64 frac = 0;
     u64 frac_exp = 0;
@@ -215,22 +244,32 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
             }
             if (val >= base) { return 2; }
 
-            if (__builtin_mul_overflow(frac, base, &frac)) {
-                overflow = true; break;
-            } else if (__builtin_add_overflow(frac, val, &frac)) {
-                overflow = true; break;
-            } else if (__builtin_add_overflow(frac_exp, 1, &frac_exp)) {
-                overflow = true; break;
+            if (not overflow) {
+                u64 tmp_frac, tmp_frac_exp;
+                overflow |= __builtin_mul_overflow(frac, base, &tmp_frac);
+                overflow |= __builtin_add_overflow(tmp_frac, val, &tmp_frac);
+                overflow |= __builtin_add_overflow(frac_exp, 1, &tmp_frac_exp);
+                if (not overflow) {
+                    frac = tmp_frac;
+                    frac_exp = tmp_frac_exp;
+                }
+            }
+            
+            if (overflow) {
+                // Unless we are parsing an integer, any leftover fractional part can be ignored. If
+                // we are, we should still accept a long fractional part of 0.
+                if (val != 0 and (flags & jup_sto::_ONLY_INTEGER)) {
+                    return 8;
+                }
             }
         }
+
+        if (frac == 0) {
+            frac_exp = 0;
+        }
     }
-    if (overflow) {
-        // Skip the rest of the factional part, lose the precision
-        while (i < str.size and '0' <= str[i] and str[i] <= '9') ++i;
-        overflow = false;
-    }
+    overflow = false;
     
-    int exp = 0;
     if (do_exp) {
         bool exp_sign = false;
         u64 exp_val = 0;
@@ -255,9 +294,11 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
                 overflow = true; break;
             }
         }
-        
-        if (__builtin_mul_overflow(exp_val, exp_sign ? -1 : 1, &exp)) {
-            overflow = true;
+
+        if (exp_sign) {
+            if (__builtin_sub_overflow(exp, exp_val, &exp)) overflow = true;    
+        } else {
+            if (__builtin_add_overflow(exp, exp_val, &exp)) overflow = true;    
         }
 
         if (overflow) return exp_sign ? (sign ? 3 : 4) : 6;
@@ -283,6 +324,7 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
     if (m == 0 or exp == 0) {
         exp_ = 0;
     } else if (exp > 0 and std::log2(base) * (double)exp < __builtin_clzll(m)) {
+        assert(base == 10);
         // If the number is an 64-bit integer, represent it directly
         for (int i = 0; i < exp; ++i) {
             m *= 10;
@@ -329,7 +371,7 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
         exp_ += __builtin_ctzll(m);
         m >>= __builtin_ctzll(m);
     }
-    
+
     if (flags & jup_sto::_ONLY_INTEGER) {
         if (exp_ != 0) {
             assert(m != 0);
@@ -404,7 +446,7 @@ u16 number_sci_to_real(Number_sci n, float* into) {
                 // round towards even
                 m_ += m_ & 1;
             }
-            if (m_ & (1ull << 25)) {
+            if (m_ & (1ull << 24)) {
                 m_ >>= 1;
                 exp_ += 1;
             }
@@ -501,7 +543,8 @@ u16 number_sci_to_real(Number_sci n, double* into) {
                 // round towards even
                 m_ += m_ & 1;
             }
-            if (m_ & (1ull << 54)) {
+
+            if (m_ & (1ull << 53ull)) {
                 m_ >>= 1;
                 exp_ += 1;
             }
@@ -596,3 +639,434 @@ u16 jup_stox(Array_t<u8> str, float*  into, u8 flags) { return jup_stox_helper_r
 u16 jup_stox(Array_t<u8> str, double* into, u8 flags) { return jup_stox_helper_real(str, into, flags); }
 
 #endif /* JUP_STOX_IMPLEMENTATION */
+
+#ifdef JUP_STOX_TEST
+#undef JUP_STOX_TEST
+
+void print(double d) { fprintf(stderr, "%.20f / %.20e", d, d); }
+void print(float  d) { fprintf(stderr, "%.10f / %.10e", d, d); }
+void print(s64 d) { fprintf(stderr, "%lld / %llx", d, d); }
+void print(u64 d) { fprintf(stderr, "%llu / %llx", d, d); }
+void print(s32 d) { fprintf(stderr, "%lld / %llx", (s64)d, (s64)d); }
+void print(u32 d) { fprintf(stderr, "%llu / %llx", (s64)d, (s64)d); }
+void print(s16 d) { fprintf(stderr, "%lld / %llx", (s64)d, (s64)d); }
+void print(u16 d) { fprintf(stderr, "%llu / %llx", (s64)d, (s64)d); }
+void print(s8  d) { fprintf(stderr, "%lld / %llx", (s64)d, (s64)d); }
+void print(u8  d) { fprintf(stderr, "%llu / %llx", (s64)d, (s64)d); }
+
+template <typename T>
+void check_valid(char const* s, T result) {
+    T tmp;
+    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp);
+    if (code) {
+        fprintf(stderr, "Error on testcase '%s'. Expected\n    ", s);
+        print(result);
+        if (code < jup_err_messages_size) {
+            fprintf(stderr, "\ngot error:\n    %s  (code %d)\n", jup_err_messages[code], code);
+        } else {
+            fprintf(stderr, "\ngot error code out of bounds (code %d, size %d)\n", code, jup_err_messages_size);
+        }
+        exit(10);
+    } else if (memcmp(&result, &tmp, sizeof(T))) {
+        fprintf(stderr, "Error on testcase '%s'. Expected\n    ", s);
+        print(result);
+        fprintf(stderr, "\ngot\n    ");
+        print(tmp);
+        fprintf(stderr, "\n");
+        exit(11);
+    }
+}
+
+template <typename T>
+void check_error(char const* s) {
+    T tmp;
+    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp);
+    if (not code) {
+        fprintf(stderr, "Error on testcase '%s'. Expected error but got\n    ", s);
+        print(tmp);
+        exit(12);
+    } else if (code >= jup_err_messages_size) {
+        fprintf(stderr, "Error on testcase '%s'. Expected error and got one, but the error code is"
+            " out of bounds (code %d, size %d)\n", s, code, jup_err_messages_size);
+        exit(13);
+    }
+}
+
+
+int main() {
+    puts("Testing special cases...");
+    
+    check_valid<u8>("0", 0);
+    check_valid<u8>("1", 1);
+    check_valid<u8>("255", 255);
+    check_valid<u8>("0.0", 0);
+    check_valid<u8>("1.0", 1);
+    check_valid<u8>("0.", 0);
+    check_valid<u8>("255.0", 255);
+    check_valid<u8>("255.00000000000000000000000000", 255);
+    check_valid<u8>("2.55e2", 255);
+    check_valid<u8>("2.55E+2", 255);
+    check_valid<u8>("2.55e--+-+--+-2", 255);
+    check_valid<u8>("255000000000000000e-15", 255);
+    check_valid<u8>("--1", 1);
+    check_valid<u8>("--+-++-+--+-++-+-+-+--1", 1);
+    check_error<u8>("1.e");
+    check_error<u8>("--+-++-+--+--+-+-+-+--1");
+    check_error<u8>("256");
+    check_error<u8>("-1");
+    check_error<u8>("65535");
+    check_error<u8>("65536");
+    check_error<u8>("4294967295");
+    check_error<u8>("4294967296");
+    check_error<u8>("18446744073709551615");
+    check_error<u8>("18446744073709551616");
+    check_error<u8>("-65535");
+    check_error<u8>("-65536");
+    check_error<u8>("-4294967295");
+    check_error<u8>("-4294967296");
+    check_error<u8>("-18446744073709551615");
+    check_error<u8>("-18446744073709551616");
+    check_error<u8>("2.5501e2");
+    check_error<u8>("2.5501e-+---+-++--2");
+    check_error<u8>("2.550000000000000000000000000001e2");
+    check_error<u8>("2.56e2");
+    check_error<u8>("255000000000000000e-16");
+    check_valid<u8>("0b0", 0);
+    check_valid<u8>("0B0", 0);
+    check_valid<u8>("0b1", 1);
+    check_valid<u8>("0b11111111", 255);
+    check_valid<u8>("0b0.0", 0);
+    check_valid<u8>("0b1.0", 1);
+    check_valid<u8>("0b11111111.0", 255);
+    check_valid<u8>("0b11111111.00000000000000000000000000", 255);
+    check_error<u8>("0b100000000");
+    check_error<u8>("0b1111111111111111");
+    check_error<u8>("0b10000000000000000");
+    check_error<u8>("0b11111111111111111111111111111111");
+    check_error<u8>("0b100000000000000000000000000000000");
+    check_error<u8>("0b1111111111111111111111111111111111111111111111111111111111111111");
+    check_error<u8>("0b10000000000000000000000000000000000000000000000000000000000000000");
+    check_error<u8>("-0b1111111111111111");
+    check_error<u8>("-0b10000000000000000");
+    check_error<u8>("-0b11111111111111111111111111111111");
+    check_error<u8>("-0b100000000000000000000000000000000");
+    check_error<u8>("-0b1111111111111111111111111111111111111111111111111111111111111111");
+    check_error<u8>("-0b10000000000000000000000000000000000000000000000000000000000000000");
+    check_valid<u8>("00", 0);
+    check_valid<u8>("01", 1);
+    check_valid<u8>("0377", 255);
+    check_valid<u8>("00.0", 0);
+    check_valid<u8>("01.0", 1);
+    check_valid<u8>("0377.0", 255);
+    check_valid<u8>("0377.00000000000000000000000000", 255);
+    check_error<u8>("0100000000");
+    check_error<u8>("0177777");
+    check_error<u8>("010000000000000000");
+    check_error<u8>("037777777777");
+    check_error<u8>("0100000000000000000000000000000000");
+    check_error<u8>("01777777777777777777777");
+    check_error<u8>("010000000000000000000000000000000000000000000000000000000000000000");
+    check_error<u8>("-0177777");
+    check_error<u8>("-010000000000000000");
+    check_error<u8>("-037777777777");
+    check_error<u8>("-0100000000000000000000000000000000");
+    check_error<u8>("-01777777777777777777777");
+    check_error<u8>("-010000000000000000000000000000000000000000000000000000000000000000");
+    check_valid<u8>("0x0", 0);
+    check_valid<u8>("0x1", 1);
+    check_valid<u8>("0xff", 255);
+    check_valid<u8>("0xfF", 255);
+    check_valid<u8>("0x0.0", 0);
+    check_valid<u8>("0x1.0", 1);
+    check_valid<u8>("0xff.0", 255);
+    check_valid<u8>("0xff.00000000", 255);
+    check_error<u8>("0x100");
+    check_error<u8>("0xffff");
+    check_error<u8>("0x10000");
+    check_error<u8>("0xffffffff");
+    check_error<u8>("0x100000000");
+    check_error<u8>("0xffffffffffffffff");
+    check_error<u8>("0x10000000000000000");
+    check_error<u8>("-0xffff");
+    check_error<u8>("-0x10000");
+    check_error<u8>("-0xffffffff");
+    check_error<u8>("-0x100000000");
+    check_error<u8>("-0xffffffffffffffff");
+    check_error<u8>("-0x10000000000000000");
+    check_error<u8>("inf");
+    check_error<u8>("inF");
+    check_error<u8>("nan");
+    check_error<u8>("naN");
+    check_error<u8>("-inf");
+    check_error<u8>("-inF");
+    check_error<u8>("-nan");
+    check_error<u8>("-naN");
+
+    check_valid<s8>("0", 0);
+    check_valid<s8>("1", 1);
+    check_valid<s8>("127", 127);
+    check_error<s8>("128");
+    check_error<s8>("255");
+    check_error<s8>("256");
+    check_error<s8>("32767");
+    check_error<s8>("32768");
+    check_error<s8>("65535");
+    check_error<s8>("65536");
+    check_error<s8>("2147483647");
+    check_error<s8>("2147483648");
+    check_error<s8>("4294967295");
+    check_error<s8>("4294967296");
+    check_error<s8>("9223372036854775807");
+    check_error<s8>("9223372036854775808");
+    check_error<s8>("18446744073709551615");
+    check_error<s8>("18446744073709551616");
+    check_valid<s8>("-0", -0);
+    check_valid<s8>("-1", -1);
+    check_valid<s8>("-127", -127);
+    check_valid<s8>("-128", -128);
+    check_error<s8>("-255");
+    check_error<s8>("-256");
+    check_error<s8>("-32767");
+    check_error<s8>("-32768");
+    check_error<s8>("-65535");
+    check_error<s8>("-65536");
+    check_error<s8>("-2147483647");
+    check_error<s8>("-2147483648");
+    check_error<s8>("-4294967295");
+    check_error<s8>("-4294967296");
+    check_error<s8>("-9223372036854775807");
+    check_error<s8>("-9223372036854775808");
+    check_error<s8>("-18446744073709551615");
+    check_error<s8>("-18446744073709551616");
+
+    check_valid<u16>("0", 0);
+    check_valid<u16>("1", 1);
+    check_valid<u16>("127", 127);
+    check_valid<u16>("128", 128);
+    check_valid<u16>("255", 255);
+    check_valid<u16>("256", 256);
+    check_valid<u16>("32767", 32767);
+    check_valid<u16>("32768", 32768);
+    check_valid<u16>("65535", 65535);
+    check_error<u16>("65536");
+    check_error<u16>("2147483647");
+    check_error<u16>("2147483648");
+    check_error<u16>("4294967295");
+    check_error<u16>("4294967296");
+    check_error<u16>("9223372036854775807");
+    check_error<u16>("9223372036854775808");    
+    check_error<u16>("18446744073709551615");
+    check_error<u16>("18446744073709551616");
+    check_valid<u16>("-0", -0);
+    check_error<u16>("-1");
+    check_error<u16>("-127");
+    check_error<u16>("-128");
+    check_error<u16>("-255");
+    check_error<u16>("-256");
+    check_error<u16>("-32767");
+    check_error<u16>("-32768");
+    check_error<u16>("-65535");
+    check_error<u16>("-65536");
+    check_error<u16>("-2147483647");
+    check_error<u16>("-2147483648");
+    check_error<u16>("-4294967295");
+    check_error<u16>("-4294967296");
+    check_error<u16>("-9223372036854775807");
+    check_error<u16>("-9223372036854775808");    
+    check_error<u16>("-18446744073709551615");
+    check_error<u16>("-18446744073709551616");
+
+    check_valid<s16>("0", 0);
+    check_valid<s16>("1", 1);
+    check_valid<s16>("127", 127);
+    check_valid<s16>("128", 128);
+    check_valid<s16>("255", 255);
+    check_valid<s16>("256", 256);
+    check_valid<s16>("32767", 32767);
+    check_error<s16>("32768");
+    check_error<s16>("65535");
+    check_error<s16>("65536");
+    check_error<s16>("2147483647");
+    check_error<s16>("2147483648");
+    check_error<s16>("4294967295");
+    check_error<s16>("4294967296");
+    check_error<s16>("9223372036854775807");
+    check_error<s16>("9223372036854775808");    
+    check_error<s16>("18446744073709551615");
+    check_error<s16>("18446744073709551616");
+    check_valid<s16>("-0", -0);
+    check_valid<s16>("-1", -1);
+    check_valid<s16>("-127", -127);
+    check_valid<s16>("-128", -128);
+    check_valid<s16>("-255", -255);
+    check_valid<s16>("-256", -256);
+    check_valid<s16>("-32767", -32767);
+    check_valid<s16>("-32768", -32768);
+    check_error<s16>("-65535");
+    check_error<s16>("-65536");
+    check_error<s16>("-2147483647");
+    check_error<s16>("-2147483648");
+    check_error<s16>("-4294967295");
+    check_error<s16>("-4294967296");
+    check_error<s16>("-9223372036854775807");
+    check_error<s16>("-9223372036854775808");    
+    check_error<s16>("-18446744073709551615");
+    check_error<s16>("-18446744073709551616");
+
+    check_valid<u32>("0", 0);
+    check_valid<u32>("1", 1);
+    check_valid<u32>("127", 127);
+    check_valid<u32>("128", 128);
+    check_valid<u32>("255", 255);
+    check_valid<u32>("256", 256);
+    check_valid<u32>("32767", 32767);
+    check_valid<u32>("32768", 32768);
+    check_valid<u32>("65535", 65535);
+    check_valid<u32>("65536", 65536);
+    check_valid<u32>("2147483647", 2147483647);
+    check_valid<u32>("2147483648", 2147483648ull);
+    check_valid<u32>("4294967295", 4294967295ull);
+    check_error<u32>("4294967296");
+    check_error<u32>("9223372036854775807");
+    check_error<u32>("9223372036854775808");    
+    check_error<u32>("18446744073709551615");
+    check_error<u32>("18446744073709551616");
+    check_valid<u32>("-0", -0);
+    check_error<u32>("-1");
+    check_error<u32>("-127");
+    check_error<u32>("-128");
+    check_error<u32>("-255");
+    check_error<u32>("-256");
+    check_error<u32>("-32767");
+    check_error<u32>("-32768");
+    check_error<u32>("-65535");
+    check_error<u32>("-65536");
+    check_error<u32>("-2147483647");
+    check_error<u32>("-2147483648");
+    check_error<u32>("-4294967295");
+    check_error<u32>("-4294967296");
+    check_error<u32>("-9223372036854775807");
+    check_error<u32>("-9223372036854775808");    
+    check_error<u32>("-18446744073709551615");
+    check_error<u32>("-18446744073709551616");
+
+    check_valid<s32>("0", 0);
+    check_valid<s32>("1", 1);
+    check_valid<s32>("127", 127);
+    check_valid<s32>("128", 128);
+    check_valid<s32>("255", 255);
+    check_valid<s32>("256", 256);
+    check_valid<s32>("32767", 32767);
+    check_valid<s32>("32768", 32768);
+    check_valid<s32>("65535", 65535);
+    check_valid<s32>("65536", 65536);
+    check_valid<s32>("2147483647", 2147483647);
+    check_error<s32>("2147483648");
+    check_error<s32>("4294967295");
+    check_error<s32>("4294967296");
+    check_error<s32>("9223372036854775807");
+    check_error<s32>("9223372036854775808");    
+    check_error<s32>("18446744073709551615");
+    check_error<s32>("18446744073709551616");
+    check_valid<s32>("-0", -0);
+    check_valid<s32>("-1", -1);
+    check_valid<s32>("-127", -127);
+    check_valid<s32>("-128", -128);
+    check_valid<s32>("-255", -255);
+    check_valid<s32>("-256", -256);
+    check_valid<s32>("-32767", -32767);
+    check_valid<s32>("-32768", -32768);
+    check_valid<s32>("-65535", -65535);
+    check_valid<s32>("-65536", -65536);
+    check_valid<s32>("-2147483647", -2147483647);
+    check_valid<s32>("-2147483648", -2147483648);
+    check_error<s32>("-4294967295");
+    check_error<s32>("-4294967296");
+    check_error<s32>("-9223372036854775807");
+    check_error<s32>("-9223372036854775808");    
+    check_error<s32>("-18446744073709551615");
+    check_error<s32>("-18446744073709551616");
+
+    check_valid<u64>("0", 0);
+    check_valid<u64>("1", 1);
+    check_valid<u64>("127", 127);
+    check_valid<u64>("128", 128);
+    check_valid<u64>("255", 255);
+    check_valid<u64>("256", 256);
+    check_valid<u64>("32767", 32767);
+    check_valid<u64>("32768", 32768);
+    check_valid<u64>("65535", 65535);
+    check_valid<u64>("65536", 65536);
+    check_valid<u64>("2147483647", 2147483647);
+    check_valid<u64>("2147483648", 2147483648ull);
+    check_valid<u64>("4294967295", 4294967295ull);
+    check_valid<u64>("4294967296", 4294967296ull);
+    check_valid<u64>("9223372036854775807", 9223372036854775807ull);
+    check_valid<u64>("9223372036854775808", 9223372036854775808ull);    
+    check_valid<u64>("18446744073709551615", 18446744073709551615ull);
+    check_error<u64>("18446744073709551616");
+    check_valid<u64>("-0", -0);
+    check_error<u64>("-1");
+    check_error<u64>("-127");
+    check_error<u64>("-128");
+    check_error<u64>("-255");
+    check_error<u64>("-256");
+    check_error<u64>("-32767");
+    check_error<u64>("-32768");
+    check_error<u64>("-65535");
+    check_error<u64>("-65536");
+    check_error<u64>("-2147483647");
+    check_error<u64>("-2147483648");
+    check_error<u64>("-4294967295");
+    check_error<u64>("-4294967296");
+    check_error<u64>("-9223372036854775807");
+    check_error<u64>("-9223372036854775808");    
+    check_error<u64>("-18446744073709551615");
+    check_error<u64>("-18446744073709551616");
+
+    check_valid<s64>("0", 0);
+    check_valid<s64>("1", 1);
+    check_valid<s64>("127", 127);
+    check_valid<s64>("128", 128);
+    check_valid<s64>("255", 255);
+    check_valid<s64>("256", 256);
+    check_valid<s64>("32767", 32767);
+    check_valid<s64>("32768", 32768);
+    check_valid<s64>("65535", 65535);
+    check_valid<s64>("65536", 65536);
+    check_valid<s64>("2147483647", 2147483647);
+    check_valid<s64>("2147483648", 2147483648ll);
+    check_valid<s64>("4294967295", 4294967295ll);
+    check_valid<s64>("4294967296", 4294967296ll);
+    check_valid<s64>("9223372036854775807", 9223372036854775807ll);
+    check_error<s64>("9223372036854775808");    
+    check_error<s64>("18446744073709551615");
+    check_error<s64>("18446744073709551616");
+    check_valid<s64>("-0", -0);
+    check_valid<s64>("-1", -1);
+    check_valid<s64>("-127", -127);
+    check_valid<s64>("-128", -128);
+    check_valid<s64>("-255", -255);
+    check_valid<s64>("-256", -256);
+    check_valid<s64>("-32767", -32767);
+    check_valid<s64>("-32768", -32768);
+    check_valid<s64>("-65535", -65535);
+    check_valid<s64>("-65536", -65536);
+    check_valid<s64>("-2147483647", -2147483647);
+    check_valid<s64>("-2147483648", -2147483648);
+    check_valid<s64>("-4294967295", -4294967295ll);
+    check_valid<s64>("-4294967296", -4294967296ll);
+    check_valid<s64>("-9223372036854775807", -9223372036854775807ll);
+    check_valid<s64>("-9223372036854775808", -9223372036854775808ull);    
+    check_error<s64>("-18446744073709551615");
+    check_error<s64>("-18446744073709551616");
+
+    
+    //puts("Starting random testing...");
+    //for (s64 iter = 0;; ++iter) {
+    //    printf("Iteration %lld...\n, iter");
+    //    
+    //}
+}
+
+#endif /* JUP_STOX_TEST */

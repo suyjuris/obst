@@ -761,7 +761,7 @@ void _platform_init_context(Opengl_context* context) {
     emscripten_webgl_init_context_attributes(&attrs);
     attrs.alpha = false;
     attrs.depth = true;
-    attrs.antialias = true; // BDDs and edges do their own AA, but for arrows this still is convenient
+    attrs.antialias = false; // Everything does their own AA
     attrs.majorVersion = 1;
     
     ctx = emscripten_webgl_create_context(0, &attrs);
