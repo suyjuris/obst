@@ -156,7 +156,8 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
             *into = {Number_sci::T_INFINITY, sign, 0, 0};
             return 0;
         }
-    } else if (flags & jup_sto::ALLOW_NAN) {
+    }
+    if (flags & jup_sto::ALLOW_NAN) {
         if (cmp_ci("nan")) {
             if (i < str.size) return 7;
             *into = {Number_sci::T_NAN, sign, 0, 0};
@@ -245,13 +246,14 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
             if (val >= base) { return 2; }
 
             if (not overflow) {
-                u64 tmp_frac, tmp_frac_exp;
-                overflow |= __builtin_mul_overflow(frac, base, &tmp_frac);
-                overflow |= __builtin_add_overflow(tmp_frac, val, &tmp_frac);
-                overflow |= __builtin_add_overflow(frac_exp, 1, &tmp_frac_exp);
+                u64 tmp_m;
+                int tmp_exp;
+                overflow |= __builtin_mul_overflow(m, base, &tmp_m);
+                overflow |= __builtin_add_overflow(tmp_m, val, &tmp_m);
+                overflow |= __builtin_sub_overflow(exp, 1, &tmp_exp);
                 if (not overflow) {
-                    frac = tmp_frac;
-                    frac_exp = tmp_frac_exp;
+                    m = tmp_m;
+                    exp = tmp_exp;
                 }
             }
             
@@ -262,10 +264,6 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
                     return 8;
                 }
             }
-        }
-
-        if (frac == 0) {
-            frac_exp = 0;
         }
     }
     overflow = false;
@@ -303,20 +301,6 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
 
         if (overflow) return exp_sign ? (sign ? 3 : 4) : 6;
     }
-
-    // Add the fractional part
-    for (u64 i = 0; i < frac_exp; ++i) {
-        if (__builtin_mul_overflow(m, base, &m)) {
-            overflow = true; break;
-        }
-    }
-    if (overflow) return sign ? 3 : 4;
-    if (__builtin_add_overflow(m, frac, &m)) {
-        overflow = true;
-    } else if (__builtin_sub_overflow(exp, frac_exp, &exp)) {
-        overflow = true;
-    }
-    if (overflow) return sign ? 3 : 4;
 
     // Convert exponent into base 2
     // TODO: Implement correct rounding
@@ -357,13 +341,20 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
                 i >>= 1;
             }
         }
+        if (m_ld == INFINITY or m_ld == -INFINITY or m_ld == 0) {
+            return exp < 0 ? 6 : (sign ? 3: 4);
+        }
 
         m = (u64)(std::ldexp(m_ld, -exp_));
         exp_ -= shift;
     
     } else {
-        assert(exp == 0);
-        exp_ = 0;
+        switch (base) {
+        case 2: exp_ = exp; break;
+        case 8: exp_ = exp * 3; break;
+        case 16: exp_ = exp * 4; break;
+        default: assert(false /* where is that case coming from?! */);
+        }
     }
 
     // Shift mantissa to the right
@@ -643,23 +634,29 @@ u16 jup_stox(Array_t<u8> str, double* into, u8 flags) { return jup_stox_helper_r
 #ifdef JUP_STOX_TEST
 #undef JUP_STOX_TEST
 
-void print(double d) { fprintf(stderr, "%.20f / %.20e", d, d); }
-void print(float  d) { fprintf(stderr, "%.10f / %.10e", d, d); }
-void print(s64 d) { fprintf(stderr, "%lld / %llx", d, d); }
-void print(u64 d) { fprintf(stderr, "%llu / %llx", d, d); }
-void print(s32 d) { fprintf(stderr, "%lld / %llx", (s64)d, (s64)d); }
-void print(u32 d) { fprintf(stderr, "%llu / %llx", (s64)d, (s64)d); }
-void print(s16 d) { fprintf(stderr, "%lld / %llx", (s64)d, (s64)d); }
-void print(u16 d) { fprintf(stderr, "%llu / %llx", (s64)d, (s64)d); }
-void print(s8  d) { fprintf(stderr, "%lld / %llx", (s64)d, (s64)d); }
-void print(u8  d) { fprintf(stderr, "%llu / %llx", (s64)d, (s64)d); }
+#include <sstream>
+
+void print(double d, FILE* f=stderr) { fprintf(f, "%.20f / %.20e", d, d); }
+void print(float  d, FILE* f=stderr) { fprintf(f, "%.10f / %.10e", d, d); }
+void print(s64 d,    FILE* f=stderr) { fprintf(f, "%lld / %llx", d, d); }
+void print(u64 d,    FILE* f=stderr) { fprintf(f, "%llu / %llx", d, d); }
+void print(s32 d,    FILE* f=stderr) { fprintf(f, "%lld / %llx", (s64)d, (s64)d); }
+void print(u32 d,    FILE* f=stderr) { fprintf(f, "%llu / %llx", (s64)d, (s64)d); }
+void print(s16 d,    FILE* f=stderr) { fprintf(f, "%lld / %llx", (s64)d, (s64)d); }
+void print(u16 d,    FILE* f=stderr) { fprintf(f, "%llu / %llx", (s64)d, (s64)d); }
+void print(s8  d,    FILE* f=stderr) { fprintf(f, "%lld / %llx", (s64)d, (s64)d); }
+void print(u8  d,    FILE* f=stderr) { fprintf(f, "%llu / %llx", (s64)d, (s64)d); }
+
+FILE* global_logfile;
 
 template <typename T>
-void check_valid(char const* s, T result) {
+void check_valid(char const* s, T result, u8 flags = 0) {
     T tmp;
-    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp);
+    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp, flags);
     if (code) {
-        fprintf(stderr, "Error on testcase '%s'. Expected\n    ", s);
+        fprintf(stderr, "Error on testcase '%s'", s);
+        if (flags) fprintf(stderr, " (with flags %x)", (int)flags);
+        fprintf(stderr, ". Expected\n    ");
         print(result);
         if (code < jup_err_messages_size) {
             fprintf(stderr, "\ngot error:\n    %s  (code %d)\n", jup_err_messages[code], code);
@@ -678,11 +675,13 @@ void check_valid(char const* s, T result) {
 }
 
 template <typename T>
-void check_error(char const* s) {
+void check_error(char const* s, u8 flags = 0) {
     T tmp;
-    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp);
+    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp, flags);
     if (not code) {
-        fprintf(stderr, "Error on testcase '%s'. Expected error but got\n    ", s);
+        fprintf(stderr, "Error on testcase '%s'", s);
+        if (flags) fprintf(stderr, " (with flags %x)", (int)flags);
+        fprintf(stderr, ". Expected error but got\n    ");
         print(tmp);
         exit(12);
     } else if (code >= jup_err_messages_size) {
@@ -692,9 +691,125 @@ void check_error(char const* s) {
     }
 }
 
+struct Counter { u64 total = 0, fail = 0; };
 
-int main() {
+template <typename T>
+bool check_almost(char const* s, T result, Counter* c) {
+    ++c->total;
+    
+    T tmp;
+    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp);
+    if (result == INFINITY and code == 4) {
+        // For these checks we compare with strtof, which retuns inf on large values
+    } else if (result == -INFINITY and code == 3) {
+        // see above
+    } else if (code) {
+        fprintf(stderr, "Error on testcase '%s'", s);
+        fprintf(stderr, ". Expected\n    ");
+        print(result);
+        if (code < jup_err_messages_size) {
+            fprintf(stderr, "\ngot error:\n    %s  (code %d)\n", jup_err_messages[code], code);
+        } else {
+            fprintf(stderr, "\ngot error code out of bounds (code %d, size %d)\n", code, jup_err_messages_size);
+        }
+        exit(20);
+    } else if (memcmp(&result, &tmp, sizeof(T))) {
+        T next = std::nextafter(result, tmp);
+        if (memcmp(&next, &tmp, sizeof(T))) {
+            fprintf(stderr, "Error on testcase '%s'. Expected\n    ", s);
+            print(result);
+            fprintf(stderr, "\ngot\n    ");
+            print(tmp);
+            fprintf(stderr, "\n");
+            exit(21);
+        } else {
+            if (global_logfile) {
+                fprintf(global_logfile, "Error on testcase '%s'. Expected\n    ", s);
+                print(result, global_logfile);
+                fprintf(global_logfile, "\ngot\n    ");
+                print(tmp, global_logfile);
+                fprintf(global_logfile, "\n\n");
+            }
+            ++c->fail;
+        }
+    }
+}
+
+u64 rand_state = 0xd1620b2a7a243d4bull;
+u64 rand_get() {
+    u64 x = rand_state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    rand_state = x;
+    return x * 0x2545f4914f6cdd1dull;
+}
+
+void print_usage(char* argv0) {
+    printf("Usage:\n  %s [-o <file>]\n  %s -x\n  %s --help\n\nThis is the test for the "
+        "floating point parsing routine.\n\nOptions:\n", argv0, argv0, argv0);
+    puts("  -o <file>");
+    puts("    Write a logfile, consisting of the inputs where the parser is off-by-one.\n");
+    puts("  -x");
+    puts("    Instead of running the tests, simply parse a single number from stdin and exit. (This option is provided to enable fuzz-testing.)\n");
+    puts("  --help");
+    puts("    You can probably guess what this option does.");
+    exit(2);
+}
+
+int main(int argc, char** argv) {
+    bool fuzz_mode = false;
+    for (s64 i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-o") == 0) {
+            if (global_logfile != nullptr) {
+                fprintf(stderr, "Error: option -o specified twice (--help for help)\n");
+                exit(33);
+            } else if (i+1 >= argc) {
+                fprintf(stderr, "Error: no argument for option -o (--help for help)\n");
+                exit(34);
+            }
+            global_logfile = fopen(argv[i+1], "w");
+            if (global_logfile == nullptr) {
+                fprintf(stderr, "Error: could not open file '%s' for writing (--help for help)\n", argv[i+1]);
+                exit(35);
+            }
+            
+            ++i;
+        } else if (strcmp(argv[i], "-x") == 0) {
+            fuzz_mode = true;
+        } else if (strcmp(argv[i], "--help") == 0 or strcmp(argv[i], "-h") == 0) {
+            print_usage(argv[0]); // exits
+        } else {
+            fprintf(stderr, "Error: Unknown option or argument '%s' (--help for help)\n", argv[i]);
+            exit(35);
+        }
+    }
+
+    if (fuzz_mode) {
+        char* buf = (char*)calloc(4096, 1);
+        fread(buf, 4095, 1, stdin);
+        
+        u8 _u8; u16 _u16; u32 _u32; u64 _u64;
+        s8 _s8; s16 _s16; s32 _s32; s64 _s64;
+        float _float; double _double;
+        Array_t<u8> s {(u8*)buf, (s64)strlen(buf)};
+        jup_stox(s, &_float);
+        jup_stox(s, &_double);
+        jup_stox(s, &_float, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+        jup_stox(s, &_double, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+        jup_stox(s, &_u8);
+        jup_stox(s, &_u16);
+        jup_stox(s, &_u32);
+        jup_stox(s, &_u64);
+        jup_stox(s, &_s8);
+        jup_stox(s, &_s16);
+        jup_stox(s, &_s32);
+        jup_stox(s, &_s64);
+        return 0;
+    }
+    
     puts("Testing special cases...");
+    // This is basically comparing with the compiler's floating point parser
     
     check_valid<u8>("0", 0);
     check_valid<u8>("1", 1);
@@ -1062,11 +1177,404 @@ int main() {
     check_error<s64>("-18446744073709551616");
 
     
-    //puts("Starting random testing...");
-    //for (s64 iter = 0;; ++iter) {
-    //    printf("Iteration %lld...\n, iter");
-    //    
-    //}
+    check_valid<float>("0", 0.f);
+    check_valid<float>("+0", 0.f);
+    check_valid<float>("-0", -0.f);
+    check_valid<float>("1", 1.f);
+    check_valid<float>("0.0", 0.f);
+    check_valid<float>("1.0", 1.f);
+    check_valid<float>("0.", 0.f);
+    check_valid<float>("255.0", 255.f);
+    check_valid<float>("255.00000000000000000000000000", 255.f);
+    check_valid<float>("2.55e2", 255.f);
+    check_valid<float>("2.55E+2", 255.f);
+    check_valid<float>("2.55e--+-+--+-2", 255.f);
+    check_valid<float>("255000000000000000e-15", 255.f);
+    check_valid<float>("--1", 1.f);
+    check_valid<float>("--+-++-+--+-++-+-+-+--1", 1.f);
+    check_error<float>("1.e");
+    check_valid<float>("-1", -1.f);
+    check_valid<float>("65535", 65535.f);
+    check_valid<float>("65536", 65536.f);
+    check_valid<float>("4294967295", 4294967295.f);
+    check_valid<float>("4294967296", 4294967296.f);
+    check_valid<float>("18446744073709551615", 18446744073709551615.f);
+    check_valid<float>("18446744073709551616", 18446744073709551616.f);
+    check_valid<float>("-65535", -65535.f);
+    check_valid<float>("-65536", -65536.f);
+    check_valid<float>("-4294967295", -4294967295.f);
+    check_valid<float>("-4294967296", -4294967296.f);
+    check_valid<float>("-18446744073709551615", -18446744073709551615.f);
+    check_valid<float>("-18446744073709551616", -18446744073709551616.f);
+    check_valid<float>("2.5501e-+---+-++--2", 2.5501e-2);
+    check_valid<float>("2.550000000000000000000000000001e2", 2.55e2f);
+    check_valid<float>("0b0", 0.f);
+    check_valid<float>("0B0", 0.f);
+    check_valid<float>("0b1", 1.f);
+    check_valid<float>("0b11111111", 255.f);
+    check_valid<float>("0b0.0", 0.f);
+    check_valid<float>("0b1.01", 1.25f);
+    check_valid<float>("0b11111111.0", 255.f);
+    check_valid<float>("0b11111111.00000000000000000000000000", 255.f);
+    check_valid<float>("00", 0.f);
+    check_valid<float>("01", 1.f);
+    check_valid<float>("0377", 255.f);
+    check_valid<float>("00.0", 0.f);
+    check_valid<float>("01.0", 1.f);
+    check_valid<float>("0377.0", 255.f);
+    check_valid<float>("0377.00000000000000000000000000", 255.f);
+    check_valid<float>("0x0", 0.f);
+    check_valid<float>("0x1", 1.f);
+    check_valid<float>("0xff", 255.f);
+    check_valid<float>("0xfF", 255.f);
+    check_valid<float>("0x0.0", 0.f);
+    check_valid<float>("0x1.0", 1.f);
+    check_valid<float>("0x1.2", 1.125f);
+    check_valid<float>("0xff.0", 255.f);
+    check_valid<float>("0xff.00000000", 255.f);
+    check_valid<float>("inf", INFINITY, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("inF", INFINITY, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("nan", NAN, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("naN", NAN, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("-inf", -INFINITY, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("-inF", -INFINITY, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("-nan", NAN, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("-naN", NAN, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+    check_valid<float>("1e37", 1e37f);
+    check_error<float>("1e39");
+    check_valid<float>("1e-55", 0.f);
+    check_valid<float>("0.2", 0.2f);
+    check_valid<float>("123456789", 123456789.f);
+    check_error<float>("1234567890123456789012345678901234567890");
+    check_error<float>("inf");
+    check_error<float>("inF");
+    check_error<float>("nan");
+    check_error<float>("naN");
+    check_error<float>("-inf");
+    check_error<float>("-inF");
+    check_error<float>("-nan");
+    check_error<float>("-naN");
+
+    char const* tmp[] = {
+        "",
+        "+0188.0e-+20",
+        "+3188.",
+        "+3E88.0e-+20",
+        "+318..0e-+20",
+        "+",
+        "+3188.0",
+        "+3188.0e",
+        "+3188.0e-\x01",
+        "+-",
+        "+++++++++-\xff\xff+-\xe8++\x03+++",
+        "++20",
+        "0",
+        "E31;\x80G0e-+20",
+        "i%\x03\x05Q%\x05\x05{{{{",
+        "++++++718+s1P)",
+        "018",
+        "031N20",
+        "+3.18",
+        "++31",
+        "+++\x10+++++G+++",
+        "n\x02\x7f\u0017d",
+        "++++++++++++++++++4",
+        "E3",
+        "+++++++?B8\x02\u0010e-B70\x10",
+        "+318800e-++318800e-+",
+        "-8",
+        ".00",
+        "07.0\x10",
+        "+3188.1e-++++++++++++++++20",
+        "+0BQ8.11",
+        "+3188.0e-3206",
+        "+3188.0e-+-06",
+        "188e9",
+        "+3188e-+20101886",
+        "+3188.0188e-+201886",
+        "+318188e06",
+        "+3183188.0e8",
+        "118E8",
+        "+3188.0e32206",
+        "66666166666666666666",
+        "333333333333333333333331883188.0e-+188",
+        "-.",
+        "11188111111111111111111",
+        "+3188.0e+++++",
+        "+31777777777777777777777777777788.0e-+188206",
+        "+0e666666666666666666666666-+206",
+        "+3188.0e-+20660666666666666666666",
+        "18718818818718818",
+        "+3188.0e-320",
+        "+3188.0e+3",
+        "++0xG",
+        "e+++++++++++",
+        "1111111111111111111110e-+",
+        "0XX",
+        "0X",
+        "8888888888888888888888888888.",
+        "0000000000000000000000000000000002",
+        "3E3",
+        "+3188.2222222222222222220e",
+        "18888.2222222222222222220",
+        "+3188888888888888888.0e-1{0",
+        "+333333333333333333333333318810e-++318918860e-M",
+        "07.8\x10",
+        "07.00",
+        "+3E528",
+        "iniiiiiHG",
+        "9999999999999999999",
+        "+3188.0e8831885206",
+        "+378.0e-8888888885206",
+        "+3188.e-1881881886",
+        "+3188.0e-+-05",
+        "-.0e-+6666666666666666666666+\u001706",
+        "-38.0e66666",
+        "6666616666E666666666",
+        "0xxO188\xffV188\xff<TTTT\x1b",
+        "0x8o188\xffV188\xff<TTTT\x1b",
+        "0x8_188\xffV188\xff<TTTT\x1b",
+        "0x8\u007f188\xffV188\xff<TTTT\x1b",
+        "0x[O188\xffV188\xff<TTTT\x1b",
+        "0x8a188\xffV188\xff<TTTT\x1b",
+        "0xdO188\xffV188\xff<TTTT\x1b",
+        "0x\x7fO188\xffV188\xff<TTTT\x1b",
+        "0x[rTTTTTTTTTTTTTTTTTTTTTT<TTTT\x18",
+        "0x\u007fdF8J68J61",
+        "0x8CCCCCCCCCCC\"CO188\xffV188\xff<TTTT\x1b",
+        "0xCA1TTT\x1b",
+        "0xddddddV18d",
+        "0x8.0x@O18\u001b6<6166",
+        "0x.O1TTT",
+        "Na63",
+        "+3188.0e-327",
+        "+3188.0e13",
+        "+3188.2222222222222220220e18818",
+        "07000000000000000000000000",
+        "0X.^E7.Z188p",
+        "0X.{E7.Z188p",
+        "0X.18818188p0=",
+        "0X.\u007fE7.Z188p018;2",
+        "0X.`E7p0M",
+        "0X.IIIIII=",
+        "0X188A8E\".ZK8%p0",
+        "0X.KKKK8KKKKKKKK",
+        "0X.88\x7f\x7f\x7f\x7f\x7f\x7f\x7f\xff\u007f8p2",
+        "0XEEEEEEEEEEEDEEEEE6EJ.Z6EJ.Z1=1=",
+        "0Xa8800faaaaaaaaa00G",
+        "0X616E7E\xec.Z188p0=\u00042",
+        "iNfIiiiHG",
+        "iNfin\xe9iHG",
+        "iNfTiiiHG",
+        "iNfiiiiH",
+        "iNf",
+        "INFxiiiHG188",
+        "-378.0e-8888888885206",
+        "+113188188.0e-52",
+        "++13188188.0e-52",
+        "+313188111111111881811E118800611111188111111111881811E11111.0e-52",
+        "+3188.0e-+-15",
+        "+3188.0e-+-35",
+        "18e17",
+        "-666616666E666666666",
+        "666661618818661881861666E6666666666",
+        "6666666666666666616666E666666616",
+        "0x.O1[8\xffV188\xff<TTTT\x1b",
+        "NAn88.0e-+20",
+        "NAN",
+        "18818.011111111111111111111111e13",
+        "0X.EE000000000000000008\u007f8800=EE5",
+        "iNftyiiHG",
+        "iNftYiiHG",
+        "iNfiNIiHG",
+        "iNfiNiTHG",
+        "+3000000000000000000000061600188.0e-+-15",
+        "-66661666666666666666666666E667666666",
+        "0X.n188p0188pp0188p00A=",
+        "0X.n188p0188pP0188p0001",
+        "iNfiNitYG",
+        "iNfiNityG",
+        "+++++E718+s1P)",
+        "+88003131888008.0e-52",
+        "+8888003131882818281888.0e-00313003131882818281888.0",
+        "+88003131888003131882808281888.0e-5880031318882",
+        "+318831888888888888888888888888888888888.0e-++0.20",
+        ".1011111818811111118616111118811111181881111111861611111881111111111",
+        "-38888888888888888888888.0e66188",
+        "0Xa8800300faaaaaaaa00faaaaaaaaaa00G",
+        "666661618818661881861666E-666666666",
+        "6666666666666666616666E666666666666666666166616",
+        "+3000000000000000000000061600188.0e-+--5",
+        "---------------------------------------------------\xee",
+        "8e18",
+        "0X.ppppppppppppppppppppppppphpppppppppphdhhhhhhhhhhhhhhhhhpppppppppppppphpppppppppphhp\u00892",
+        "0X.paaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\u009daaaaaaaaap\u00892",
+        "-88003133131882818281888.0e-52180000000000000000000000000888.0e-52",
+        "000000000000000000000000000000000000000000000313100000000000000000000000d",
+        "E000000000000000000000000000000000000313100000000000000000000000d",
+        "-38888888818661881861666E-3183888888881666666",
+        "0XEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEDp0",
+        "0B.1",
+        "+3188.0e-------------------------------------------------+3188.0e-+",
+        "0X.EEkkkkkkkkkEEEEEEEEEEEE18EEEE88008EEEE8EEEEEEEEEEEEEEEEE4E8EEEEEEEEEEEEEEEEEEEEEEEE18EEEE880088@",
+        "+3000000000000000000000061600188.0e-+---",
+        "0xddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddV1@d",
+        "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "0xdddddddddddddbdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "0X.8888888AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0118AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x7f\u00ffAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\xad-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------",
+        "0B.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
+    };
+
+    for (s64 i = 0; i < sizeof(tmp) / sizeof(tmp[0]); ++i) {
+        u8 _u8; u16 _u16; u32 _u32; u64 _u64;
+        s8 _s8; s16 _s16; s32 _s32; s64 _s64 = 0;
+        float _float; double _double = 0;
+        Array_t<u8> s {(u8*)tmp[i], (s64)strlen(tmp[i])};
+        u16 _floatc = jup_stox(s, &_float);
+        u16 _doublec = jup_stox(s, &_double);
+        u16 _floatc2 = jup_stox(s, &_float, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+        u16 _doublec2 = jup_stox(s, &_double, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+        u16 _u8c = jup_stox(s, &_u8);
+        u16 _u16c = jup_stox(s, &_u16);
+        u16 _u32c = jup_stox(s, &_u32);
+        u16 _u64c = jup_stox(s, &_u64);
+        u16 _s8c = jup_stox(s, &_s8);
+        u16 _s16c = jup_stox(s, &_s16);
+        u16 _s32c = jup_stox(s, &_s32);
+        u16 _s64c = jup_stox(s, &_s64);
+        printf("%hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %llu %.16e\n",
+        _u8c, _u16c, _u32c, _u64c, _s8c , _s16c, _s32c, _s64c, _floatc, _doublec, _floatc2, _doublec2, _s64, _double);
+    }
+    exit(0);
+        
+        
+    // The following were found by the afl fuzzer,
+    check_error<u8>("8e8888");
+    check_error<u8>("273188.0e-272222");
+    
+    puts("Starting random testing (this will never stop)...");
+    // Now we compare with the runtime library
+
+    Counter f_printf_uni, f_printf_den, f_iostream_uni, f_iostream_den;
+    Counter d_printf_uni, d_printf_den, d_iostream_uni, d_iostream_den;
+    Counter f_generate, d_generate;
+    
+    constexpr s64 buf_size = 4096;
+    char* buf = (char*)calloc(buf_size, 1);
+    std::stringstream os;
+
+    union { u32 fu = 0; float  f; };
+    union { u64 du = 0; double d; };
+
+#define O(x) x.fail, x.total, (double)x.fail / (double)x.total
+    
+    for (u64 iter = 0;; ++iter) {
+        if (!((iter-1)&iter) and iter) {
+            printf("Iteration %lld (rand_state = 0x%llx)...\n", iter, rand_state);
+            printf("  off-by-one counts\n");
+            printf("  float,  printf,   uniform   %6lld / %10lld (%.5f%%)\n", O(f_printf_uni));
+            printf("  float,  printf,   denormal  %6lld / %10lld (%.5f%%)\n", O(f_printf_den));
+            printf("  float,  iostream, uniform   %6lld / %10lld (%.5f%%)\n", O(f_iostream_uni));
+            printf("  float,  iostream, denormal  %6lld / %10lld (%.5f%%)\n", O(f_iostream_den));
+            printf("  double, printf,   uniform   %6lld / %10lld (%.5f%%)\n", O(d_printf_uni));
+            printf("  double, printf,   denormal  %6lld / %10lld (%.5f%%)\n", O(d_printf_den));
+            printf("  double, iostream, uniform   %6lld / %10lld (%.5f%%)\n", O(d_iostream_uni));
+            printf("  double, iostream, denormal  %6lld / %10lld (%.5f%%)\n", O(d_iostream_den));
+            printf("  float,  generated           %6lld / %10lld (%.5f%%)\n", O(f_generate));
+            printf("  double, generated           %6lld / %10lld (%.5f%%)\n", O(d_generate));
+            puts("");
+        }
+
+        // printf / iostream tests.
+        
+        // Uniform over all bits
+        for (s64 i = 0; i < 1000000; ++i) {
+            fu = rand_get();
+            fu += !(~fu & 0xffull << 23) << 23; // Do not generate inf and nan
+            snprintf(buf, buf_size, "%.8e", f);
+            check_almost(buf, f, &f_printf_uni);
+        }
+        // Denormals
+        for (s64 i = 0; i < 100000; ++i) {
+            fu = rand_get() & ~0x7f800000ull;
+            snprintf(buf, buf_size, "%.8e", f);
+            check_almost(buf, f, &f_printf_den);
+        }
+
+        // Same for iostream
+        os.precision(9);
+        for (s64 i = 0; i < 100000; ++i) {
+            fu = rand_get();
+            fu += !(~fu & 0xffull << 23) << 23; // Do not generate inf and nan
+            os.clear(); os << f;
+            os.read(buf, buf_size-1); buf[os.gcount()] = 0;
+            check_almost(buf, f, &f_iostream_uni);
+        }
+        for (s64 i = 0; i < 100000; ++i) {
+            fu = rand_get() & ~0x7f800000ull;
+            os.clear(); os << f;
+            os.read(buf, buf_size-1); buf[os.gcount()] = 0;
+            check_almost(buf, f, &f_iostream_den);
+        }
+
+        // Now with doubles
+        
+        for (s64 i = 0; i < 1000000; ++i) {
+            du = rand_get();
+            du += (u64)!(~du & 0x7ffull << 52) << 52; // Do not generate inf and nan
+            snprintf(buf, buf_size, "%.16e", f);
+            check_almost(buf, f, &d_printf_uni);
+        }
+        for (s64 i = 0; i < 100000; ++i) {
+            du = rand_get() & ~0x7ffull << 52;
+            snprintf(buf, buf_size, "%.16e", f);
+            check_almost(buf, f, &d_printf_den);
+        }
+        os.precision(17);
+        for (s64 i = 0; i < 100000; ++i) {
+            du = rand_get();
+            du += (u64)!(~du & 0x7ffull << 52) << 52; // Do not generate inf and nan
+            os.clear(); os << f;
+            os.read(buf, buf_size-1); buf[os.gcount()] = 0;
+            check_almost(buf, f, &d_iostream_uni);
+        }
+        for (s64 i = 0; i < 100000; ++i) {
+            du = rand_get() & ~0x7ffull << 52;
+            os.clear(); os << f;
+            os.read(buf, buf_size-1); buf[os.gcount()] = 0;
+            check_almost(buf, f, &d_iostream_den);
+        }
+
+        // Now let's generate the strings at random
+        for (s64 i = 0; i < 100000; ++i) {
+            char* p = buf;
+            u64 r = rand_get();
+            if (r>>0 & 1) *p++ = '-';
+            if ((r>>0 & 3) == 2) *p++ = '+';
+            r += (!(r & 0xffc)) << 2;
+            u64 digits = r>>2 & 31;
+            if (digits > 1) {*p++ = rand_get() %  9 + '1'; --digits;}
+            while (digits)  {*p++ = rand_get() % 10 + '0'; --digits;}
+            u64 frac = r>>7 & 31;
+            if (frac or (r>>12 & 1)) *p++ = '.';
+            while (frac)     {*p++ = rand_get() % 10 + '0'; --frac;}
+            if (r>>13 & 1) {
+                *p++ = 'e';
+                if (r>>14 & 1) *p++ = '-';
+                if ((r>>14 & 3) == 2) *p++ = '+';
+                u64 exp = (r>>16&1) + (r>>17&1);
+                            {*p++ = rand_get() %  3 + '1';}
+                while (exp) {*p++ = rand_get() % 10 + '0'; --exp;}
+            }
+            *p++ = 0;
+
+            f = strtof(buf, nullptr);
+            check_almost(buf, f, &f_generate);
+            d = strtod(buf, nullptr);
+            check_almost(buf, d, &d_generate);
+        }
+    }
 }
 
 #endif /* JUP_STOX_TEST */
