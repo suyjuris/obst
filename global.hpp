@@ -258,7 +258,7 @@ bool array_equal(Array_t<T> a, Array_t<T> b) {
     return a.size == b.size and memcmp(a.data, b.data, a.size * sizeof(T)) == 0;
 }
 bool array_equal_str(Array_t<u8> a, char const* str) {
-    return a.size == strlen(str) and memcmp(a.data, str, a.size) == 0;
+    return a.size == (s64)strlen(str) and memcmp(a.data, str, a.size) == 0;
 }
 
 // These two functions implement a bitset.

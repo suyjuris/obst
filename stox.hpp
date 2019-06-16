@@ -226,8 +226,6 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
     }
     overflow = false;
 
-    u64 frac = 0;
-    u64 frac_exp = 0;
     if (do_frac) {
         for (; i < str.size; ++i) {
             char c = str[i];
@@ -235,9 +233,9 @@ static u16 jup_sto_helper(Array_t<u8> str, Number_sci* into, u8 flags = 0) {
             if ('0' <= c and c <= '9') {
                 val = c - '0';
             } else if (base == 16 and 'a' <= c and c <= 'z') {
-                val = c - 'a';
+                val = c - 'a' + 10;
             } else if (base == 16 and 'A' <= c and c <= 'Z') {
-                val = c - 'A';
+                val = c - 'A' + 10;
             } else if (base == 10 and (c == 'e' or c == 'E')) {
                 do_exp = true; ++i; break;
             } else {
@@ -675,6 +673,25 @@ void check_valid(char const* s, T result, u8 flags = 0) {
 }
 
 template <typename T>
+void check_code(char const* s, T result, u16 r_code, u8 flags = 0) {
+    T tmp;
+    u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp, flags);
+    if (code != r_code) {
+        fprintf(stderr, "Error on testcase '%s'", s);
+        if (flags) fprintf(stderr, " (with flags %x)", (int)flags);
+        fprintf(stderr, ". Expected code %hd, got %hd\n", r_code, code);
+        exit(51);
+    } else if (code == 0 and memcmp(&result, &tmp, sizeof(T))) {
+        fprintf(stderr, "Error on testcase '%s'. Expected\n    ", s);
+        print(result);
+        fprintf(stderr, "\ngot\n    ");
+        print(tmp);
+        fprintf(stderr, "\n");
+        exit(52);
+    }
+}
+
+template <typename T>
 void check_error(char const* s, u8 flags = 0) {
     T tmp;
     u16 code = jup_stox({(u8*)s, (s64)strlen(s)}, &tmp, flags);
@@ -694,7 +711,7 @@ void check_error(char const* s, u8 flags = 0) {
 struct Counter { u64 total = 0, fail = 0; };
 
 template <typename T>
-bool check_almost(char const* s, T result, Counter* c) {
+void check_almost(char const* s, T result, Counter* c) {
     ++c->total;
     
     T tmp;
@@ -827,20 +844,6 @@ int main(int argc, char** argv) {
     check_valid<u8>("--+-++-+--+-++-+-+-+--1", 1);
     check_error<u8>("1.e");
     check_error<u8>("--+-++-+--+--+-+-+-+--1");
-    check_error<u8>("256");
-    check_error<u8>("-1");
-    check_error<u8>("65535");
-    check_error<u8>("65536");
-    check_error<u8>("4294967295");
-    check_error<u8>("4294967296");
-    check_error<u8>("18446744073709551615");
-    check_error<u8>("18446744073709551616");
-    check_error<u8>("-65535");
-    check_error<u8>("-65536");
-    check_error<u8>("-4294967295");
-    check_error<u8>("-4294967296");
-    check_error<u8>("-18446744073709551615");
-    check_error<u8>("-18446744073709551616");
     check_error<u8>("2.5501e2");
     check_error<u8>("2.5501e-+---+-++--2");
     check_error<u8>("2.550000000000000000000000000001e2");
@@ -917,266 +920,6 @@ int main(int argc, char** argv) {
     check_error<u8>("-nan");
     check_error<u8>("-naN");
 
-    check_valid<s8>("0", 0);
-    check_valid<s8>("1", 1);
-    check_valid<s8>("127", 127);
-    check_error<s8>("128");
-    check_error<s8>("255");
-    check_error<s8>("256");
-    check_error<s8>("32767");
-    check_error<s8>("32768");
-    check_error<s8>("65535");
-    check_error<s8>("65536");
-    check_error<s8>("2147483647");
-    check_error<s8>("2147483648");
-    check_error<s8>("4294967295");
-    check_error<s8>("4294967296");
-    check_error<s8>("9223372036854775807");
-    check_error<s8>("9223372036854775808");
-    check_error<s8>("18446744073709551615");
-    check_error<s8>("18446744073709551616");
-    check_valid<s8>("-0", -0);
-    check_valid<s8>("-1", -1);
-    check_valid<s8>("-127", -127);
-    check_valid<s8>("-128", -128);
-    check_error<s8>("-255");
-    check_error<s8>("-256");
-    check_error<s8>("-32767");
-    check_error<s8>("-32768");
-    check_error<s8>("-65535");
-    check_error<s8>("-65536");
-    check_error<s8>("-2147483647");
-    check_error<s8>("-2147483648");
-    check_error<s8>("-4294967295");
-    check_error<s8>("-4294967296");
-    check_error<s8>("-9223372036854775807");
-    check_error<s8>("-9223372036854775808");
-    check_error<s8>("-18446744073709551615");
-    check_error<s8>("-18446744073709551616");
-
-    check_valid<u16>("0", 0);
-    check_valid<u16>("1", 1);
-    check_valid<u16>("127", 127);
-    check_valid<u16>("128", 128);
-    check_valid<u16>("255", 255);
-    check_valid<u16>("256", 256);
-    check_valid<u16>("32767", 32767);
-    check_valid<u16>("32768", 32768);
-    check_valid<u16>("65535", 65535);
-    check_error<u16>("65536");
-    check_error<u16>("2147483647");
-    check_error<u16>("2147483648");
-    check_error<u16>("4294967295");
-    check_error<u16>("4294967296");
-    check_error<u16>("9223372036854775807");
-    check_error<u16>("9223372036854775808");    
-    check_error<u16>("18446744073709551615");
-    check_error<u16>("18446744073709551616");
-    check_valid<u16>("-0", -0);
-    check_error<u16>("-1");
-    check_error<u16>("-127");
-    check_error<u16>("-128");
-    check_error<u16>("-255");
-    check_error<u16>("-256");
-    check_error<u16>("-32767");
-    check_error<u16>("-32768");
-    check_error<u16>("-65535");
-    check_error<u16>("-65536");
-    check_error<u16>("-2147483647");
-    check_error<u16>("-2147483648");
-    check_error<u16>("-4294967295");
-    check_error<u16>("-4294967296");
-    check_error<u16>("-9223372036854775807");
-    check_error<u16>("-9223372036854775808");    
-    check_error<u16>("-18446744073709551615");
-    check_error<u16>("-18446744073709551616");
-
-    check_valid<s16>("0", 0);
-    check_valid<s16>("1", 1);
-    check_valid<s16>("127", 127);
-    check_valid<s16>("128", 128);
-    check_valid<s16>("255", 255);
-    check_valid<s16>("256", 256);
-    check_valid<s16>("32767", 32767);
-    check_error<s16>("32768");
-    check_error<s16>("65535");
-    check_error<s16>("65536");
-    check_error<s16>("2147483647");
-    check_error<s16>("2147483648");
-    check_error<s16>("4294967295");
-    check_error<s16>("4294967296");
-    check_error<s16>("9223372036854775807");
-    check_error<s16>("9223372036854775808");    
-    check_error<s16>("18446744073709551615");
-    check_error<s16>("18446744073709551616");
-    check_valid<s16>("-0", -0);
-    check_valid<s16>("-1", -1);
-    check_valid<s16>("-127", -127);
-    check_valid<s16>("-128", -128);
-    check_valid<s16>("-255", -255);
-    check_valid<s16>("-256", -256);
-    check_valid<s16>("-32767", -32767);
-    check_valid<s16>("-32768", -32768);
-    check_error<s16>("-65535");
-    check_error<s16>("-65536");
-    check_error<s16>("-2147483647");
-    check_error<s16>("-2147483648");
-    check_error<s16>("-4294967295");
-    check_error<s16>("-4294967296");
-    check_error<s16>("-9223372036854775807");
-    check_error<s16>("-9223372036854775808");    
-    check_error<s16>("-18446744073709551615");
-    check_error<s16>("-18446744073709551616");
-
-    check_valid<u32>("0", 0);
-    check_valid<u32>("1", 1);
-    check_valid<u32>("127", 127);
-    check_valid<u32>("128", 128);
-    check_valid<u32>("255", 255);
-    check_valid<u32>("256", 256);
-    check_valid<u32>("32767", 32767);
-    check_valid<u32>("32768", 32768);
-    check_valid<u32>("65535", 65535);
-    check_valid<u32>("65536", 65536);
-    check_valid<u32>("2147483647", 2147483647);
-    check_valid<u32>("2147483648", 2147483648ull);
-    check_valid<u32>("4294967295", 4294967295ull);
-    check_error<u32>("4294967296");
-    check_error<u32>("9223372036854775807");
-    check_error<u32>("9223372036854775808");    
-    check_error<u32>("18446744073709551615");
-    check_error<u32>("18446744073709551616");
-    check_valid<u32>("-0", -0);
-    check_error<u32>("-1");
-    check_error<u32>("-127");
-    check_error<u32>("-128");
-    check_error<u32>("-255");
-    check_error<u32>("-256");
-    check_error<u32>("-32767");
-    check_error<u32>("-32768");
-    check_error<u32>("-65535");
-    check_error<u32>("-65536");
-    check_error<u32>("-2147483647");
-    check_error<u32>("-2147483648");
-    check_error<u32>("-4294967295");
-    check_error<u32>("-4294967296");
-    check_error<u32>("-9223372036854775807");
-    check_error<u32>("-9223372036854775808");    
-    check_error<u32>("-18446744073709551615");
-    check_error<u32>("-18446744073709551616");
-
-    check_valid<s32>("0", 0);
-    check_valid<s32>("1", 1);
-    check_valid<s32>("127", 127);
-    check_valid<s32>("128", 128);
-    check_valid<s32>("255", 255);
-    check_valid<s32>("256", 256);
-    check_valid<s32>("32767", 32767);
-    check_valid<s32>("32768", 32768);
-    check_valid<s32>("65535", 65535);
-    check_valid<s32>("65536", 65536);
-    check_valid<s32>("2147483647", 2147483647);
-    check_error<s32>("2147483648");
-    check_error<s32>("4294967295");
-    check_error<s32>("4294967296");
-    check_error<s32>("9223372036854775807");
-    check_error<s32>("9223372036854775808");    
-    check_error<s32>("18446744073709551615");
-    check_error<s32>("18446744073709551616");
-    check_valid<s32>("-0", -0);
-    check_valid<s32>("-1", -1);
-    check_valid<s32>("-127", -127);
-    check_valid<s32>("-128", -128);
-    check_valid<s32>("-255", -255);
-    check_valid<s32>("-256", -256);
-    check_valid<s32>("-32767", -32767);
-    check_valid<s32>("-32768", -32768);
-    check_valid<s32>("-65535", -65535);
-    check_valid<s32>("-65536", -65536);
-    check_valid<s32>("-2147483647", -2147483647);
-    check_valid<s32>("-2147483648", -2147483648);
-    check_error<s32>("-4294967295");
-    check_error<s32>("-4294967296");
-    check_error<s32>("-9223372036854775807");
-    check_error<s32>("-9223372036854775808");    
-    check_error<s32>("-18446744073709551615");
-    check_error<s32>("-18446744073709551616");
-
-    check_valid<u64>("0", 0);
-    check_valid<u64>("1", 1);
-    check_valid<u64>("127", 127);
-    check_valid<u64>("128", 128);
-    check_valid<u64>("255", 255);
-    check_valid<u64>("256", 256);
-    check_valid<u64>("32767", 32767);
-    check_valid<u64>("32768", 32768);
-    check_valid<u64>("65535", 65535);
-    check_valid<u64>("65536", 65536);
-    check_valid<u64>("2147483647", 2147483647);
-    check_valid<u64>("2147483648", 2147483648ull);
-    check_valid<u64>("4294967295", 4294967295ull);
-    check_valid<u64>("4294967296", 4294967296ull);
-    check_valid<u64>("9223372036854775807", 9223372036854775807ull);
-    check_valid<u64>("9223372036854775808", 9223372036854775808ull);    
-    check_valid<u64>("18446744073709551615", 18446744073709551615ull);
-    check_error<u64>("18446744073709551616");
-    check_valid<u64>("-0", -0);
-    check_error<u64>("-1");
-    check_error<u64>("-127");
-    check_error<u64>("-128");
-    check_error<u64>("-255");
-    check_error<u64>("-256");
-    check_error<u64>("-32767");
-    check_error<u64>("-32768");
-    check_error<u64>("-65535");
-    check_error<u64>("-65536");
-    check_error<u64>("-2147483647");
-    check_error<u64>("-2147483648");
-    check_error<u64>("-4294967295");
-    check_error<u64>("-4294967296");
-    check_error<u64>("-9223372036854775807");
-    check_error<u64>("-9223372036854775808");    
-    check_error<u64>("-18446744073709551615");
-    check_error<u64>("-18446744073709551616");
-
-    check_valid<s64>("0", 0);
-    check_valid<s64>("1", 1);
-    check_valid<s64>("127", 127);
-    check_valid<s64>("128", 128);
-    check_valid<s64>("255", 255);
-    check_valid<s64>("256", 256);
-    check_valid<s64>("32767", 32767);
-    check_valid<s64>("32768", 32768);
-    check_valid<s64>("65535", 65535);
-    check_valid<s64>("65536", 65536);
-    check_valid<s64>("2147483647", 2147483647);
-    check_valid<s64>("2147483648", 2147483648ll);
-    check_valid<s64>("4294967295", 4294967295ll);
-    check_valid<s64>("4294967296", 4294967296ll);
-    check_valid<s64>("9223372036854775807", 9223372036854775807ll);
-    check_error<s64>("9223372036854775808");    
-    check_error<s64>("18446744073709551615");
-    check_error<s64>("18446744073709551616");
-    check_valid<s64>("-0", -0);
-    check_valid<s64>("-1", -1);
-    check_valid<s64>("-127", -127);
-    check_valid<s64>("-128", -128);
-    check_valid<s64>("-255", -255);
-    check_valid<s64>("-256", -256);
-    check_valid<s64>("-32767", -32767);
-    check_valid<s64>("-32768", -32768);
-    check_valid<s64>("-65535", -65535);
-    check_valid<s64>("-65536", -65536);
-    check_valid<s64>("-2147483647", -2147483647);
-    check_valid<s64>("-2147483648", -2147483648);
-    check_valid<s64>("-4294967295", -4294967295ll);
-    check_valid<s64>("-4294967296", -4294967296ll);
-    check_valid<s64>("-9223372036854775807", -9223372036854775807ll);
-    check_valid<s64>("-9223372036854775808", -9223372036854775808ull);    
-    check_error<s64>("-18446744073709551615");
-    check_error<s64>("-18446744073709551616");
-
-    
     check_valid<float>("0", 0.f);
     check_valid<float>("+0", 0.f);
     check_valid<float>("-0", -0.f);
@@ -1255,205 +998,281 @@ int main(int argc, char** argv) {
     check_error<float>("-nan");
     check_error<float>("-naN");
 
-    char const* tmp[] = {
-        "",
-        "+0188.0e-+20",
-        "+3188.",
-        "+3E88.0e-+20",
-        "+318..0e-+20",
-        "+",
-        "+3188.0",
-        "+3188.0e",
-        "+3188.0e-\x01",
-        "+-",
-        "+++++++++-\xff\xff+-\xe8++\x03+++",
-        "++20",
-        "0",
-        "E31;\x80G0e-+20",
-        "i%\x03\x05Q%\x05\x05{{{{",
-        "++++++718+s1P)",
-        "018",
-        "031N20",
-        "+3.18",
-        "++31",
-        "+++\x10+++++G+++",
-        "n\x02\x7f\u0017d",
-        "++++++++++++++++++4",
-        "E3",
-        "+++++++?B8\x02\u0010e-B70\x10",
-        "+318800e-++318800e-+",
-        "-8",
-        ".00",
-        "07.0\x10",
-        "+3188.1e-++++++++++++++++20",
-        "+0BQ8.11",
-        "+3188.0e-3206",
-        "+3188.0e-+-06",
-        "188e9",
-        "+3188e-+20101886",
-        "+3188.0188e-+201886",
-        "+318188e06",
-        "+3183188.0e8",
-        "118E8",
-        "+3188.0e32206",
-        "66666166666666666666",
-        "333333333333333333333331883188.0e-+188",
-        "-.",
-        "11188111111111111111111",
-        "+3188.0e+++++",
-        "+31777777777777777777777777777788.0e-+188206",
-        "+0e666666666666666666666666-+206",
-        "+3188.0e-+20660666666666666666666",
-        "18718818818718818",
-        "+3188.0e-320",
-        "+3188.0e+3",
-        "++0xG",
-        "e+++++++++++",
-        "1111111111111111111110e-+",
-        "0XX",
-        "0X",
-        "8888888888888888888888888888.",
-        "0000000000000000000000000000000002",
-        "3E3",
-        "+3188.2222222222222222220e",
-        "18888.2222222222222222220",
-        "+3188888888888888888.0e-1{0",
-        "+333333333333333333333333318810e-++318918860e-M",
-        "07.8\x10",
-        "07.00",
-        "+3E528",
-        "iniiiiiHG",
-        "9999999999999999999",
-        "+3188.0e8831885206",
-        "+378.0e-8888888885206",
-        "+3188.e-1881881886",
-        "+3188.0e-+-05",
-        "-.0e-+6666666666666666666666+\u001706",
-        "-38.0e66666",
-        "6666616666E666666666",
-        "0xxO188\xffV188\xff<TTTT\x1b",
-        "0x8o188\xffV188\xff<TTTT\x1b",
-        "0x8_188\xffV188\xff<TTTT\x1b",
-        "0x8\u007f188\xffV188\xff<TTTT\x1b",
-        "0x[O188\xffV188\xff<TTTT\x1b",
-        "0x8a188\xffV188\xff<TTTT\x1b",
-        "0xdO188\xffV188\xff<TTTT\x1b",
-        "0x\x7fO188\xffV188\xff<TTTT\x1b",
-        "0x[rTTTTTTTTTTTTTTTTTTTTTT<TTTT\x18",
-        "0x\u007fdF8J68J61",
-        "0x8CCCCCCCCCCC\"CO188\xffV188\xff<TTTT\x1b",
-        "0xCA1TTT\x1b",
-        "0xddddddV18d",
-        "0x8.0x@O18\u001b6<6166",
-        "0x.O1TTT",
-        "Na63",
-        "+3188.0e-327",
-        "+3188.0e13",
-        "+3188.2222222222222220220e18818",
-        "07000000000000000000000000",
-        "0X.^E7.Z188p",
-        "0X.{E7.Z188p",
-        "0X.18818188p0=",
-        "0X.\u007fE7.Z188p018;2",
-        "0X.`E7p0M",
-        "0X.IIIIII=",
-        "0X188A8E\".ZK8%p0",
-        "0X.KKKK8KKKKKKKK",
-        "0X.88\x7f\x7f\x7f\x7f\x7f\x7f\x7f\xff\u007f8p2",
-        "0XEEEEEEEEEEEDEEEEE6EJ.Z6EJ.Z1=1=",
-        "0Xa8800faaaaaaaaa00G",
-        "0X616E7E\xec.Z188p0=\u00042",
-        "iNfIiiiHG",
-        "iNfin\xe9iHG",
-        "iNfTiiiHG",
-        "iNfiiiiH",
-        "iNf",
-        "INFxiiiHG188",
-        "-378.0e-8888888885206",
-        "+113188188.0e-52",
-        "++13188188.0e-52",
-        "+313188111111111881811E118800611111188111111111881811E11111.0e-52",
-        "+3188.0e-+-15",
-        "+3188.0e-+-35",
-        "18e17",
-        "-666616666E666666666",
-        "666661618818661881861666E6666666666",
-        "6666666666666666616666E666666616",
-        "0x.O1[8\xffV188\xff<TTTT\x1b",
-        "NAn88.0e-+20",
-        "NAN",
-        "18818.011111111111111111111111e13",
-        "0X.EE000000000000000008\u007f8800=EE5",
-        "iNftyiiHG",
-        "iNftYiiHG",
-        "iNfiNIiHG",
-        "iNfiNiTHG",
-        "+3000000000000000000000061600188.0e-+-15",
-        "-66661666666666666666666666E667666666",
-        "0X.n188p0188pp0188p00A=",
-        "0X.n188p0188pP0188p0001",
-        "iNfiNitYG",
-        "iNfiNityG",
-        "+++++E718+s1P)",
-        "+88003131888008.0e-52",
-        "+8888003131882818281888.0e-00313003131882818281888.0",
-        "+88003131888003131882808281888.0e-5880031318882",
-        "+318831888888888888888888888888888888888.0e-++0.20",
-        ".1011111818811111118616111118811111181881111111861611111881111111111",
-        "-38888888888888888888888.0e66188",
-        "0Xa8800300faaaaaaaa00faaaaaaaaaa00G",
-        "666661618818661881861666E-666666666",
-        "6666666666666666616666E666666666666666666166616",
-        "+3000000000000000000000061600188.0e-+--5",
-        "---------------------------------------------------\xee",
-        "8e18",
-        "0X.ppppppppppppppppppppppppphpppppppppphdhhhhhhhhhhhhhhhhhpppppppppppppphpppppppppphhp\u00892",
-        "0X.paaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\u009daaaaaaaaap\u00892",
-        "-88003133131882818281888.0e-52180000000000000000000000000888.0e-52",
-        "000000000000000000000000000000000000000000000313100000000000000000000000d",
-        "E000000000000000000000000000000000000313100000000000000000000000d",
-        "-38888888818661881861666E-3183888888881666666",
-        "0XEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEDp0",
-        "0B.1",
-        "+3188.0e-------------------------------------------------+3188.0e-+",
-        "0X.EEkkkkkkkkkEEEEEEEEEEEE18EEEE88008EEEE8EEEEEEEEEEEEEEEEE4E8EEEEEEEEEEEEEEEEEEEEEEEE18EEEE880088@",
-        "+3000000000000000000000061600188.0e-+---",
-        "0xddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddV1@d",
-        "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "0xdddddddddddddbdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        "0X.8888888AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0118AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x7f\u00ffAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\xad-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------",
-        "0B.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111"
-    };
+#define check_all(s, _u8z,_u16z,_u32z,_u64z,_s8z,_s16z,_s32z,_s64z,_floatz,_doublez,_float2z,_double2z, v) \
+    check_code<u8>    (s, (u8)v,     _u8z    ); \
+    check_code<u16>   (s, (u16)v,    _u16z   ); \
+    check_code<u32>   (s, (u32)v,    _u32z   ); \
+    check_code<u64>   (s, (u64)v,    _u64z   ); \
+    check_code<s8>    (s, (s8)v,     _s8z    ); \
+    check_code<s16>   (s, (s16)v,    _s16z   ); \
+    check_code<s32>   (s, (s32)v,    _s32z   ); \
+    check_code<s64>   (s, (s64)v,    _s64z   ); \
+    check_code<float> (s, (float)v,  _floatz ); \
+    check_code<double>(s, (double)v, _doublez); \
+    check_code<float> (s, (float)v,  _float2z,  jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN); \
+    check_code<double>(s, (double)v, _double2z, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
 
-    for (s64 i = 0; i < sizeof(tmp) / sizeof(tmp[0]); ++i) {
+    check_all("0", 0,0,0,0,0,0,0,0,0,0,0,0, 0);
+    check_all("1", 0,0,0,0,0,0,0,0,0,0,0,0, 1);
+    check_all("127", 0,0,0,0,0,0,0,0,0,0,0,0, 127);
+    check_all("128", 0,0,0,0,4,0,0,0,0,0,0,0, 128);
+    check_all("255", 0,0,0,0,4,0,0,0,0,0,0,0, 255);
+    check_all("256", 4,0,0,0,4,0,0,0,0,0,0,0, 256);
+    check_all("32767", 4,0,0,0,4,0,0,0,0,0,0,0, 32767);
+    check_all("32768", 4,0,0,0,4,4,0,0,0,0,0,0, 32768);
+    check_all("65535", 4,0,0,0,4,4,0,0,0,0,0,0, 65535);
+    check_all("65536", 4,4,0,0,4,4,0,0,0,0,0,0, 65536);
+    check_all("2147483647", 4,4,0,0,4,4,0,0,0,0,0,0, 2147483647);
+    check_all("2147483648", 4,4,0,0,4,4,4,0,0,0,0,0, 2147483648);
+    check_all("4294967295", 4,4,0,0,4,4,4,0,0,0,0,0, 4294967295);
+    check_all("4294967296", 4,4,4,0,4,4,4,0,0,0,0,0, 4294967296ull);
+    check_all("9223372036854775807", 4,4,4,0,4,4,4,0,0,0,0,0, 9223372036854775807ull);
+    check_all("9223372036854775808", 4,4,4,0,4,4,4,4,0,0,0,0, 9223372036854775808ull);
+    check_all("18446744073709551615", 4,4,4,0,4,4,4,4,0,0,0,0, 18446744073709551615ull);
+    check_all("18446744073709551616", 4,4,4,4,4,4,4,4,0,0,0,0, 18446744073709551616.0);
+    check_all("-0", 0,0,0,0,0,0,0,0,0,0,0,0, -0.0);
+    check_all("-1", 3,3,3,3,0,0,0,0,0,0,0,0, -1);
+    check_all("-127", 3,3,3,3,0,0,0,0,0,0,0,0, -127);
+    check_all("-128", 3,3,3,3,0,0,0,0,0,0,0,0, -128);
+    check_all("-255", 3,3,3,3,3,0,0,0,0,0,0,0, -255);
+    check_all("-256", 3,3,3,3,3,0,0,0,0,0,0,0, -256);
+    check_all("-32767", 3,3,3,3,3,0,0,0,0,0,0,0, -32767);
+    check_all("-32768", 3,3,3,3,3,0,0,0,0,0,0,0, -32768);
+    check_all("-65535", 3,3,3,3,3,3,0,0,0,0,0,0, -65535);
+    check_all("-65536", 3,3,3,3,3,3,0,0,0,0,0,0, -65536);
+    check_all("-2147483647", 3,3,3,3,3,3,0,0,0,0,0,0, -2147483647);
+    check_all("-2147483648", 3,3,3,3,3,3,0,0,0,0,0,0, -2147483648);
+    check_all("-4294967295", 3,3,3,3,3,3,3,0,0,0,0,0, -4294967295);
+    check_all("-4294967296", 3,3,3,3,3,3,3,0,0,0,0,0, -4294967296);
+    check_all("-9223372036854775807", 3,3,3,3,3,3,3,0,0,0,0,0, -9223372036854775807ll);
+    check_all("-9223372036854775808", 3,3,3,3,3,3,3,0,0,0,0,0, -9223372036854775808.0);
+    check_all("-18446744073709551615", 3,3,3,3,3,3,3,3,0,0,0,0, -18446744073709551615.0);
+    check_all("-18446744073709551616", 3,3,3,3,3,3,3,3,0,0,0,0, -18446744073709551616.0);
+
+    // The following testcases were generated using afl (http://lcamtuf.coredump.cx/afl/). They are
+    // mostly regression tests (I fixed all the crashes that were discovered, of course). They
+    // should cover just about everything.
+    check_all("", 1,1,1,1,1,1,1,1,1,1,1,1, 0);
+    check_all("+0188.0e-+20", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+3188.", 4,0,0,0,4,0,0,0,0,0,0,0, 3188);
+    check_all("+3E88.0e-+20", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+318..0e-+20", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+", 5,5,5,5,5,5,5,5,5,5,5,5, 0);
+    check_all("+3188.0", 4,0,0,0,4,0,0,0,0,0,0,0, 3188);
+    check_all("+3188.0e", 5,5,5,5,5,5,5,5,5,5,5,5, 0);
+    check_all("+3188.0e-\x01", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+-", 5,5,5,5,5,5,5,5,5,5,5,5, 0);
+    check_all("+++++++++-\xff\xff+-\xe8++\x03+++", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("++20", 0,0,0,0,0,0,0,0,0,0,0,0, 20);
+    check_all("0", 0,0,0,0,0,0,0,0,0,0,0,0, 0);
+    check_all("E31;\x80G0e-+20", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("i%\x03\x05Q%\x05\x05{{{{", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("++++++718+s1P)", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("018", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("031N20", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+3.18", 8,8,8,8,8,8,8,8,0,0,0,0, 3.180000e+00);
+    check_all("++31", 0,0,0,0,0,0,0,0,0,0,0,0, 31);
+    check_all("+++\x10+++++G+++", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("n\x02\x7f\u0017d", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("++++++++++++++++++4", 0,0,0,0,0,0,0,0,0,0,0,0, 4);
+    check_all("E3", 0,0,0,0,0,0,0,0,0,0,0,0, 0);
+    check_all("+++++++?B8\x02\u0010e-B70\x10", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+318800e-++318800e-+", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("-8", 3,3,3,3,0,0,0,0,0,0,0,0, -8);
+    check_all(".00", 0,0,0,0,0,0,0,0,0,0,0,0, 0);
+    check_all("07.0\x10", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+3188.1e-++++++++++++++++20", 8,8,8,8,8,8,8,8,0,0,0,0, 3.188100e-17);
+    check_all("+0BQ8.11", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+3188.0e-3206", 8,8,8,8,8,8,8,8,0,0,0,0, 0.000000e+00);
+    check_all("+3188.0e-+-06", 4,4,0,0,4,4,4,0,0,0,0,0, 3188000000);
+    check_all("188e9", 4,4,4,0,4,4,4,0,0,0,0,0, 188000000000);
+    check_all("+3188e-+20101886", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+    check_all("+3188.0188e-+201886", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+    check_all("+318188e06", 4,4,4,0,4,4,4,0,0,0,0,0, 318188000000);
+    check_all("+3183188.0e8", 4,4,4,0,4,4,4,0,0,0,0,0, 318318800000000);
+    check_all("118E8", 4,4,4,0,4,4,4,0,0,0,0,0, 11800000000);
+    check_all("+3188.0e32206", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("66666166666666666666", 4,4,4,4,4,4,4,4,0,0,0,0, 6.666616666666666e+19);
+    check_all("333333333333333333333331883188.0e-+188", 4,4,4,4,4,4,4,4,0,0,0,0, 3.33333333333333333333331883188e-159);
+    check_all("-.", 0,0,0,0,0,0,0,0,0,0,0,0, -0.);
+    check_all("11188111111111111111111", 4,4,4,4,4,4,4,4,0,0,0,0, 1.1188111111111111111111e+22);
+    check_all("+3188.0e+++++", 5,5,5,5,5,5,5,5,5,5,5,5, 0);
+    check_all("+31777777777777777777777777777788.0e-+188206", 4,4,4,4,4,4,4,4,6,6,6,6, 0);
+    check_all("+0e666666666666666666666666-+206", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+    check_all("+3188.0e-+20660666666666666666666", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("18718818818718818", 4,4,4,0,4,4,4,0,0,0,0,0, 18718818818718818ull);
+    check_all("+3188.0e-320", 8,8,8,8,8,8,8,8,0,0,0,0, 3.188000e-317);
+    check_all("+3188.0e+3", 4,4,0,0,4,4,0,0,0,0,0,0, 3188000);
+    check_all("++0xG", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("e+++++++++++", 5,5,5,5,5,5,5,5,5,5,5,5, 0);
+    check_all("1111111111111111111110e-+", 4,4,4,4,4,4,4,4,5,5,5,5, 0);
+    check_all("0XX", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X", 5,5,5,5,5,5,5,5,5,5,5,5, 0);
+    check_all("8888888888888888888888888888.", 4,4,4,4,4,4,4,4,0,0,0,0, 8.888888888888888e+27);
+    check_all("0000000000000000000000000000000002", 0,0,0,0,0,0,0,0,0,0,0,0, 2);
+    check_all("3E3", 4,0,0,0,4,0,0,0,0,0,0,0, 3000);
+    check_all("+3188.2222222222222222220e", 8,8,8,8,8,8,8,8,5,5,5,5, 0);
+    check_all("18888.2222222222222222220", 8,8,8,8,8,8,8,8,0,0,0,0, 1.88882222222222222e+04);
+    check_all("+3188888888888888888.0e-1{0", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+333333333333333333333333318810e-++318918860e-M", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("07.8\x10", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("07.00", 0,0,0,0,0,0,0,0,0,0,0,0, 7);
+    check_all("+3E528", 8,8,8,8,8,8,8,8,4,4,4,4, 0);
+    check_all("iniiiiiHG", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("9999999999999999999", 4,4,4,0,4,4,4,4,0,0,0,0, 9999999999999999999ull);
+    check_all("+3188.0e8831885206", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+    check_all("+378.0e-8888888885206", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("+3188.e-1881881886", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+    check_all("+3188.0e-+-05", 4,4,0,0,4,4,0,0,0,0,0,0, 318800000);
+    check_all("-.0e-+6666666666666666666666+\u001706", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("-38.0e66666", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("6666616666E666666666", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("0xxO188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x8o188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x8_188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x8\u007f188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x[O188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x8a188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0xdO188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x\x7fO188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x[rTTTTTTTTTTTTTTTTTTTTTT<TTTT\x18", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x\u007fdF8J68J61", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x8CCCCCCCCCCC\"CO188\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0xCA1TTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0xddddddV18d", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x8.0x@O18\u001b6<6166", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0x.O1TTT", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("Na63", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+3188.0e-327", 8,8,8,8,8,8,8,8,0,0,0,0, 4.940656e-324);
+    check_all("+3188.0e13", 4,4,4,0,4,4,4,0,0,0,0,0, 31880000000000000ull);
+    check_all("+3188.2222222222222220220e18818", 8,8,8,8,8,8,8,8,4,4,4,4, 0);
+    check_all("07000000000000000000000000", 4,4,4,4,4,4,4,4,0,0,0,0, 33056565380087516495872.);
+    check_all("0X.^E7.Z188p", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.{E7.Z188p", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.18818188p0=", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.\u007fE7.Z188p018;2", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.`E7p0M", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.IIIIII=", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X188A8E\".ZK8%p0", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.KKKK8KKKKKKKK", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.AAAA8AAAAAAAA", 8,8,8,8,8,8,8,8,0,0,0,0, 0.66666475931803370614);
+    check_all("0X.88\x7f\x7f\x7f\x7f\x7f\x7f\x7f\xff\u007f8p2", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0XEEEEEEEEEEEDEEEEE6EJ.Z6EJ.Z1=1=", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("0Xa8800faaaaaaaaa00G", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("0X616E7E\xec.Z188p0=\u00042", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("iNfIiiiHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNfin\xe9iHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNfTiiiHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNfiiiiH", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNf", 2,2,2,2,2,2,2,2,2,2,0,0, INFINITY);
+    check_all("INFxiiiHG188", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("-378.0e-8888888885206", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("+113188188.0e-52", 8,8,8,8,8,8,8,8,0,0,0,0, 113188188e-52);
+    check_all("++13188188.0e-52", 8,8,8,8,8,8,8,8,0,0,0,0, 13188188e-52);
+    check_all("+313188111111111881811E118800611111188111111111881811E11111.0e-52", 4,4,4,4,4,4,4,4,6,6,6,6, 0);
+    check_all("+3188.0e-+-15", 4,4,4,0,4,4,4,0,0,0,0,0, 3188000000000000000ull);
+    check_all("+3188.0e-+-35", 8,8,8,8,8,8,8,8,0,0,0,0, 3.188000e+38);
+    check_all("18e17", 4,4,4,0,4,4,4,0,0,0,0,0, 1800000000000000000ull);
+    check_all("-666616666E666666666", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("666661618818661881861666E6666666666", 4,4,4,4,4,4,4,4,6,6,6,6, 0);
+    check_all("6666666666666666616666E666666616", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("0x.O1[8\xffV188\xff<TTTT\x1b", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("NAn88.0e-+20", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("NAN", 2,2,2,2,2,2,2,2,2,2,0,0, NAN);
+    check_all("18818.011111111111111111111111e13", 8,8,8,8,8,8,8,8,0,0,0,0, 18818.011111111111111111111111e13);
+    check_all("0X.EE000000000000000008\u007f8800=EE5", 8,8,8,8,8,8,8,8,2,2,2,2, 0);
+    check_all("iNftyiiHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNftYiiHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNfiNIiHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNfiNiTHG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("+3000000000000000000000061600188.0e-+-15", 4,4,4,4,4,4,4,4,4,0,4,0, 3.000000e+45);
+    check_all("-66661666666666666666666666E667666666", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("0X.n188p0188pp0188p00A=", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.n188p0188pP0188p0001", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.d188f0188ff0188f000=", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.d188f0188fF0188f0001", 8,8,8,8,8,8,8,8,0,0,0,0, 0.81849575614609226815);
+    check_all("iNfiNitYG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("iNfiNityG", 2,2,2,2,2,2,2,2,2,2,7,7, 0);
+    check_all("+++++E718+s1P)", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("+88003141988008.0e-52", 8,8,8,8,8,8,8,8,0,0,0,0, 88003141988008e-52);
+    check_all("+8888003131882818281888.0e-00313003131882818281888.0", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("+88003131888003131882808281888.0e-5880031318882", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("+318831888888888888888888888888888888888.0e-++0.20", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all(".1011111818811111118616111118811111181881111111861611111881111111111", 8,8,8,8,8,8,8,8,0,0,0,0, 0.10111118188111111);
+    check_all("-38888888888888888888888.0e66188", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("0Xa8800300faaaaaaaa00faaaaaaaaaa00G", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("666661618818661881861666E-666666666", 4,4,4,4,4,4,4,4,6,6,6,6, 0);
+    check_all("6666666666666666616666E666666666666666666166616", 4,4,4,4,4,4,4,4,6,6,6,6, 0);
+    check_all("+3000000000000000000000061600188.0e-+--5", 4,4,4,4,4,4,4,4,0,0,0,0, 3e25);
+    check_all("---------------------------------------------------\xee", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("8e18", 4,4,4,0,4,4,4,0,0,0,0,0, 8000000000000000000);
+    check_all("0X.ppppppppppppppppppppppppphpppppppppphdhhhhhhhhhhhhhhhhhpppppppppppppphpppppppppphhp\u00892", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.fffffffffffffffffffffffffhffffffffffhdhhhhhhhhhhhhhhhhhffffffffffffffhffffffffffhhf\u00892", 8,8,8,8,8,8,8,8,2,2,2,2, 0);
+    check_all("0X.paaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\x9d\u009daaaaaaaaap\u00892", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+
+    // Some of the strings are quite long, compress them
+    #define A "AAAAAAAAAAAAAAAAAAAA"
+    #define D "dddddddddddddddddddd"
+    #define E "EEEEEEEEEEE"
+    #define M "--------------------"
+    #define I "11111111111111111111"
+    
+    check_all("-88003133131882818281888.0e-52180000000000000000000000000888.0e-52", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("000000000000000000000000000000000000000000000313100000000000000000000000d", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("E000000000000000000000000000000000000313100000000000000000000000d", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+    check_all("-38888888818661881861666E-3183888888881666666", 3,3,3,3,3,3,3,3,3,3,3,3, 0);
+    check_all("0X" E E E E E"EEEEEEEEEEDp0", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("0B.1", 8,8,8,8,8,8,8,8,0,0,0,0, 5.000000e-01);
+    check_all("+3188.0e" M M"---------+3188.0e-+", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.EEkkkkkkkkk" E"E18EEEE88008EEEE8" E"EEEEEE4E8" E E"EE18EEEE880088@", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0X.EEaaaaaaaaa" E"E18EEEE88008EEEE8" E"EEEEEE4E8" E E"EE18EEEE880088@", 8,8,8,8,8,8,8,8,2,2,2,2, 0);
+    check_all("+3000000000000000000000061600188.0e-+---", 4,4,4,4,4,4,4,4,5,5,5,5, 0);
+    check_all("0x" D D D D D D D D D D D D D D D D D D D D D D"ddddddddddV1@d", 4,4,4,4,4,4,4,4,2,2,2,2, 0);
+    check_all("0x" D D D D D D D D D D D D"dddddddddddddddd", 4,4,4,4,4,4,4,4,4,0,4,0, 1.5580007168806738e+308);
+    check_all("0xdddddddddddddb" D D D D D D D D D D D D"dd", 4,4,4,4,4,4,4,4,4,0,4,0, 1.5580007168806736e+308);
+    check_all("0X.8888888" A A"AAAAAAAAAAAAAAK" A A A A A A A A A A A"AAAAAAAAAAAAA7" A A A A A A A A A A A"AAAAAAAAAAAAAAA0118" A A A A A A A A A A A A A A A A A A A A A A A A A A"AA\x7f\u00ff" A"AAAAAAA", 8,8,8,8,8,8,8,8,2,2,2,2, 0);
+    check_all("" M M M M M M M M"----------------\xad" M M M M M M M M M M M M M M M M"---------------", 2,2,2,2,2,2,2,2,2,2,2,2, 0);
+    check_all("0B." I I I I I I I I I I I I I I I I I I I"11111111", 8,8,8,8,8,8,8,8,0,0,0,0, 1);
+    check_all("8e8888", 4,4,4,4,4,4,4,4,4,4,4,4, 0);
+    check_all("273188.0e-272222", 6,6,6,6,6,6,6,6,6,6,6,6, 0);
+
+    // In case there are a lot of new test-cases to add to the above, you can add them to the array
+    // and run the program. The results of executing the code will be output. Of course, there is no
+    // guaruantee that those results are actually correct, so you will have to verify them manually.
+    char const* cases_to_generate[] = { };
+    for (s64 i = 0; i < (s64)(sizeof(cases_to_generate) / sizeof(cases_to_generate[0])); ++i) {
         u8 _u8; u16 _u16; u32 _u32; u64 _u64;
         s8 _s8; s16 _s16; s32 _s32; s64 _s64 = 0;
         float _float; double _double = 0;
-        Array_t<u8> s {(u8*)tmp[i], (s64)strlen(tmp[i])};
-        u16 _floatc = jup_stox(s, &_float);
-        u16 _doublec = jup_stox(s, &_double);
-        u16 _floatc2 = jup_stox(s, &_float, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
+        Array_t<u8> s {(u8*)cases_to_generate[i], (s64)strlen(cases_to_generate[i])};
+        u16 _floatc   = jup_stox(s, &_float);
+        u16 _doublec  = jup_stox(s, &_double);
+        u16 _floatc2  = jup_stox(s, &_float, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
         u16 _doublec2 = jup_stox(s, &_double, jup_sto::ALLOW_INFINITY | jup_sto::ALLOW_NAN);
-        u16 _u8c = jup_stox(s, &_u8);
-        u16 _u16c = jup_stox(s, &_u16);
-        u16 _u32c = jup_stox(s, &_u32);
-        u16 _u64c = jup_stox(s, &_u64);
-        u16 _s8c = jup_stox(s, &_s8);
-        u16 _s16c = jup_stox(s, &_s16);
-        u16 _s32c = jup_stox(s, &_s32);
-        u16 _s64c = jup_stox(s, &_s64);
-        printf("%hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %llu %.16e\n",
-        _u8c, _u16c, _u32c, _u64c, _s8c , _s16c, _s32c, _s64c, _floatc, _doublec, _floatc2, _doublec2, _s64, _double);
+        u16 _u8c      = jup_stox(s, &_u8);
+        u16 _u16c     = jup_stox(s, &_u16);
+        u16 _u32c     = jup_stox(s, &_u32);
+        u16 _u64c     = jup_stox(s, &_u64);
+        u16 _s8c      = jup_stox(s, &_s8);
+        u16 _s16c     = jup_stox(s, &_s16);
+        u16 _s32c     = jup_stox(s, &_s32);
+        u16 _s64c     = jup_stox(s, &_s64);
+        printf("%hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu %hu ",
+        _u8c, _u16c, _u32c, _u64c, _s8c , _s16c, _s32c, _s64c, _floatc, _doublec, _floatc2, _doublec2);
+        if (_s64c == 0) {
+            printf("%lld.0\n", _s64);
+        } else if (_u64c == 0) {
+            printf("%llu.0\n", _u64);
+        } else if (_doublec2 == 0) {
+            printf("%.15e\n", _double);
+        } else {
+            printf("0\n");
+        }
     }
-    exit(0);
+    if (sizeof(cases_to_generate)) exit(0);
         
-        
-    // The following were found by the afl fuzzer,
-    check_error<u8>("8e8888");
-    check_error<u8>("273188.0e-272222");
-    
-    puts("Starting random testing (this will never stop)...");
+
+    puts("Starting random testing for off-by-one errors (this will never stop)...");
     // Now we compare with the runtime library
 
     Counter f_printf_uni, f_printf_den, f_iostream_uni, f_iostream_den;
@@ -1472,7 +1291,6 @@ int main(int argc, char** argv) {
     for (u64 iter = 0;; ++iter) {
         if (!((iter-1)&iter) and iter) {
             printf("Iteration %lld (rand_state = 0x%llx)...\n", iter, rand_state);
-            printf("  off-by-one counts\n");
             printf("  float,  printf,   uniform   %6lld / %10lld (%.5f%%)\n", O(f_printf_uni));
             printf("  float,  printf,   denormal  %6lld / %10lld (%.5f%%)\n", O(f_printf_den));
             printf("  float,  iostream, uniform   %6lld / %10lld (%.5f%%)\n", O(f_iostream_uni));
@@ -1548,6 +1366,7 @@ int main(int argc, char** argv) {
 
         // Now let's generate the strings at random
         for (s64 i = 0; i < 100000; ++i) {
+            // This only generates base-10 strings, as they are the only ones where precision matters.
             char* p = buf;
             u64 r = rand_get();
             if (r>>0 & 1) *p++ = '-';
