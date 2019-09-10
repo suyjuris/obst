@@ -158,6 +158,7 @@ struct Bdd {
 struct Snapshot {
     u64 offset_bdd;
     u64 offset_context;
+    u64 offset_levels;
 };
 
 struct Bdd_lookup {
@@ -177,11 +178,13 @@ struct Bdd_store {
     Array_dyn<u32> snapshot_marked; // A list of nodes flagged as marked. Resets when taking a snapshot!
     Array_dyn<u32> snapshot_marked_e; // A list of edges (!) flagged as marked. Resets when taking a snapshot!
     Array_dyn<u8>  snapshot_context; // A stack of textual descriptions of the current state of the algorithm. Separated by 0.
+    Array_dyn<u8>  snapshot_levels; // A list of level names, separated by 0.
 
     // This stores the snapshots.
     Array_dyn<Snapshot> snapshots; // This just contains offsets into the other two arrays. There is always a dummy element at the end.
     Array_dyn<Bdd> snapshot_data_bdd; // Nodes contained in the snapshot
     Array_dyn<u8> snapshot_data_context; // Context strings in the snapshot
+    Array_dyn<u8> snapshot_data_levels; // Level name strings in the snapshot
 
     // Data for generating the names of the Bdds
     Array_dyn<s64> names; // Offsets into name_data, with a dummy element at the end. First name has length 0
@@ -217,9 +220,11 @@ void bdd_store_init(Bdd_store* store) {
     store->snapshot_marked.size = 0;
     store->snapshot_marked_e.size = 0;
     store->snapshot_context.size = 0;
+    store->snapshot_levels.size = 0;
     store->snapshots.size = 0;
     store->snapshot_data_bdd.size = 0;
     store->snapshot_data_context.size = 0;
+    store->snapshot_data_levels.size = 0;
     store->names.size = 0;
     store->name_data.size = 0;
     store->name_next = 0;
@@ -232,7 +237,7 @@ void bdd_store_init(Bdd_store* store) {
     array_push_back(&store->bdd_data, {1, 1, 0, 0, 1, 2, 0});
 
     // Dummy element
-    array_push_back(&store->snapshots, {0, 0});
+    array_push_back(&store->snapshots, {0, 0, 0});
 
     // Initial names for T and F as well as dummy element
     array_append(&store->names, {0ll, 0ll, 1ll, 2ll});
@@ -561,7 +566,7 @@ void context_pop(Bdd_store* store) {
 // subscripts. Finally, some of the labels are written in a smaller font, so that they can be
 // wrapped into two lines. The small characters are mapped in exactly the same fashion, but with
 // their high-bit set.
-//  Finally, the bytes are then mapped to indices into the texture in a simple fashio, we map
+//  Finally, the bytes are then mapped to indices into the texture in a simple manner, we map
 // [22,127) to [0,105), and then 128 | [22,127) to 105 + [0,105).
 
 constexpr s64 opengl_bddlabel_index_size = 210; // Total number of slots in the texture
@@ -783,8 +788,9 @@ void take_snapshot(Bdd_store* store) {
         array_push_back(&store->snapshot_data_bdd, store->bdd_data[i]);
     }
     array_append(&store->snapshot_data_context, store->snapshot_context);
+    array_append(&store->snapshot_data_levels, store->snapshot_levels);
     // Commit the snapshot
-    array_push_back(&store->snapshots, {(u64)store->snapshot_data_bdd.size, (u64)store->snapshot_data_context.size});
+    array_push_back(&store->snapshots, {(u64)store->snapshot_data_bdd.size, (u64)store->snapshot_data_context.size, (u64)store->snapshot_data_levels.size});
 
     // Reset the marked nodes
     store->snapshot_marked.size = 0;
@@ -1348,6 +1354,11 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         array_push_back(&store->snapshot_parents, bdd_temp.id);
 
         levels_total = levels.size;
+
+        for (s64 i = levels.size-1; i >= 0; --i) {
+            array_printf(&store->snapshot_levels, "bit %d", (int)levels[i]);
+            array_push_back(&store->snapshot_levels, (u8)0);
+        }
     } else {
         bdd_temp = store->bdd_data[bdd];
         context_append(store, "Processing sublist ");
@@ -1521,6 +1532,7 @@ u32 bdd_from_list_stepwise(Bdd_store* store, Array_t<u64> numbers, Array_t<u8> l
         store->snapshot_parents[store->snapshot_parents.size-1] = bdd_final;
         --store->snapshot_cur_node.size;
         context_append(store, "Done.");
+        store->snapshot_levels.size = 0;
         take_snapshot(store);
         context_pop(store);
         context_pop(store);
@@ -2572,6 +2584,16 @@ u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id,
 
         bdd_create_inplace(store, &bdd_temp);
         array_push_back(&store->snapshot_parents, bdd_temp.id);
+
+        for (s64 i_it = fstore->order_var.size - 1; i_it >= 0; --i_it) {
+            s64 i = fstore->order_var[i_it];
+            auto name = array_subarray(fstore->var_names, fstore->vars[i], fstore->vars[i+1]);
+            for (u8 c: name) {
+                u8 cc = i > 1 and '0' <= c and c <= '9' ? (c-'0'+22) : c;
+                array_push_back(&store->snapshot_levels, cc);
+            }
+            array_push_back(&store->snapshot_levels, (u8)0);
+        }
     } else {
         bdd_temp = store->bdd_data[bdd];
         context_append(store, "Processing subformula ");
@@ -2680,6 +2702,7 @@ u32 bdd_from_formula_stepwise(Bdd_store* store, Formula_store* fstore, s64 f_id,
         store->snapshot_parents[store->snapshot_parents.size-1] = bdd_final;
         --store->snapshot_cur_node.size;
         context_append(store, "Done.");
+        store->snapshot_levels = 0;
         take_snapshot(store);
         context_pop(store);
         context_pop(store);
@@ -4355,6 +4378,23 @@ void opengl_bdd_text_round(Opengl_context* context, Bdd_store* store, Bdd_attr* 
     a->font_y2 += frac((y2 - context->origin_y) * context->scale) / context->scale;
 }
 
+// Helper function with same arguments as opengl_draw_text, but draws the text pixel aligned
+void opengl_draw_text_pixel(
+    Opengl_context* context, float x, float y, Array_t<u8> text,
+    float size, float alpha, float align
+) {
+    float x1, y1;
+    opengl_draw_text(context, x, y, text, size, alpha, align, false, &x1, &y1);
+    
+    auto frac = [](float f) { return std::round(f) - f; };
+    
+    x += frac((x1 - context->origin_x) * context->scale) / context->scale;
+    y += frac((y1 - context->origin_y) * context->scale) / context->scale;
+
+    opengl_draw_text(context, x, y, text, size, alpha, align);
+}
+
+
 // Calculates the length of the quadratic spline with control points p0, p1 and p2 using numerical
 // integration. This is included for reference only, the other code uses the closed form solution
 // instead.
@@ -4960,12 +5000,15 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
 #ifndef OBST_DBG_SHOW_FORCE_LAYOUT
     auto bdds0 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame  ].offset_bdd, store.snapshots[frame+1].offset_bdd);
     auto bdds1 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame+1].offset_bdd, store.snapshots[frame+2].offset_bdd);
+    auto levels0 = array_subarray(store.snapshot_data_levels, store.snapshots[frame  ].offset_levels, store.snapshots[frame+1].offset_levels);
+    auto levels1 = array_subarray(store.snapshot_data_levels, store.snapshots[frame+1].offset_levels, store.snapshots[frame+2].offset_levels);
 #else
     // For the debug view, we always want to show the last frame
     s64 frame_bdds = store.snapshots.size-2;
-    auto bdds0 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame_bdds].offset_bdd,
-        store.snapshots[frame_bdds+1].offset_bdd);
+    auto bdds0 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame_bdds].offset_bdd, store.snapshots[frame_bdds+1].offset_bdd);
     auto bdds1 = bdds0;
+    Array_t<u8> levels0 = {nullptr, (u8)0};
+    auto levels1 = levels0;
 #endif
     
     for (u32 i0 = 0; i0 < bdds0.size; ++i0) { id_map0[bdds0[i0].id] = i0; }
@@ -5013,7 +5056,6 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
     };
     bdd_highlight_flag(bdds0, id_map0, highlight_bdd);
     bdd_highlight_flag(bdds1, id_map1, highlight_bdd);
-
     
     // This returns the base attributes of a bdd from the given layout and Bdd for a specific
     // animation frame.
@@ -5179,6 +5221,25 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         opengl_draw_text_bdd(context, &store, i, i.rx / param.node_radius);
     }
 
+    {s64 i0 = 0, i1 = 0, last0 = 0, last1 = 0, level = 0;
+    while (i0 < levels0.size or i1 < levels1.size) {
+        while (i0 < levels0.size and levels0[i0++]);
+        while (i1 < levels1.size and levels1[i1++]);
+
+        auto str0 = array_subarray(levels0, last0, i0 - (i0 > last0));
+        auto str1 = array_subarray(levels1, last1, i1 - (i1 > last1));
+
+        auto str = t < 0.5f ? str0 : str1;
+        float fac = array_equal(str0, str1) ? 1.f : std::abs(2.f * t - 1.f);
+
+        float font_size = context->font_size_max;
+        opengl_draw_text_pixel(context, -0.8f, (float)level + 0.5f, str, font_size, 0.7f * fac, -1);
+
+        last0 = i0;
+        last1 = i1;
+        ++level;
+    }}
+    
     // Edge ids are just the parent and then one bit of edge type.
     for (s64 i = 0; i+1 < layouts[frame].edges.size; ++i) {
         Edge edge = layouts[frame].edges[i];

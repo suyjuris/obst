@@ -244,7 +244,7 @@ Array_t<T> array_subarray(Array_t<T> arr, s64 start, s64 end) {
 template <typename... Args>
 void array_printf(Array_dyn<u8>* arr, char const* fmt, Args... args) {
     assert(arr);
-    array_reserve(arr, snprintf(0, 0, fmt, args...)+1);
+    array_reserve(arr, arr->size + snprintf(0, 0, fmt, args...)+1);
     arr->size += snprintf((char*)arr->end(), arr->capacity - arr->size, fmt, args...);
 }
 void array_printf(Array_dyn<u8>* arr, char const* str) {
