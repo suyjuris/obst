@@ -132,20 +132,24 @@ u8 parse_int_list(Array_dyn<s64>* into, Array_t<u8> str, s64 base) {
 // This represents the nodes of the graph. (In the graph sense, so no positions and such.)
 struct Bdd {
     // Which flags we allow
-    enum Bdd_constants: u8 {
+    enum Bdd_constants: u16 {
         NONE = 0,
         TEMPORARY = 1,    // These nodes are created during the execution of a stepwise algorithm to illustrate the current state to the puny humans watching it. They are not subject to deduplication and are either deleted or finalised using bdd_finalize.
         CURRENT = 2,      // The active node the algorithm is considering. Drawn in red.
         MARKED = 4,       // Some nodes are relevant to the current operation and will be marked by the algorithm. Drawn in green.
         MARKED_E0 = 8,    // Sometimes, we need even more colours. This corresponds to whether the edge to child0 is marked.
         MARKED_E1 = 16,   // Same, but for child1.
-        COSMETIC = CURRENT | MARKED | MARKED_E0 | MARKED_E1, // Used to reset the cosmetic flags which are cleared after the snapshot is taken.
-        INTERMEDIATE = 32 // These nodes are used by the layout algorithm to deal with edges spanning multiple layers. They exist just in the imagination of the layout algorithm and are not drawn anywhere.
+        FAINT_BDD = 32,   // Draw node semi-transparent. Only set during layout_frame_draw due to highlighting.
+        FAINT_E0 = 64,    // Draw edge to child0 semi-transparent. Only set during layout_frame_draw due to highlighting.
+        FAINT_E1 = 128,   // Same, but for child1.
+        FAINT = FAINT_BDD | FAINT_E0 | FAINT_E1, // Used to reset the faint flags
+        COSMETIC = CURRENT | MARKED | MARKED_E0 | MARKED_E1 | FAINT, // Used to reset the cosmetic flags which are cleared after the snapshot is taken.
+        INTERMEDIATE = 256 // These nodes are used by the layout algorithm to deal with edges spanning multiple layers. They exist just in the imagination of the layout algorithm and are not drawn anywhere.
     };
 
     u32 child0 = 0, child1 = 0; // child0 is the false-edge, child1 the true-edge.
     u8 level = 0;
-    u8 flags = 0;
+    u16 flags = 0;
     u32 id = 0; // 0 is F, the false-node, and 1 is T, the true-node
     u32 name = 0; // Index into Bdd_store::names
     u32 creation = 0; // Index into Bdd_store::creations
@@ -3623,6 +3627,7 @@ struct Draw_param {
     float arrow_size = 0.1f; // Size of an arrow from the tip to the base
     float edge_point_merge = 0.05f; // How far apart to points on an edge can be in terms of y-axis and still be considered the same for linear interpolation
     float font_frac = 0.9f; // Ratio between font size and node y radius (font_size = ry * font_frac)
+    float faintness = 0.67f; // How transparent faint nodes are (during highlighting)
 };
 
 // Data needed to draw a bdd
@@ -3636,8 +3641,11 @@ struct Bdd_attr {
     u8 fill[4]   = {}; // Color to fill the area, in RGBA
     float mark_child0 = 0.f; // How much the child0 edge is marked
     float mark_child1 = 0.f; // How much the child1 edge is marked
+    float faint_child0 = 0.f; // How much the child0 edge is transparent
+    float faint_child1 = 0.f; // How much the child1 edge is transparent
     u32 name = 0; // Which label to draw.
     float name_alpha = 1.f;
+    bool draw = true; // Whether to draw the node at all
 };
 
 // Keeps the necessary data to manage Opengl rendering
@@ -4676,7 +4684,7 @@ void opengl_frame_init(Opengl_context* context) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glDepthFunc(GL_LEQUAL);
+    glDepthFunc(GL_LESS);
     
     glActiveTexture(GL_TEXTURE0);
     
@@ -4907,7 +4915,7 @@ void layout_render(Array_t<Bdd_layout>* layouts, float* max_x, float* max_y, s64
 }
 
 // Interpolates and draws the frame at time using the data from layouts and store.
-void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd_store store, float time) {
+void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd_store store, float time, u32 highlight_bdd) {
     if (time <= 0.f) time = 0.f;
     s64 frame = (s64)time;
     float t = time - (float)frame;
@@ -4947,6 +4955,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
     
     array_resize(&context->buf_attr_cur, store.bdd_data.size);
     Array_t<Bdd_attr> attr_cur = context->buf_attr_cur;
+    memset(attr_cur.data, 0, attr_cur.size * sizeof(Bdd_attr));
 
 #ifndef OBST_DBG_SHOW_FORCE_LAYOUT
     auto bdds0 = array_subarray(store.snapshot_data_bdd, store.snapshots[frame  ].offset_bdd, store.snapshots[frame+1].offset_bdd);
@@ -4980,6 +4989,32 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         a0[3] = (u8)((1.f-t) * (float)a0[3] + t * (float)a1[3]);
     };
 
+    // Set the flags for highlighting
+    auto bdd_highlight_flag = [](Array_t<Bdd> bdds, Array_t<u32> id_map, u32 bdd_high) {
+        for (Bdd& bdd: bdds) bdd.flags &= ~Bdd::FAINT;
+        
+        if (bdd_high == -1 or id_map[bdd_high] == -1) return;
+        Bdd high = bdds[id_map[bdd_high]];
+        
+        for (Bdd& i: bdds) {
+            if (i.id == bdd_high) {
+                // nothing
+            } else if (i.child0 == bdd_high) {
+                i.flags |= Bdd::FAINT_E1;
+            } else if (i.child1 == bdd_high) {
+                i.flags |= Bdd::FAINT_E0;
+            } else if (high.child0 == i.id or high.child1 == i.id) {
+                i.flags |= Bdd::FAINT_E0 | Bdd::FAINT_E1;
+            } else {
+                i.flags |= Bdd::FAINT;
+            }
+        }
+
+    };
+    bdd_highlight_flag(bdds0, id_map0, highlight_bdd);
+    bdd_highlight_flag(bdds1, id_map1, highlight_bdd);
+
+    
     // This returns the base attributes of a bdd from the given layout and Bdd for a specific
     // animation frame.
     auto bdd_attr_get = [param, context, &store, &color_set, &color_inter](Bdd_layout layout, Bdd bdd, Array_t<u32> id_map) {
@@ -5016,7 +5051,20 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         if (bdd.flags & Bdd::MARKED_E1) {
             a.mark_child1 = 1.f;
         }
-        
+
+        if (bdd.flags & Bdd::FAINT_BDD) {
+            a.stroke[3] *= (1.f - param.faintness);
+        } else {
+            if (bdd.flags & Bdd::FAINT_E0) {
+                a.faint_child0 = param.faintness;
+            }
+            if (bdd.flags & Bdd::FAINT_E1) {
+                a.faint_child1 = param.faintness;
+            } 
+        }
+
+        a.draw = true;
+
         return a;
     };
     // Linearly interpolate the attributes of two bdds
@@ -5034,6 +5082,8 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         color_inter(a0->fill,   a1.fill,   t);
         a0->mark_child0 = (1.f-t) * a0->mark_child0 + t * a1.mark_child0;
         a0->mark_child1 = (1.f-t) * a0->mark_child1 + t * a1.mark_child1;
+        a0->faint_child0 = (1.f-t) * a0->faint_child0 + t * a1.faint_child0;
+        a0->faint_child1 = (1.f-t) * a0->faint_child1 + t * a1.faint_child1;
         if (a0->name == a1.name or a0->name == 0 or a1.name == 0) {
             a0->name_alpha = 1.f;
             a0->name = std::max(a0->name, a1.name);
@@ -5042,12 +5092,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
             a0->name_alpha = std::abs(2.f * t - 1.f);
         }
     };
-    // Draw the bdds with the given attributes
-    auto bdd_attr_apply = [param, context, &store, &attr_cur](Bdd_attr a, u32 id) {
-        opengl_draw_bdd(context, a);
-        opengl_draw_text_bdd(context, &store, a, a.rx / param.node_radius);
-        attr_cur[id] = a;
-    };
+    
     // Gives a point on the edge of a bdd. Used to position the children during the creation
     // animation.
     auto bdd_attr_edge = [](float* x, float* y, Bdd_attr a, float vx, float vy) {
@@ -5057,7 +5102,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         *x = vx / len + a.x;
         *y = vy / len + a.y;
     };
-
+    
     for (u32 i = 1; i < store.bdd_data.size; ++i) {
         if (id_map0[i] != -1 and id_map1[i] != -1) {
             // Bdd existed in both frames. Just simple interpolation here.
@@ -5067,7 +5112,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
             Bdd_attr a0 = bdd_attr_get(layouts[frame],  bdd0, id_map0);
             Bdd_attr a1 = bdd_attr_get(layouts[frame+1], bdd1, id_map1);
             bdd_attr_inter(&a0, a1, t);
-            bdd_attr_apply(a0, i);
+            attr_cur[i] = a0;
         } else if (id_map0[i] == -1 and id_map1[i] != -1) {
             // Bdd did not exist in the earlier frame, but does exist afterwards. We need to draw
             // the creation animation.
@@ -5112,7 +5157,7 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
             color_set(a0.fill  , color_get(a1.fill  ) & ~0xff);
             
             bdd_attr_inter(&a0, a1, t);
-            bdd_attr_apply(a0, i);
+            attr_cur[i] = a0;
         } else if (id_map0[i] != -1 and id_map1[i] == -1) {
             // Bdd did exist before but is gone in the second animation frame. Draw a vanishing
             // animation by letting it fade out.
@@ -5121,10 +5166,17 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
             color_set(a1.stroke, color_get(a1.stroke) & ~0xff);
             color_set(a1.fill  , color_get(a1.fill  ) & ~0xff);
             bdd_attr_inter(&a0, a1, t);
-            bdd_attr_apply(a0, i);
+            attr_cur[i] = a0;
         } else {
             // bdd existed neither before nor after, so do nothing
         }
+    }
+
+    for (Bdd_attr i: attr_cur) {
+        if (not i.draw) continue;
+        
+        opengl_draw_bdd(context, i);
+        opengl_draw_text_bdd(context, &store, i, i.rx / param.node_radius);
     }
 
     // Edge ids are just the parent and then one bit of edge type.
@@ -5398,8 +5450,9 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
         u8 stroke_marked[] = {0, 0, 0, 0};
         color_set(stroke_marked, 0x884babff);
         color_inter(stroke_col, stroke_marked, i&1 ? bdd0.mark_child1 : bdd0.mark_child0);
-        
+
         stroke_col[3] = bdd0.stroke[3];
+        stroke_col[3] *= 1.f - (i&1 ? bdd0.faint_child1 : bdd0.faint_child0);
         
         edge_data.size = 0;
 
@@ -5647,7 +5700,7 @@ struct Ui_context {
     Animation anim_frame;
     float frame_cur; // Caches the value of the current frame
 
-    // Data for showing the debug information
+    // Debug information
     bool debug_info_enabled;
     constexpr static s64 time_diff_num = 128;
     float time_diff[time_diff_num] = {};
@@ -5657,6 +5710,11 @@ struct Ui_context {
 
     bool is_helptext_visible = false; // You can probably guess what this flag is referring to.
     u8 novice_create_helper = 0; // "Create and Add doubleclick assistant" status
+
+    // Bdd highlighting and bddinfo
+    u32 highlight_bdd = -1;
+    u32 bddinfo_bdd;
+    s64 bddinfo_frame;
 };
 
 Ui_context global_ui;
@@ -5771,8 +5829,8 @@ void _collect_children(Array_dyn<u32>* children, Array_dyn<u32> id_map, Array_t<
     }
 };
 
-// Display the hover text. Returns whether the bdd is currently valid.
-bool ui_bddinfo_show(float x, float y, u32 bdd) {
+// Display the hover text. Returns the bdd to highlight, or -1 if the bdd is not valid.
+u32 ui_bddinfo_show(float x, float y, u32 bdd) {
     // Depending on whether we are moving forwards or backwards, round to the next frame
     s64 frame = global_ui.frame_cur < global_ui.anim_frame.value1
         ? (s64)std::floor(global_ui.frame_cur) : (s64)std::ceil(global_ui.frame_cur);
@@ -5782,7 +5840,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
         --frame;
     } else if (frame > global_store.snapshots.size-1) {
         // This just does not make any sense. Something's wrong, silently abort.
-        return false;
+        return -1;
     }
 
     array_resize(&global_ui.buf_id_map, global_store.bdd_data.size);
@@ -5813,9 +5871,18 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     }
 
     if (id_map[bdd] == (u32)-1) {
-        return false;
+        return -1;
     }
 
+    float bddinfo_padding = global_context.draw_param.node_radius * 1.35;
+    
+    if (global_ui.bddinfo_bdd == bdd and global_ui.bddinfo_frame == frame) {
+        platform_ui_bddinfo_show(x, y, bddinfo_padding);    
+        return bdd;
+    }
+    global_ui.bddinfo_bdd = bdd;
+    global_ui.bddinfo_frame = frame;
+    
     Array_dyn<u32> children = global_ui.buf_children;
     defer { global_ui.buf_children = children; };
     children.size = 0;
@@ -5855,7 +5922,7 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
         }
         platform_fmt_text(0, ")");
     };
-    
+
     // Generate the info text
     if (bdd == 1) {
         platform_fmt_text(Text_fmt::BOLD | Text_fmt::PARAGRAPH_CLOSE, "Node T");
@@ -5906,6 +5973,15 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     }
     platform_fmt_end(Text_fmt::PARAGRAPH_CLOSE);
 
+    if (global_ui.debug_info_enabled) {
+        buf.size = 0;
+        array_printf(&buf, "\ndebug_flags: ");
+        for (auto i = bdd_bdd.flags; i; i >>= 1) {
+            array_printf(&buf, "%d", (int)(i&1));
+        }
+        platform_fmt_text(Text_fmt::PARAGRAPH_CLOSE, buf);
+    }
+
     if (bdd_bdd.creation != 0) {
         auto store = &global_store;
         auto arr = array_subarray(store->creation_data, store->creations[bdd_bdd.creation], store->creations[bdd_bdd.creation+1]);
@@ -5942,39 +6018,49 @@ bool ui_bddinfo_show(float x, float y, u32 bdd) {
     
     platform_fmt_store(Text_fmt::SLOT_BDDINFO);
 
-    float pad = global_context.draw_param.node_radius * 1.35;
-    platform_ui_bddinfo_show(x, y, pad);
-    
-    return true;
+    platform_ui_bddinfo_show(x, y, bddinfo_padding);    
+    return bdd;
 }
 
 // Deal with mouse motion events. Shows and hides the bddinfo hover text.
 //  IMPORTANT: The arguments are NOT in pixels, but in world coordinates. So this is only useful for
 // canvas stuff.
 void ui_mouse_move(float world_x, float world_y) {
-    if (platform_ui_help_active()) {
-        platform_ui_bddinfo_hide();
-        return;
-    }
+    u32 highlight_bdd = -1;
+    bool do_hide = true;
     
-    for (s64 i = 0; i < global_context.buf_attr_cur.size; ++i) {
-        Bdd_attr bdd = global_context.buf_attr_cur[i];
-        float dx = (world_x - bdd.x) / bdd.rx;
-        float dy = (world_y - bdd.y) / bdd.ry;
-        float d = dx * dx + dy * dy;
+    if (not platform_ui_help_active()) {
+        for (s64 i = 0; i < global_context.buf_attr_cur.size; ++i) {
+            Bdd_attr bdd = global_context.buf_attr_cur[i];
+            float dx = (world_x - bdd.x) / bdd.rx;
+            float dy = (world_y - bdd.y) / bdd.ry;
+            float d = dx * dx + dy * dy;
 
-        if (d <= 1.f) {
-            // Important: Do not break the loop if the bdd was not valid and no hover text was generated.
-            if (ui_bddinfo_show(bdd.x, bdd.y, i)) return;
+            if (d <= 0.7f*0.7f) {
+                // Important: Do not break the loop if the bdd was not valid and no hover text was generated.
+                highlight_bdd = ui_bddinfo_show(bdd.x, bdd.y, i);
+                if (highlight_bdd != -1) {
+                    do_hide = false;
+                    break;
+                }
+            } else if (d <= 1.15f*1.15f) {
+                highlight_bdd = i;
+                break;
+            }
         }
     }
-    platform_ui_bddinfo_hide();
+
+    if (global_ui.highlight_bdd != highlight_bdd) {
+        global_ui.highlight_bdd =  highlight_bdd;
+        platform_main_loop_active(true);
+    }
+    if (do_hide) platform_ui_bddinfo_hide();
 }
 
 void ui_frame_draw() {
     float then = (float)platform_now(); // TODO: Move times to double
     opengl_frame_init(&global_context);
-    layout_frame_draw(&global_context, global_layouts, global_store, global_ui.frame_cur);
+    layout_frame_draw(&global_context, global_layouts, global_store, global_ui.frame_cur, global_ui.highlight_bdd);
 
     // We need the font to draw text, so check that not_completely_empty flag
     if (global_ui.debug_info_enabled and global_context.not_completely_empty) {

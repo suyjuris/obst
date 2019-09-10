@@ -481,9 +481,11 @@ double platform_now() {
 
 EM_BOOL _platform_ui_mouse_move(int, EmscriptenMouseEvent const* event, void*) {
     float f = _platform_get_device_pixel_ratio();
-    float x = (float)event->canvasX * f / global_context.scale + global_context.origin_x;
-    float y = (global_context.height-1 - (float)event->canvasY * f) / global_context.scale + global_context.origin_y;
+    float x = (float)event->targetX * f / global_context.scale + global_context.origin_x;
+    float y = (global_context.height-1 - (float)event->targetY * f) / global_context.scale + global_context.origin_y;
+    
     ui_mouse_move(x, y);
+    
     return false;
 }
 
@@ -491,8 +493,8 @@ EM_BOOL _platform_ui_mouse_move(int, EmscriptenMouseEvent const* event, void*) {
 void platform_mouse_position(float* out_x, float* out_y) {
     EmscriptenMouseEvent event;
     emscripten_get_mouse_status(&event);
-    float x = (float)event.canvasX / global_context.scale + global_context.origin_x;
-    float y = (global_context.height - (float)event.canvasY) / global_context.scale + global_context.origin_y;
+    float x = (float)event.targetX / global_context.scale + global_context.origin_x;
+    float y = (global_context.height - (float)event.targetY) / global_context.scale + global_context.origin_y;
     if (out_x) *out_x = x;
     if (out_y) *out_y = y;
 }
@@ -576,6 +578,11 @@ void platform_ui_button_help() {
             document.getElementById("b_help").textContent = "Show help";
         );
     }
+    
+    // Pretend we moved the mouse to update the bddinfo hover text
+    {float x, y;
+    platform_mouse_position(&x, &y);
+    ui_mouse_move(x, y);}
 }
 
 bool platform_ui_help_active() {
@@ -717,11 +724,11 @@ EM_BOOL _platform_ui_key_press(int, EmscriptenKeyboardEvent const* event, void*)
 
 // We want to collect information on whether the following elements are focused or not. If any of
 // them are, we ignore keypresses.
-char const* focusable_ids[] = {"create_nums", "create_form", "create_base", "create_bits", "create_vars", "op_node0", "op_node1", 0};
+char const* focusable_ids[] = {"#create_nums", "#create_form", "#create_base", "#create_bits", "#create_vars", "#op_node0", "#op_node1", 0};
 EM_BOOL _platform_ui_focus(int event_type, EmscriptenFocusEvent const* event, void*) {
     u64 id;
     for (id = 0; focusable_ids[id]; ++id) {
-        if (strncmp(event->id, focusable_ids[id], 32) == 0) break;
+        if (strncmp(event->id, focusable_ids[id]+1, 32) == 0) break;
     }
     if (not focusable_ids[id]) return false;
     
@@ -764,13 +771,13 @@ void _platform_init_context(Opengl_context* context) {
     attrs.antialias = false; // Everything does their own AA
     attrs.majorVersion = 1;
     
-    ctx = emscripten_webgl_create_context(0, &attrs);
+    ctx = emscripten_webgl_create_context("#canvas", &attrs);
     if (not ctx) {
         ui_error_report("Error while creating Opengl context.");
         abort();
     }
     emscripten_webgl_make_context_current(ctx);
-    emscripten_set_resize_callback(nullptr, context, false, _platform_resize_callback);
+    emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, context, false, _platform_resize_callback);
     _platform_resize_callback(0, 0, context); // Easy way to set the initial values correctly
 
     opengl_init(context);
@@ -783,14 +790,14 @@ int OBST_EM_EXPORT(main) () {
 
     // Chrome does not issue keypress events for navigation keys (e.g. arrow keys, page up). So we
     // use keydown instead, which works basically the same.
-    emscripten_set_keydown_callback(nullptr, nullptr, false, &_platform_ui_key_press);
+    emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, false, &_platform_ui_key_press);
 
     for (u64 id = 0; focusable_ids[id]; ++id) {
         emscripten_set_blur_callback (focusable_ids[id], nullptr, false, &_platform_ui_focus);
         emscripten_set_focus_callback(focusable_ids[id], nullptr, false, &_platform_ui_focus);
     }
 
-    emscripten_set_mousemove_callback("canvas", nullptr, false, &_platform_ui_mouse_move);
+    emscripten_set_mousemove_callback("#canvas", nullptr, false, &_platform_ui_mouse_move);
 
     _platform_init_context(&global_context);
     application_init();
