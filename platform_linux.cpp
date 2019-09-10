@@ -2539,6 +2539,11 @@ void _platform_render(Platform_state* platform) {
                 }
                 
                 consumed = true;
+            } else if (key.special == Key::RETURN) {
+                if (context->elem_flags[context->elem_focused] & Lui_context::DRAW_BUTTON) {
+                    lui_button_press(context->elem_focused);
+                    consumed = true;
+                }
             }
 
             u64 flags = context->elem_flags[context->elem_focused];
