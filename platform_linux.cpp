@@ -238,11 +238,11 @@ struct Lui_context {
     enum Fmt_slots_lui: s64 {
         SLOT_INITTEXT = Text_fmt::SLOT_PLATFORM_FIRST, SLOT_BUTTON_DESC_CREATE, SLOT_BUTTON_DESC_OP,
         SLOT_BUTTON_DESC_REMOVEALL, SLOT_BUTTON_DESC_HELP, SLOT_BUTTON_DESC_CONTEXT, SLOT_LABEL_BASE,
-        SLOT_LABEL_BITORDER, SLOT_LABEL_VARORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_INPUT,
+            SLOT_LABEL_BITORDER, SLOT_LABEL_VARORDER, SLOT_LABEL_FIRSTNODE, SLOT_LABEL_SECONDNODE, SLOT_LABEL_LEVELS, SLOT_LABEL_INPUT,
         SLOT_LABEL_NUMBERS, SLOT_LABEL_FORMULA, SLOT_RESIZER_CREATE, SLOT_ENTRY_NUMBERS, SLOT_ENTRY_FORMULA,
         SLOT_ENTRY_BASE, SLOT_ENTRY_BITORDER, SLOT_ENTRY_VARORDER, SLOT_BUTTON_CREATE,
-        SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_ENTRY_FIRSTNODE,
-        SLOT_ENTRY_SECONDNODE, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C,
+        SLOT_LABEL_UNION, SLOT_LABEL_INTERSECTION, SLOT_LABEL_COMPLEMENT, SLOT_LABEL_EXISTENTIAL, SLOT_ENTRY_FIRSTNODE,
+        SLOT_ENTRY_SECONDNODE, SLOT_ENTRY_LEVELS, SLOT_BUTTON_OP, SLOT_LABEL_OP_U, SLOT_LABEL_OP_I, SLOT_LABEL_OP_C, SLOT_LABEL_OP_E,
         SLOT_LABEL_OPERATION, SLOT_BUTTON_REMOVEALL, SLOT_LABEL_HELP_SHOW, SLOT_LABEL_HELP_HIDE,
         SLOT_BUTTON_HELP, SLOT_BUTTON_PREV, SLOT_BUTTON_NEXT, SLOT_BUTTON_HELP_CLOSE, SLOT_SCROLL_PANEL,
         SLOT_SCROLL_HELPTEXT, SLOT_HELPTEXT, SLOT_HELPTEXT_AREA, SLOT_CANVAS, SLOT_PANEL,
@@ -269,7 +269,7 @@ struct Lui_context {
     };
 
     enum Entry_names: u8 {
-        ENTRY_NUMBERS, ENTRY_FORMULA, ENTRY_BASE, ENTRY_BITORDER, ENTRY_VARORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE,
+        ENTRY_NUMBERS, ENTRY_FORMULA, ENTRY_BASE, ENTRY_BITORDER, ENTRY_VARORDER, ENTRY_FIRSTNODE, ENTRY_SECONDNODE, ENTRY_LEVELS,
         ENTRY_COUNT
     };
     enum Resizer_names: u8 {
@@ -1531,14 +1531,17 @@ void _platform_init(Platform_state* platform) {
     platform_fmt_store_simple(Text_fmt::COMPACT, "Union", Lui_context::SLOT_LABEL_UNION);
     platform_fmt_store_simple(Text_fmt::COMPACT, "Intersection", Lui_context::SLOT_LABEL_INTERSECTION);
     platform_fmt_store_simple(Text_fmt::COMPACT, "Complement", Lui_context::SLOT_LABEL_COMPLEMENT);
+    platform_fmt_store_simple(Text_fmt::COMPACT, "Existential abstraction", Lui_context::SLOT_LABEL_EXISTENTIAL);
     platform_fmt_store_simple(0, "First node:", Lui_context::SLOT_LABEL_FIRSTNODE);
     platform_fmt_store_simple(0, "Second node:", Lui_context::SLOT_LABEL_SECONDNODE);
+    platform_fmt_store_simple(0, "Levels:", Lui_context::SLOT_LABEL_LEVELS);
 
     u64 button_flag = Text_fmt::BUTTON | Text_fmt::COMPACT | Text_fmt::NOSPACE;
     platform_fmt_store_simple(button_flag, "Create and add", Lui_context::SLOT_BUTTON_CREATE);
     platform_fmt_store_simple(button_flag, "Calculate union", Lui_context::SLOT_LABEL_OP_U);
     platform_fmt_store_simple(button_flag, "Calculate intersection", Lui_context::SLOT_LABEL_OP_I);
     platform_fmt_store_simple(button_flag, "Calculate complement", Lui_context::SLOT_LABEL_OP_C);
+    platform_fmt_store_simple(button_flag, "Calculate existential", Lui_context::SLOT_LABEL_OP_E);
     platform_fmt_store_simple(button_flag, "Remove all", Lui_context::SLOT_BUTTON_REMOVEALL);
     platform_fmt_store_simple(button_flag, "Show help", Lui_context::SLOT_LABEL_HELP_SHOW);
     platform_fmt_store_simple(button_flag, "Hide help", Lui_context::SLOT_LABEL_HELP_HIDE);
@@ -1567,12 +1570,14 @@ void _platform_init(Platform_state* platform) {
     context->entries[Lui_context::ENTRY_VARORDER].slot   = Lui_context::SLOT_ENTRY_VARORDER;
     context->entries[Lui_context::ENTRY_FIRSTNODE].slot  = Lui_context::SLOT_ENTRY_FIRSTNODE;
     context->entries[Lui_context::ENTRY_SECONDNODE].slot = Lui_context::SLOT_ENTRY_SECONDNODE;
+    context->entries[Lui_context::ENTRY_LEVELS].slot      = Lui_context::SLOT_ENTRY_LEVELS;
     
     context->entries[Lui_context::ENTRY_BASE].disable_newline = true;
     context->entries[Lui_context::ENTRY_BITORDER].disable_newline = true;
     context->entries[Lui_context::ENTRY_VARORDER].disable_newline = true;
     context->entries[Lui_context::ENTRY_FIRSTNODE].disable_newline = true;
     context->entries[Lui_context::ENTRY_SECONDNODE].disable_newline = true;
+    context->entries[Lui_context::ENTRY_LEVELS].disable_newline = true;
 
     context->elem_flags[Lui_context::SLOT_BUTTON_NEXT] |= Lui_context::DRAW_COMPACT;
     context->elem_flags[Lui_context::SLOT_BUTTON_PREV] |= Lui_context::DRAW_COMPACT;
@@ -1637,6 +1642,7 @@ Array_t<u8> platform_ui_value_get(u8 elem) {
     switch (elem) {
     case Ui_elem::OP_NODE0: return context->entries[Lui_context::ENTRY_FIRSTNODE].text;
     case Ui_elem::OP_NODE1: return context->entries[Lui_context::ENTRY_SECONDNODE].text;
+    case Ui_elem::OP_LEVELS: return context->entries[Lui_context::ENTRY_LEVELS].text;
     case Ui_elem::CREATE_NUMS:  return context->entries[Lui_context::ENTRY_NUMBERS].text;
     case Ui_elem::CREATE_FORM:  return context->entries[Lui_context::ENTRY_FORMULA].text;
     case Ui_elem::CREATE_BASE:  return context->entries[Lui_context::ENTRY_BASE].text;
@@ -1647,6 +1653,7 @@ Array_t<u8> platform_ui_value_get(u8 elem) {
         if (context->elem_flags[Lui_context::SLOT_LABEL_UNION]        & Lui_context::DRAW_PRESSED) c = "u";
         if (context->elem_flags[Lui_context::SLOT_LABEL_INTERSECTION] & Lui_context::DRAW_PRESSED) c = "i";
         if (context->elem_flags[Lui_context::SLOT_LABEL_COMPLEMENT]   & Lui_context::DRAW_PRESSED) c = "c";
+        if (context->elem_flags[Lui_context::SLOT_LABEL_EXISTENTIAL]  & Lui_context::DRAW_PRESSED) c = "e";
         return {(u8*)c, 1};
     }
     case Ui_elem::CREATE_TYPE: {
@@ -1667,6 +1674,7 @@ void platform_ui_cursor_set(u8 elem, s64 cursor, s64 cursor_row, s64 cursor_col,
     switch (elem) {
     case Ui_elem::OP_NODE0:     entry = &context->entries[Lui_context::ENTRY_FIRSTNODE]; break;
     case Ui_elem::OP_NODE1:     entry = &context->entries[Lui_context::ENTRY_SECONDNODE]; break;
+    case Ui_elem::OP_LEVELS:    entry = &context->entries[Lui_context::ENTRY_LEVELS]; break;
     case Ui_elem::CREATE_NUMS:  entry = &context->entries[Lui_context::ENTRY_NUMBERS]; break;
     case Ui_elem::CREATE_FORM:  entry = &context->entries[Lui_context::ENTRY_FORMULA]; break;
     case Ui_elem::CREATE_BASE:  entry = &context->entries[Lui_context::ENTRY_BASE]; break;
@@ -2244,14 +2252,26 @@ void lui_radio_press(s64 slot) {
         platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_U);
         context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
         context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_ENTRY_LEVELS] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_LEVELS] |= Lui_context::DRAW_DISABLED;
     } else if (slot == Lui_context::SLOT_LABEL_INTERSECTION) {
         platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_I);
         context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
         context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] &= ~Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_ENTRY_LEVELS] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_LEVELS] |= Lui_context::DRAW_DISABLED;
     } else if (slot == Lui_context::SLOT_LABEL_COMPLEMENT) {
         platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_C);
         context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] |= Lui_context::DRAW_DISABLED;
         context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_ENTRY_LEVELS] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_LEVELS] |= Lui_context::DRAW_DISABLED;
+    } else if (slot == Lui_context::SLOT_LABEL_EXISTENTIAL) {
+        platform_fmt_store_copy(Lui_context::SLOT_BUTTON_OP, Lui_context::SLOT_LABEL_OP_E);
+        context->elem_flags[Lui_context::SLOT_ENTRY_SECONDNODE] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_SECONDNODE] |= Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_ENTRY_LEVELS] &= ~Lui_context::DRAW_DISABLED;
+        context->elem_flags[Lui_context::SLOT_LABEL_LEVELS] &= ~Lui_context::DRAW_DISABLED;
     }
 }
 
@@ -2266,14 +2286,17 @@ void _platform_operations_able(bool set) {
         Lui_context::SLOT_LABEL_UNION,
         Lui_context::SLOT_LABEL_INTERSECTION,
         Lui_context::SLOT_LABEL_COMPLEMENT,
+        Lui_context::SLOT_LABEL_EXISTENTIAL,
         Lui_context::SLOT_LABEL_FIRSTNODE,
         Lui_context::SLOT_LABEL_SECONDNODE,
+        Lui_context::SLOT_LABEL_LEVELS,
         Lui_context::SLOT_BUTTON_OP,
         Lui_context::SLOT_BUTTON_REMOVEALL,
         Lui_context::SLOT_BUTTON_PREV,
         Lui_context::SLOT_BUTTON_NEXT,
         Lui_context::SLOT_ENTRY_FIRSTNODE,
         Lui_context::SLOT_ENTRY_SECONDNODE,
+        Lui_context::SLOT_ENTRY_LEVELS,
         Text_fmt::SLOT_CONTEXT,
         Text_fmt::SLOT_CONTEXT_FRAME
     };
@@ -2307,6 +2330,8 @@ void platform_operations_enable(u32 bdd) {
         set_entry_bdd(Lui_context::ENTRY_FIRSTNODE,  global_store.bdd_data[bdd].child0);
         set_entry_bdd(Lui_context::ENTRY_SECONDNODE, global_store.bdd_data[bdd].child1);
     }
+
+    //@Cleanup 
     
     _platform_operations_able(false);
 
@@ -2316,6 +2341,8 @@ void platform_operations_enable(u32 bdd) {
         lui_radio_press(Lui_context::SLOT_LABEL_INTERSECTION);
     } else if (context->elem_flags[Lui_context::SLOT_LABEL_COMPLEMENT] & Lui_context::DRAW_PRESSED) {
         lui_radio_press(Lui_context::SLOT_LABEL_COMPLEMENT);
+    } else if (context->elem_flags[Lui_context::SLOT_LABEL_EXISTENTIAL] & Lui_context::DRAW_PRESSED) {
+        lui_radio_press(Lui_context::SLOT_LABEL_EXISTENTIAL);
     }
 }
 
@@ -2676,13 +2703,16 @@ void _platform_render(Platform_state* platform) {
     set_disabled(Lui_context::SLOT_ENTRY_BITORDER, !create_type_numbers);
     set_disabled(Lui_context::SLOT_ENTRY_VARORDER,  create_type_numbers);
 
+    // Have to set the close button for the helptext as disabled, else it can be tabbed into
+    set_disabled(Lui_context::SLOT_BUTTON_HELP_CLOSE, !context->helptext_active);
+
     // Scale the constants according to dpi
     context->width_panel_left = context->scale(500);
     context->width_scrollbar  = context->scale(  6);
     context->width_resizer    = context->scale(  8);
     context->width_button_max = context->scale( 40);
     
-    context->pad_entry    = context->pad(7, 5, 3, 3);
+    context->pad_entry = context->pad(7, 5, 3, 3);
 
     // Determine the position of the canvas
     {auto set = [](s64* var, s64 val, bool* change) { *change |= *var != val; *var = val; };
@@ -2764,9 +2794,12 @@ void _platform_render(Platform_state* platform) {
 
     {s64 x_orig = x;
     platform_fmt_draw(Lui_context::SLOT_LABEL_OPERATION, x, y, -1, &x, &y);
+    s64 x_ind = x;
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_UNION, &x, &y);
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_INTERSECTION, &x, &y);
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_COMPLEMENT, &x, &y);
+    y += (s64)std::round(font_inst.newline); x = x_ind;
+    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_EXISTENTIAL, &x, &y);
     y += (s64)std::round(font_inst.newline); x = x_orig;}
 
     y += std::round(font_inst.height - font_inst.ascent);
@@ -2781,6 +2814,14 @@ void _platform_render(Platform_state* platform) {
     platform_fmt_draw(Lui_context::SLOT_LABEL_SECONDNODE, x, y, -1, &x, &y);
     y -= ha_line;
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_SECONDNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, &y, nullptr);
+    y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
+
+    {s64 x_orig = x, ha_line;
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_LEVELS], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, nullptr, true);
+    y += ha_line;
+    platform_fmt_draw(Lui_context::SLOT_LABEL_LEVELS, x, y, -1, &x, &y);
+    y -= ha_line;
+    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_LEVELS], x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
 
     {s64 w_line, ha_line;

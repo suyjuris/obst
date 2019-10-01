@@ -178,7 +178,7 @@ struct Bdd_store {
     Array_dyn<u32> snapshot_marked; // A list of nodes flagged as marked. Resets when taking a snapshot!
     Array_dyn<u32> snapshot_marked_e; // A list of edges (!) flagged as marked. Resets when taking a snapshot!
     Array_dyn<u8>  snapshot_context; // A stack of textual descriptions of the current state of the algorithm. Separated by 0.
-    Array_dyn<u8>  snapshot_levels; // A list of level names, separated by 0.
+    Array_dyn<u8>  snapshot_levels; // A list of level names, terminated by 0.
 
     // This stores the snapshots.
     Array_dyn<Snapshot> snapshots; // This just contains offsets into the other two arrays. There is always a dummy element at the end.
@@ -368,6 +368,32 @@ void bdd_name_amend_setop(Bdd_store* store, u32 a, u32 b, char op) {
     } else {
         assert(false);
     }
+}
+
+void bdd_name_amend_quant(Bdd_store* store, u32 a, char quant, Array_t<u8> levels) {
+    assert(store->names.size > 0);
+    array_push_back(&store->name_data, (u8)quant ^ 128);
+
+    {s64 level = 0;
+    s64 i = 0;
+    bool first = true;
+    while (true) {
+        bool do_print = false;
+        for (u8 j: levels) {
+            if (level == j) do_print = true;
+        }
+
+        if (do_print) {
+            for (; store->snapshot_levels[i]; ++i)
+                array_push_back(&store->name_data, store->snapshot_levels[i] ^ 128);
+            if (not first)
+                array_push_back(&store->name_data, ',' ^ 128);
+            first = false;
+        } else {
+            while (store->snapshot_levels[i]) ++i;
+        }
+        ++i;
+    }}
 }
 
 // Assign the next bdd name. This will consume the data given by the bdd_name_amend function.
@@ -699,6 +725,31 @@ void bdd_creation_amend_bdd(Bdd_store* store, u32 id) {
     }
     if (italics_on) array_printf(&store->creation_data, "</i>");
     if (id <= 1) array_printf(&store->creation_data, "</s>");
+}
+
+void bdd_creation_amend_levels(Bdd_store* store, u32 a, Array_t<u8> levels) {
+    assert(store->names.size > 0);
+
+    {s64 level = 0;
+    s64 i = 0;
+    bool first = true;
+    while (true) {
+        bool do_print = false;
+        for (u8 j: levels) {
+            if (level == j) do_print = true;
+        }
+
+        if (do_print) {
+            for (; store->snapshot_levels[i]; ++i)
+                array_push_back(&store->name_data, store->snapshot_levels[i]);
+            if (not first)
+                array_printf(&store->name_data, ", ");
+            first = false;
+        } else {
+            while (store->snapshot_levels[i]) ++i;
+        }
+        ++i;
+    }}
 }
 
 // Take a temporary bdd and finalise it, i.e. do deduplication and removal of unnecessary
@@ -1299,6 +1350,47 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
         context_pop(store);
     }
     return bdd_final;
+}
+
+u32 bdd_existential_stepwise(Bdd_store* store, u32 a, Array_t<u8> levels, u32 bdd = -1) {
+    Bdd a_bdd = store->bdd_data[a];
+
+    Bdd bdd_temp;
+    if (bdd == (u32)-1) {
+        // Create a new node for the union
+        bdd_temp = {0, 0, a_bdd.level, Bdd::TEMPORARY};
+        bdd_name_amend_quant(store, a, '?', levels);
+
+        bdd_temp.creation = store->creations.size-1;
+        array_printf(&store->creation_data, "The node was created as existential abstraction of ");
+        bdd_creation_amend_bdd(store, a);
+        array_printf(&store->creation_data, " over levels ");
+        bdd_creation_amend_levels(store, levels);
+        array_printf(&store->creation_data, ".");
+        array_push_back(&store->creations, store->creation_data.size);
+        
+        bdd_create_inplace(store, &bdd_temp);
+        array_push_back(&store->snapshot_parents, bdd_temp.id); // Mark it as parent, so that snapshots capture it and its descenndants.
+
+        context_append(store, "Calculating existential abstraction of ");
+    } else {
+        // In a recursive call, we get passed a node into which we construct the result
+        bdd_temp = store->bdd_data[bdd];
+        
+        context_append(store, "Doing existential abstraction of ");
+    }
+        
+    context_amend_bdd(store, a);
+    if (a == 0 and a_parent != -1) {
+        context_amend(store, " (node ");
+        context_amend_bdd(store, a_parent >> 1);
+        context_amend(store, a_parent & 1 ? " has no child 1)" : " has no child 0)");
+    }
+    context_amend(store, " over levels ");
+    
+    // TODO Continue!!!!!!!!!
+
+
 }
 
 u32 _bdd_from_number_connect(Bdd_store* store, u32 i, u64 number, Array_t<u8> levels) {
@@ -5664,13 +5756,13 @@ void layout_frame_draw(Opengl_context* context, Array_t<Bdd_layout> layouts, Bdd
 namespace Ui_elem {
 
 enum Name: u8 {
-    INVALID, OP_NODE0, OP_NODE1, CREATE_TYPE, CREATE_NUMS, CREATE_FORM, CREATE_BASE,
+    INVALID, OP_NODE0, OP_NODE1, OP_LEVELS, CREATE_TYPE, CREATE_NUMS, CREATE_FORM, CREATE_BASE,
     CREATE_BITS, CREATE_VARS, OPERATION,
     NAME_COUNT
 };
 
 char* name[] = {
-    nullptr, "op_node0", "op_node1", "create_type", "create_nums", "create_form", "create_base",
+    nullptr, "op_node0", "op_node1", "op_levels", "create_type", "create_nums", "create_form", "create_base",
     "create_bits", "create_vars", "operation", nullptr
 };
 
@@ -5764,7 +5856,7 @@ struct Ui_context {
     // Debug information
     bool debug_info_enabled;
     constexpr static s64 time_diff_num = 128;
-    float time_diff[time_diff_num] = {};
+    double time_diff[time_diff_num] = {};
     s64 time_diff_index = 0;
 
     u64 focus_flags; // Bitset of the input elements that are focused
@@ -6083,12 +6175,15 @@ u32 ui_bddinfo_show(float x, float y, u32 bdd) {
     return bdd;
 }
 
-// Deal with mouse motion events. Shows and hides the bddinfo hover text.
+// Deal with mouse motion events. Shows and hides the bddinfo hover text. If only_hide is set, this
+// function will not highlight a new node.
 //  IMPORTANT: The arguments are NOT in pixels, but in world coordinates. So this is only useful for
 // canvas stuff.
-void ui_mouse_move(float world_x, float world_y) {
+void ui_mouse_move(float world_x, float world_y, bool only_hide = false) {
     u32 highlight_bdd = -1;
     bool do_hide = true;
+
+    if (only_hide and global_ui.highlight_bdd == -1) return;
     
     if (not platform_ui_help_active()) {
         for (s64 i = 0; i < global_context.buf_attr_cur.size; ++i) {
@@ -6119,16 +6214,16 @@ void ui_mouse_move(float world_x, float world_y) {
 }
 
 void ui_frame_draw() {
-    float then = (float)platform_now(); // TODO: Move times to double
+    double then = platform_now();
     opengl_frame_init(&global_context);
     layout_frame_draw(&global_context, global_layouts, global_store, global_ui.frame_cur, global_ui.highlight_bdd);
 
     // We need the font to draw text, so check that not_completely_empty flag
     if (global_ui.debug_info_enabled and global_context.not_completely_empty) {
         // Draw the debug information
-        float last = global_ui.time_diff[global_ui.time_diff_index];
-        float max = 0.f;
-        float avg = 0.f;
+        double last = global_ui.time_diff[global_ui.time_diff_index];
+        double max = 0.f;
+        double avg = 0.f;
         for (s64 i = 0; i < global_ui.time_diff_num; ++i) {
             if (max < global_ui.time_diff[i]) max = global_ui.time_diff[i];
             avg += global_ui.time_diff[i];
@@ -6154,8 +6249,8 @@ void ui_frame_draw() {
         for (s64 i = 0; i+1 < global_ui.time_diff_num; ++i) {
             opengl_draw_edge_simple(
                 &global_context,
-                {x, y + global_ui.time_diff[i]*yfac},
-                {x, y + global_ui.time_diff[i+1]*yfac},
+                {x, y + (float)global_ui.time_diff[i]*yfac},
+                {x, y + (float)global_ui.time_diff[i+1]*yfac},
                 1.f / global_context.scale, 0x111111ff
             );
             x += 1.f / global_context.scale;
@@ -6167,10 +6262,10 @@ void ui_frame_draw() {
     // Pretend we moved the mouse to update the bddinfo hover text
     {float x, y;
     platform_mouse_position(&x, &y);
-    ui_mouse_move(x, y);}
+    ui_mouse_move(x, y, true);}
 
     // Register the time this took so that we can draw it for the debugging code.
-    {float now = (float)platform_now();
+    {double now = platform_now();
     global_ui.time_diff_index = (global_ui.time_diff_index + 1) % global_ui.time_diff_num;
     global_ui.time_diff[global_ui.time_diff_index] = now - then;}
 }
