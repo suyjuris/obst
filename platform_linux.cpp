@@ -425,7 +425,7 @@ void _platform_init_gl(Platform_state* platform) {
     assert(platform);
     _platform_init_gl_pointers();
 
-    // Opengl has no vertex array objects, OpenGL requires them. Yay. However, creating a single one
+    // Webgl has no vertex array objects, OpenGL requires them. Yay. However, creating a single one
     // is fine, and we can do everything else Opengl style.
     GLuint vao;
     glGenVertexArrays(1, &vao);
@@ -3552,7 +3552,6 @@ int main(int argc, char** argv) {
 
     int x_fd = ConnectionNumber(display);
 
-    double dbg = platform_now();
     while (true) {
         bool redraw = false;
         if (XPending(display) <= 0) {
