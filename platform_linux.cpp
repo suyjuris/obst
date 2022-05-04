@@ -1455,7 +1455,7 @@ void _platform_init(Platform_state* platform) {
     _platform_init_font(context, Lui_context::FONT_LUI_SMALL,   0);
     _platform_init_font(context, Lui_context::FONT_LUI_SANS,    3);
     _platform_init_font(context, Lui_context::FONT_LUI_BUTTON,  3);
-    _platform_init_font(context, Lui_context::FONT_BDD_NORMAL,  3); // The last three sizes do not matter, BDDs are scaled
+    _platform_init_font(context, Lui_context::FONT_BDD_NORMAL,  3);
     _platform_init_font(context, Lui_context::FONT_BDD_ITALICS, 1);
     _platform_init_font(context, Lui_context::FONT_BDD_SMALL,   3);
 
@@ -2718,7 +2718,7 @@ void _platform_render(Platform_state* platform) {
     {auto set = [](s64* var, s64 val, bool* change) { *change |= *var != val; *var = val; };
     s64 plw = global_platform.lui_context.panel_left_hidden ? 0 : global_platform.lui_context.width_panel_left;
     bool flag = false;
-    set(&global_context.width, std::max(global_context.screen_w - plw, 400ll), &flag);
+    set(&global_context.width, std::max(global_context.screen_w - plw, 200ll), &flag);
     set(&global_context.height, global_context.screen_h, &flag);
     set(&global_context.canvas_x, plw, &flag);
     set(&global_context.canvas_y, 0, &flag);
@@ -2798,8 +2798,8 @@ void _platform_render(Platform_state* platform) {
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_UNION, &x, &y);
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_INTERSECTION, &x, &y);
     lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_COMPLEMENT, &x, &y);
-    y += (s64)std::round(font_inst.newline); x = x_ind;
-    lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_EXISTENTIAL, &x, &y);
+    //y += (s64)std::round(font_inst.newline); x = x_ind;
+    //lui_draw_radio(context, x, y, Lui_context::SLOT_LABEL_EXISTENTIAL, &x, &y);
     y += (s64)std::round(font_inst.newline); x = x_orig;}
 
     y += std::round(font_inst.height - font_inst.ascent);
@@ -2816,13 +2816,13 @@ void _platform_render(Platform_state* platform) {
     lui_draw_entry(context, &context->entries[Lui_context::ENTRY_SECONDNODE], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, &y, nullptr);
     y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
 
-    {s64 x_orig = x, ha_line;
-    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_LEVELS], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, nullptr, true);
-    y += ha_line;
-    platform_fmt_draw(Lui_context::SLOT_LABEL_LEVELS, x, y, -1, &x, &y);
-    y -= ha_line;
-    lui_draw_entry(context, &context->entries[Lui_context::ENTRY_LEVELS], x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
-    y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
+    //{s64 x_orig = x, ha_line;
+    //lui_draw_entry(context, &context->entries[Lui_context::ENTRY_LEVELS], x, y, (s64)std::round(font_inst.space*12.f), 1, nullptr, nullptr, &ha_line, nullptr, true);
+    //y += ha_line;
+    //platform_fmt_draw(Lui_context::SLOT_LABEL_LEVELS, x, y, -1, &x, &y);
+    //y -= ha_line;
+    //lui_draw_entry(context, &context->entries[Lui_context::ENTRY_LEVELS], x, y, (s64)std::round(font_inst.space*30.f), 1, nullptr, &y, nullptr);
+    //y += (s64)std::round(font_inst.height - font_inst.ascent); x = x_orig;}
 
     {s64 w_line, ha_line;
     lui_draw_button_right(context, Lui_context::SLOT_BUTTON_OP, x, y, w, &ha_line, &w_line);
@@ -3119,6 +3119,7 @@ void linux_handle_selection_response(Platform_state* platform, XSelectionEvent* 
         XDeleteProperty(platform->display, platform->window, platform->sel_target);
 
         if (ev->selection == platform->sel_primary) {
+            // TODO This should not press buttons
             Key key1 = Key::create_mouse(Key::LEFT_DOWN, platform->lui_context.pointer_x, platform->lui_context.pointer_y);
             Key key2 = Key::create_mouse(Key::LEFT_UP,   platform->lui_context.pointer_x, platform->lui_context.pointer_y);
             array_append(&global_platform.lui_context.input_queue, {key1, key2});

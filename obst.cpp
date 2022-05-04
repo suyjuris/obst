@@ -370,9 +370,10 @@ void bdd_name_amend_setop(Bdd_store* store, u32 a, u32 b, char op) {
     }
 }
 
+#if 0
 void bdd_name_amend_quant(Bdd_store* store, u32 a, char quant, Array_t<u8> levels) {
     assert(store->names.size > 0);
-    array_push_back(&store->name_data, (u8)quant ^ 128);
+    array_push_back(&store->name_data, (u8)(quant ^ 128));
 
     {s64 level = 0;
     s64 i = 0;
@@ -385,9 +386,9 @@ void bdd_name_amend_quant(Bdd_store* store, u32 a, char quant, Array_t<u8> level
 
         if (do_print) {
             for (; store->snapshot_levels[i]; ++i)
-                array_push_back(&store->name_data, store->snapshot_levels[i] ^ 128);
+                array_push_back(&store->name_data, (u8)(store->snapshot_levels[i] ^ 128));
             if (not first)
-                array_push_back(&store->name_data, ',' ^ 128);
+                array_push_back(&store->name_data, (u8)(',' ^ 128));
             first = false;
         } else {
             while (store->snapshot_levels[i]) ++i;
@@ -395,6 +396,7 @@ void bdd_name_amend_quant(Bdd_store* store, u32 a, char quant, Array_t<u8> level
         ++i;
     }}
 }
+#endif
 
 // Assign the next bdd name. This will consume the data given by the bdd_name_amend function.
 void bdd_name_assign(Bdd_store* store, Bdd* bdd) {
@@ -727,6 +729,7 @@ void bdd_creation_amend_bdd(Bdd_store* store, u32 id) {
     if (id <= 1) array_printf(&store->creation_data, "</s>");
 }
 
+#if 0
 void bdd_creation_amend_levels(Bdd_store* store, u32 a, Array_t<u8> levels) {
     assert(store->names.size > 0);
 
@@ -751,6 +754,7 @@ void bdd_creation_amend_levels(Bdd_store* store, u32 a, Array_t<u8> levels) {
         ++i;
     }}
 }
+#endif
 
 // Take a temporary bdd and finalise it, i.e. do deduplication and removal of unnecessary
 // nodes. This will push a description of the operation performed onto the context stack. (If
@@ -1352,6 +1356,7 @@ u32 bdd_complement_stepwise(Bdd_store* store, u32 a, u32 bdd = -1) {
     return bdd_final;
 }
 
+#if 0
 u32 bdd_existential_stepwise(Bdd_store* store, u32 a, Array_t<u8> levels, u32 bdd = -1) {
     Bdd a_bdd = store->bdd_data[a];
 
@@ -1392,6 +1397,7 @@ u32 bdd_existential_stepwise(Bdd_store* store, u32 a, Array_t<u8> levels, u32 bd
 
 
 }
+#endif
 
 u32 _bdd_from_number_connect(Bdd_store* store, u32 i, u64 number, Array_t<u8> levels) {
     bool flag = number >> levels[0] & 1;
@@ -3899,7 +3905,7 @@ void opengl_program_link(GLuint program, char* program_name) {
         GLint info_size = 0;
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &info_size);
       
-        char* info = (char*)malloc(info_size);
+        char* info = (char*)calloc(1, info_size + 1);
         glGetProgramInfoLog(program, info_size, NULL, info);
         printf("Error while linking program %s:\n\n", program_name);
         puts(info);

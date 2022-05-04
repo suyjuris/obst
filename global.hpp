@@ -11,7 +11,7 @@
 #include <cassert>
 #define assert_false assert(false)
 #else
-#define assert(x) (void)__builtin_expect(not (expr), 0)
+#define assert(x) (void)__builtin_expect(not (x), 0)
 #define assert_false __builtin_unreachable()
 #endif
 

@@ -29,9 +29,9 @@ if [ "$1" = "gcc" ]; then
     fi;
 elif [ "$1" = "emcc" ]; then
     if [ "$2" = "debug" ]; then
-        $EMCC $CXXFLAGS -ferror-limit=2 -O0 -g4 platform_emscripten.cpp -o obst.js $LDFLAGS_EMCC -s EXPORTED_FUNCTIONS="[$exp_fun]" -s DEMANGLE_SUPPORT=1 -s SAFE_HEAP=0 -s ASSERTIONS=2 -s STACK_OVERFLOW_CHECK=2 --source-map-base "file://`pwd`/"
+        $EMCC $CXXFLAGS -ferror-limit=2 -O0 -gsource-map platform_emscripten.cpp -o obst.js $LDFLAGS_EMCC -s EXPORTED_FUNCTIONS="[$exp_fun]" -s DEMANGLE_SUPPORT=1 -s SAFE_HEAP=0 -s ASSERTIONS=2 -s STACK_OVERFLOW_CHECK=2 --source-map-base "file://`pwd`/"
     elif [ "$2" = "release" ]; then
-        $EMCC $CXXFLAGS -ferror-limit=2 -DNDEBUG -O3 platform_emscripten.cpp -o obst.js -O3 --closure 1 $LDFLAGS_EMCC -s EXPORTED_FUNCTIONS="[$exp_fun]" -s DEMANGLE_SUPPORT=0 -s SAFE_HEAP=0 -s ASSERTIONS=0 -s STACK_OVERFLOW_CHECK=0
+        $EMCC $CXXFLAGS -ferror-limit=2 -DNDEBUG -O3 platform_emscripten.cpp -o obst.js -Os --closure 1 $LDFLAGS_EMCC -s EXPORTED_FUNCTIONS="[$exp_fun]" -s DEMANGLE_SUPPORT=0 -s SAFE_HEAP=0 -s ASSERTIONS=0 -s STACK_OVERFLOW_CHECK=0
     else
         echo "Error: second argument must be either debug or release"
     fi;
