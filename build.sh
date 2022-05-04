@@ -21,9 +21,9 @@ exp_fun=${exp_fun:0:(-1)}
 
 if [ "$1" = "gcc" ]; then
     if [ "$2" = "debug" ]; then
-        $GXX $CXXFLAGS -fmax-errors=2 -Wno-unused-parameter -Wno-comment -ggdb platform_linux.cpp -o obst $LDFLAGS_GCC
+        $GXX $CXXFLAGS -fmax-errors=2 -Wno-class-memaccess -Wno-unused-parameter -Wno-comment -ggdb platform_linux.cpp -o obst $LDFLAGS_GCC
     elif [ "$2" = "release" ]; then
-        $GXX $CXXFLAGS -fmax-errors=2 -Wno-unused-parameter -Wno-comment -O2 platform_linux.cpp -o obst $LDFLAGS_GCC
+        $GXX $CXXFLAGS -fmax-errors=2 -Wno-class-memaccess -Wno-unused-parameter -Wno-comment -O2 platform_linux.cpp -o obst $LDFLAGS_GCC
     else
         echo "Error: second argument must be either debug or release"
     fi;
