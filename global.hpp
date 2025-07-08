@@ -25,6 +25,7 @@
 // TODO: Get rid of all C++ headers
 #include <algorithm>
 #include <initializer_list>
+#include <limits>
 
 // Defer macro. Based on Jonathan Blow's code at https://pastebin.com/3YvWQa5c, although rewritten
 // from scratch.
@@ -126,7 +127,7 @@ struct Array_dyn: public Array_t<T_> {
 // Allocation. Returns zeroed memory.
 template <typename T>
 Array_t<T> array_create(s64 size) {
-    return {(T*)calloc(sizeof(T), size), size};
+    return {(T*)calloc(size, sizeof(T)), size};
 }
 
 // Take some bytes from an already existing memory location. Advance p by the number of bytes used.
