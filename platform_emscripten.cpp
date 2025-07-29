@@ -160,7 +160,7 @@ EM_JS(float, _platform_get_device_pixel_ratio, (), {
 
 // Called whenever the canvas resizes. This causes the internal viewport to adopt the new
 // dimensions, regenerates the font to properly align the pixels, and redraws.
-int _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
+bool _platform_resize_callback(int, const EmscriptenUiEvent*, void* user_data) {
     Opengl_context* context = (Opengl_context*)user_data;
 
     double w, h;
@@ -234,7 +234,7 @@ EM_JS(int, _platform_text_prepare_draw, (char* c, bool italics, float size, int 
     ctx.fillText(s, x+0.5, y+0.5);
     if (out_advance != 0) {
         var advance = ctx.measureText(s).width;
-        setValue(out_advance, advance, 'i32');
+        setValue(out_advance, Math.round(advance), 'i32');
     }
 });
 
@@ -599,7 +599,7 @@ void platform_panel_toggle() {
         } else {
             e.style.display = "none";
             Module.canvas_width = c.style.left;
-            c.style.left = 0;
+            c.style.left = "0px";
         }
     );
     _platform_resize_callback(0, nullptr, &global_context);

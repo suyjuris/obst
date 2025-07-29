@@ -2841,7 +2841,7 @@ struct Inter {
 };
 
 // A single edge from one (non-intermediate) node to another (non-intermediate) node. This is a
-// sequence of (stright) lines.
+// sequence of (straight) lines.
 struct Edge {
     // Type of edge. Note that each edge is uniquely identified by the parent id and its type.
     enum Type: u8 {
@@ -3423,7 +3423,7 @@ void layout_graph(Array_t<Bdd> bdds_, Bdd_layout* layout, Layout_memory* memory,
         //        2 |    g1*g2 |       g2 |        1 |       g3
         //        3 | g1*g2*g3 |    g2*g3 |       g3 |        1
         //
-        // Consider the row for node 1. It meas, that when computing how to distribute the force
+        // Consider the row for node 1. It means that when computing how to distribute the force
         // applied to node 1, node 0 has a weight of g1, node 1 has a weight of 1, and so on. That
         // intuition behind that is that for node 1, the force does not have to travel through any
         // glue links, so it has the full weight of 1. For node 0, it has to travel through the

@@ -223,7 +223,7 @@
       </div>
     </div>
     <script>
-      Module = {
+      var Module = {
         printErr: function(text) {
           if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
           console.error(text);
@@ -233,7 +233,7 @@
           canvas.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
           return canvas;
         })()
-      }
+      };
     </script>
     <script async type="text/javascript" src="obst.js"></script>
   </body>
